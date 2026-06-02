@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "app_id": "sdk_future",
+  "name": "SDK Future",
+  "version": "0.1.0",
+  "sdk_min": 2,
+  "sdk_max": 3,
+  "entry": "main.py",
+  "background": false,
+  "capabilities": []
+}

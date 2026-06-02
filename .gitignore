@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# ESP-IDF
+build/
+sdkconfig.old
+sdkconfig.defaults
+
+# Docker / generated
+dist/
+.idf_version
+
+# Git metadata
+.git/

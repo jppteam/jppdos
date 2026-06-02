@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "app_id": "meetapp",
+  "app_type": "native",
+  "name": "MeetApp",
+  "version": "0.1.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "meetapp.bin",
+  "background": {
+    "enabled": false,
+    "mode": "serialized"
+  },
+  "capabilities": [
+    "files.scoped",
+    "device.status",
+    "ble.scan",
+    "ble.advertise",
+    "ble.connect",
+    "ble.host"
+  ],
+  "modules": []
+}

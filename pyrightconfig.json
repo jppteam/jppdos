@@ -1,0 +1,19 @@
+{
+  "include": [
+    "tests",
+    "components/jpp_core/include",
+    "components/jpp_crypto_core/include",
+    "components/micropython"
+  ],
+  "exclude": [
+    ".sisyphus"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        "."
+      ]
+    }
+  ]
+}

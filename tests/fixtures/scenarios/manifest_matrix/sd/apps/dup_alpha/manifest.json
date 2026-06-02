@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "app_id": "dup_shared",
+  "name": "Dup Alpha",
+  "version": "0.1.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "main.py",
+  "background": false,
+  "capabilities": []
+}

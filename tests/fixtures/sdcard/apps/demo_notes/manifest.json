@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "app_id": "demo_notes",
+  "name": "Demo Notes",
+  "version": "0.1.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "main.bin",
+  "background": {
+    "enabled": false,
+    "mode": "none"
+  },
+  "capabilities": ["files.scoped"],
+  "modules": [],
+  "toolchain": {
+    "runtime_version": "v1.28.0",
+    "cross_version": "1.28.0",
+    "bytecode_abi": 6
+  }
+}

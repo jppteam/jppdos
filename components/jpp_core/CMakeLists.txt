@@ -1,0 +1,28 @@
+idf_component_register(
+    SRCS
+        "src/jpp_core.c"
+        "src/jpp_boot_core.c"
+        "src/jpp_settings_core.c"
+        "src/jpp_keypad_core.c"
+        "src/jpp_network_core.c"
+        "src/jpp_rtc_core.c"
+        "src/jpp_sd_core.c"
+        "src/jpp_vm_core.c"
+        "src/jpp_broker_core.c"
+        "src/jpp_sdk_bridge.c"
+        "src/jpp_ui_core.c"
+        "src/jpp_app_session_core.c"
+        "src/jpp_oled_core.c"
+        "src/jpp_manifest_core.c"
+        "src/jpp_app_loader_core.c"
+        "src/jpp_battery_core.c"
+        "src/jpp_fileserver_core.c"
+        "src/jpp_ble_native.c"
+        "src/jpp_mp_sdk_module.c"
+        "src/jpp_mp_runner.c"
+        "src/jpp_buzzer_core.c"
+        "src/jpp_kbd_core.c"
+        "src/jpp_heap_monitor.c"
+    INCLUDE_DIRS "include"
+    REQUIRES esp_adc esp_http_server esp_http_client esp_wifi esp_netif bt jpp_crypto_core jpp_app_pool micropython driver esp_timer
+)

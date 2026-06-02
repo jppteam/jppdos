@@ -1,0 +1,3 @@
+- [ESP-IDF version pin](esp-idf-version-pin.md) — targets v5.5.1 (interim); v6 blocked on MicroPython upstream
+- [main/ module split](project_main_split.md) — app_main.c split into 6 modules (2026-06-02); maps each concern to its new file
+- [Major UI overhaul](major-ui-overhaul-2026-06.md) — June 2026 large feature update: DS1307, buzzer, settings app, icons removed, FileDrop, footer removed

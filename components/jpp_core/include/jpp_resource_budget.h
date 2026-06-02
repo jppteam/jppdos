@@ -1,0 +1,47 @@
+#pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define JPP_RESOURCE_VM_HEAP_TARGET_BYTES 131072u
+#define JPP_RESOURCE_VM_HEAP_LIMIT_BYTES 196608u
+#define JPP_RESOURCE_VM_STACK_TARGET_WORDS 8192u
+#define JPP_RESOURCE_VM_STACK_LIMIT_WORDS 12288u
+#define JPP_RESOURCE_VM_QUEUE_TARGET_DEPTH 4u
+#define JPP_RESOURCE_VM_QUEUE_LIMIT_DEPTH 8u
+
+#define JPP_RESOURCE_NATIVE_FREE_HEAP_AFTER_BOOT_FLOOR_BYTES 65536u
+
+/* Content text rows an app frame may set (rows 0..N-1); the status footer is a
+   separate row drawn beneath them, so 7 content rows fills the 8-row OLED. */
+#define JPP_RESOURCE_SDK_FRAME_LINE_TARGET 7u
+#define JPP_RESOURCE_SDK_FRAME_LINE_LIMIT 7u
+#define JPP_RESOURCE_SDK_BACKGROUND_TASK_TARGET 2u
+#define JPP_RESOURCE_SDK_BACKGROUND_TASK_LIMIT 4u
+#define JPP_RESOURCE_BACKGROUND_CALLBACK_QUOTA_MS 40u
+#define JPP_RESOURCE_BACKGROUND_WATCHDOG_STRIKES 2u
+
+#define JPP_RESOURCE_SDK_HANDLE_TARGET 2u
+#define JPP_RESOURCE_SDK_HANDLE_LIMIT 4u
+
+#define JPP_RESOURCE_SDK_BLE_CONN_TARGET 1u
+#define JPP_RESOURCE_SDK_BLE_CONN_LIMIT 2u
+
+#define JPP_RESOURCE_BROKER_RESULT_FIELD_TARGET 4u
+#define JPP_RESOURCE_BROKER_RESULT_FIELD_LIMIT 8u
+/* Lock slots: storage, device, vm_queue, ble_radio, ble_client, ble_host */
+#define JPP_RESOURCE_BROKER_LOCK_TARGET 4u
+#define JPP_RESOURCE_BROKER_LOCK_LIMIT 8u
+
+/* J++Device Serial Management Protocol (JPPD-SMP) */
+#define SMP_TASK_STACK_BYTES   6144u
+#define SMP_RX_BUF_BYTES        512u
+#define SMP_CHUNK_SIZE         1024u
+#define SMP_SESSION_TIMEOUT_MS 30000u
+#define SMP_MAX_PAYLOAD_BYTES  1280u
+#define SMP_LIST_BUF_BYTES     2048u
+
+#ifdef __cplusplus
+}
+#endif

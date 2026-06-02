@@ -1,0 +1,15 @@
+services:
+  build:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /project
+    volumes:
+      - .:/project
+      - idf-tools:/opt/esp/.espressif
+    environment:
+      IDF_PATH: /opt/esp/idf
+    command: idf.py build
+
+volumes:
+  idf-tools:

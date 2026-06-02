@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "app_id": "demo_sdk_ui",
+  "name": "SDK UI Demo",
+  "version": "0.1.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "main.bin",
+  "capabilities": [
+    "device.status",
+    "files.scoped"
+  ],
+  "background": {
+    "enabled": false,
+    "mode": "none"
+  },
+  "modules": [],
+  "toolchain": {
+    "runtime_version": "v1.28.0",
+    "cross_version": "1.28.0",
+    "bytecode_abi": 6
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "esp_idf": {
+    "version": "v5.5.1",
+    "reason": "ESP-IDF v5.5.1 is the MicroPython-recommended baseline for the embedded VM core; interim target ahead of a future ESP-IDF v6 migration"
+  }
+}

@@ -1,0 +1,9 @@
+[wokwi]
+version = 1
+# merged.bin is a flat flash image produced by esptool merge_bin after every
+# build (see CMakeLists.txt).  It packs bootloader (0x0), partition table
+# (0x8000), and app (0x10000) into one file so Wokwi loads the full flash
+# layout and the SPIFFS driver can find the data_fs / runtime_fs partitions.
+firmware = "../build/merged.bin"
+elfFile = "../build/jppdos_idf.elf"
+rfc2217ServerPort = 4000

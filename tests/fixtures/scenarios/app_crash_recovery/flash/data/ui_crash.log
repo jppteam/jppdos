@@ -1,0 +1,3 @@
+screen=launcher
+error=RuntimeError
+log=/data/ui_crash.log

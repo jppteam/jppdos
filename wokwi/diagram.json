@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "author": "jppdos",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-c6-devkitc-1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled",
+      "top": -140,
+      "left": 220,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
+    },
+    {
+      "type": "wokwi-ds1307",
+      "id": "rtc",
+      "top": 80,
+      "left": 220,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-microsd-card",
+      "id": "sdcard",
+      "top": 220,
+      "left": 220,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn-up",
+      "top": -40,
+      "left": -340,
+      "attrs": { "color": "green", "label": "UP",    "key": "ArrowUp"    }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn-down",
+      "top": 20,
+      "left": -340,
+      "attrs": { "color": "green", "label": "DOWN",  "key": "ArrowDown"  }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn-left",
+      "top": 80,
+      "left": -340,
+      "attrs": { "color": "green", "label": "LEFT",  "key": "ArrowLeft"  }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn-right",
+      "top": 140,
+      "left": -340,
+      "attrs": { "color": "green", "label": "RIGHT", "key": "ArrowRight" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn-center",
+      "top": 200,
+      "left": -340,
+      "attrs": { "color": "blue",  "label": "OK",    "key": "Enter"      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r-kpad-pd",
+      "top": 268,
+      "left": -220,
+      "attrs": { "value": "10000" }
+    }
+  ],
+  "connections": [
+    ["esp:TX", "$serialMonitor:RX", "", []],
+    ["esp:RX", "$serialMonitor:TX", "", []],
+
+    ["esp:3V3",   "oled:VCC", "red",   []],
+    ["esp:GND.1", "oled:GND", "black", []],
+    ["esp:20",    "oled:SDA", "green", []],
+    ["esp:19",    "oled:SCL", "green", []],
+
+    ["esp:5V",    "rtc:5V",   "red",   []],
+    ["esp:GND.2", "rtc:GND",  "black", []],
+    ["esp:20",    "rtc:SDA",  "green", []],
+    ["esp:19",    "rtc:SCL",  "green", []],
+
+    ["esp:3V3",   "sdcard:VCC", "red",    []],
+    ["esp:GND.3", "sdcard:GND", "black",  []],
+    ["esp:7",     "sdcard:CS",  "orange", []],
+    ["esp:14",    "sdcard:SCK", "orange", []],
+    ["esp:15",    "sdcard:DI",  "orange", []],
+    ["esp:18",    "sdcard:DO",  "orange", []],
+
+    ["btn-up:1.l",     "esp:GND.1", "black", []],
+    ["btn-up:2.l",     "esp:0",     "green", []],
+
+    ["btn-down:1.l",   "esp:GND.1", "black", []],
+    ["btn-down:2.l",   "esp:10",    "green", []],
+
+    ["btn-left:1.l",   "esp:GND.1", "black", []],
+    ["btn-left:2.l",   "esp:11",    "green", []],
+
+    ["btn-right:1.l",  "esp:GND.1", "black", []],
+    ["btn-right:2.l",  "esp:21",    "green", []],
+
+    ["btn-center:1.l", "esp:GND.1", "black", []],
+    ["btn-center:2.l", "esp:22",    "green", []],
+
+    ["r-kpad-pd:1",    "esp:2",     "gray",  []],
+    ["r-kpad-pd:2",    "esp:GND.1", "gray",  []]
+  ]
+}

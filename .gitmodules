@@ -1,0 +1,3 @@
+[submodule "components/micropython/micropython"]
+	path = components/micropython/micropython
+	url = https://github.com/micropython/micropython.git

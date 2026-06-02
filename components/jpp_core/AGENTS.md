@@ -1,0 +1,29 @@
+# jpp_core native ESP-IDF map
+
+## Scope
+This component tree is the production native ESP-IDF surface for JPPDOS. It owns boot, settings, broker policy, UI supervision, VM state, SDK bridging, and runtime budgets.
+
+## Key sources
+- `src/jpp_boot_core.c` / `include/jpp_boot_core.h` - boot ordering, storage readiness, recovery vs normal mode, and `SYSTEM_READY` transition.
+- `src/jpp_settings_core.c` / `include/jpp_settings_core.h` - settings normalization, schema migration, temp-file recovery, and corrupt-state reset.
+- `src/jpp_ui_core.c` / `include/jpp_ui_core.h` - native UI core, display rendering through the broker, screen stack management, and launcher/settings/dialog flows. `jpp_ui_shell_clear_sd_apps(shell)` removes all non-builtin (`JPP_UI_APP_SOURCE_BUILTIN`) entries from the app catalog and clamps the cursor — called by background app discovery before inserting a fresh scan result.
+- `src/jpp_broker_core.c` / `include/jpp_broker_core.h` - capability enforcement, broker result shaping, and exclusive resource locks for privileged services.
+- `src/jpp_sdk_bridge.c` / `include/jpp_sdk_bridge.h` - the App SDK surface: app-to-native bridge for `device_status`, `get_time` (device.status), `file_read`/`write`/`list` (files.scoped), `shared_read`/`write`/`list` (files.shared), `file_open`/`handle_*` (files.full, session-scoped handles, user-approved per path), `ipc_send`/`recv` (ipc.send), `http_request` (http.request), `kv_get`/`set`/`delete` (device.kv), `ble_scan` (ble.scan), `ble_advertise_start`/`stop`/`set_connectable` (ble.advertise), `ble_connect`/`read_char`/`write_char`/`disconnect` (ble.connect, session-scoped conn handles), `ble_service_register`/`unregister`/`host_set_value`/`host_wait_write`/`host_clear` (ble.host), `canvas_write`/`clear`/`draw_pixel` (128×48 pixel content area, no capability), `wakelock_acquire`/`release` (prevents screen dim and deep sleep), `buzzer_play`/`tone`/`play_sequence`/`stop` (no capability), `poll_key`/`wait_key`, frame updates, close requests, background task registration, and the high-level **Dialog / List / Input** UI helpers (blocking modals built on the frame + key primitives; no capability required).
+- `src/jpp_vm_core.c` / `include/jpp_vm_core.h` - shared VM state, request queue ownership, single-owner task rule, and runtime/import gating.
+- `src/jpp_mp_runner.c` / `include/jpp_mp_runner.h` - MicroPython interpreter lifecycle: GC heap init, import hook, sys.path population, and the `on_start`/`on_idle`/`on_stop`/`handle_action` loop. GC heap uses the shared `jpp_app_pool` (64 KB static `.bss`) via `jpp_app_pool_acquire()`/`_release()` — the same pool the native loader uses for executable code (native and MP apps are mutually exclusive, so one pool serves both). A static pool avoids malloc failure after WiFi/BLE heap fragmentation; unifying the former separate 32 KB GC pool into the 64 KB exec pool returned ~32 KB to the general heap for WiFi management-frame buffers and lwIP pbufs. `heap_bytes` is clamped to the pool size; the pool is released in the runner's `cleanup:` path after `mp_deinit()`/`gc_sweep_all()`. The host task stack (`s_sd_task_stack`, 12 KB) and TCB (`s_sd_task_tcb`) in `jpp_app_dispatch.c` are also static `.bss` pools for the same reason — created via `xTaskCreateStatic`. `JPP_VM_REQUEST_IDLE` is dispatched by the main loop in `app_main.c` every `JPP_UI_REFRESH_MS` (~100 ms); `JPP_VM_REQUEST_ACTION` carries a key code and is dispatched by the keypad task.
+- `src/jpp_resource_budget.c` / `include/jpp_resource_budget.h` - VM, SDK, broker, and background task limits used by host checks and runtime guardrails.
+- `src/jpp_buzzer_core.c` / `include/jpp_buzzer_core.h` - LEDC PWM buzzer driver. Volume via `jpp_buzzer_set_volume(pct)` (GPIO drive capability). Predefined sounds (`jpp_buzzer_sound_t`), custom tones, and note sequences. `jpp_startup_jingle_t` (DEFAULT through OFF, 11 values) selects the boot chime; `jpp_buzzer_play_startup_jingle(jingle)` plays it, `jpp_startup_jingle_name(jingle)` returns the display string. Both the jingle enum and the volume persisted in NVS `jpp_sound` (`startup_jingle` u8 and `buzzer_vol` u8 respectively). Playback is **blocking by default** (`jpp_buzzer_tone`/`_play_sequence`/`_play`/`_play_startup_jingle` run the sequence on the caller's task via `vTaskDelay` per note). **Async** variants (`_play_sequence_async`/`_play_async`/`_play_startup_jingle_async`) copy the sequence into a static inbox and wake a dedicated player task (`buzzer_player_task`, created statically in `jpp_buzzer_init`), returning immediately. A generation counter (`s_seq_gen`, bumped on every async submit, on `jpp_buzzer_stop`, and at the start of blocking `_play_sequence`) is checked between notes so a new request preempts the current one within a note; the player dedupes stale wake notifications by tracking the last-played generation. Internal `buzzer_silence()` zeroes the duty without touching async state — the per-note path uses it (NOT `jpp_buzzer_stop`, which cancels async) to avoid the player cancelling its own sequence.
+
+## Implementation notes
+- Keep UI rendering broker-owned; do not bypass the broker for display or privileged service access.
+- Treat `jpp_broker_core` as the enforcement boundary for capabilities and exclusive locks.
+- Keep `jpp_sdk_bridge` as the only app-facing path into native services.
+- Preserve the native-only architecture: no Python broker module references, no legacy firmware path guidance.
+
+## Working rules
+- Prefer the C sources in this tree when updating behavior or documentation.
+- Keep descriptions concise and aligned with the checked-in native code.
+- Updating this map when code or behaviour changes is **mandatory and
+  non-deferrable**: any change to a core surface, the App SDK, broker policy, or
+  capability handling must update this file (and the root `README.md` /
+  `DEVELOPMENT.md` / `AGENTS.md`) in the same change.
