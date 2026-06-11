@@ -28,25 +28,29 @@
 #include "jpp_sd_core.h"
 #include "jpp_oled_core.h"
 #include "jpp_rtc_core.h"
-#include "jpp_network_core.h"
 #include "jpp_keypad_core.h"
 #include "jpp_ui_core.h"
+#include "jpp_manifest_core.h"
 #include "jpp_battery_core.h"
 #include "jpp_fileserver_core.h"
 #include "jpp_heap_monitor.h"
 #include "jpp_ble_native.h"
 #include "jpp_sdk_bridge.h"
 #include "jpp_buzzer_core.h"
+#include "jpp_draw_util.h"
 #include "ssd1306.h"
 #include "jpp_hw_config.h"
 
 /* Local modules */
 #include "jpp_boot_display.h"
 #include "jpp_settings_load.h"
+#include "jpp_file_util.h"
+#include "jpp_nvs_util.h"
 #include "jpp_hw_init.h"
 #include "jpp_wifi_init.h"
 #include "jpp_native_services.h"
 #include "jpp_app_dispatch.h"
+#include "jpp_bg_scheduler.h"
 #include "jpp_settings_screen.h"
 #include "jpp_keyboard.h"
 #include "jpp_file_picker.h"
@@ -82,25 +86,18 @@ static const jpp_keypad_band_t KEYPAD_BANDS[] = {
     { .key = "CENTER", .center_uv = 1995531, .tolerance_uv = 345000, .repeatable = false },
 };
 
-/* Minimal valid schema-v2 default settings. */
+/*
+ * Minimal valid schema-v2 default settings.
+ * settings.json holds only what the firmware reads from it: the schema marker,
+ * Wi-Fi credentials (policy.wifi), and the recovery flag (policy.recovery).
+ * All other persisted state lives in NVS (jpp_time, jpp_power, jpp_sound,
+ * jpp_webdav, jpp_user, jpp_lrv).
+ */
 static const char DEFAULT_SETTINGS[] =
     "{\"schema_version\":2"
-    ",\"services\":{"
-        "\"oled\":{\"enabled\":true,\"sda_pin\":20,\"scl_pin\":19"
-                 ",\"i2c_id\":0,\"freq\":100000,\"width\":128,\"height\":64}"
-        ",\"keypad\":{\"calibration_uv\":0,\"adc_pin\":2,\"adc_full_scale_uv\":3300000}"
-        ",\"sd\":{\"sck\":14,\"mosi\":15,\"miso\":18,\"cs\":7}"
-        ",\"network\":{\"connected\":false,\"ssid\":null}"
-        ",\"rtc\":{\"datetime\":null}"
-    "}"
     ",\"policy\":{"
-        "\"wifi\":{\"preferred_ssid\":\"\",\"password\":\"\",\"auto_connect\":false}"
-        ",\"time\":{\"timezone_offset_min\":0,\"ntp_enabled\":false"
-                  ",\"ntp_host\":\"time.nist.gov\",\"last_sync_source\":\"unset\""
-                  ",\"last_manual_datetime\":null}"
-        ",\"recovery\":{\"force_recovery\":false,\"staged_action\":null}"
-        ",\"apps\":{}"
-        ",\"screen\":{\"standby_s\":60,\"sleep_s\":300}"
+        "\"wifi\":{\"preferred_ssid\":\"\",\"password\":\"\"}"
+        ",\"recovery\":{\"force_recovery\":false}"
     "}"
     "}";
 
@@ -224,11 +221,12 @@ static void keypad_task(void *arg)
 /* ---- Big clock screen (dim state on launcher) --------------------------- */
 
 const char *random_text_line;
-static void pick_random_line()
+static void pick_random_line(void)
 {
     uint32_t index = esp_random() % BIG_DIM_CLOCK_LINE_COUNT;
     random_text_line = BIG_DIM_CLOCK_LINES[index];
-    ESP_LOGI("dim_screen", "picked random line i=%d, val=%s", index, random_text_line);
+    ESP_LOGI("dim_screen", "picked random line i=%lu, val=%s",
+             (unsigned long)index, random_text_line);
 }
 
 static void render_dim_clock(jpp_rtc_state_t *rtc_state)
@@ -359,22 +357,12 @@ static void ntp_apply(jpp_rtc_state_t *rtc_state)
 
 static void settings_do_dim_time_change(int32_t seconds)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_POWER_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_i32(h, "dim_s", seconds);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    jpp_nvs_set_i32(JPP_NVS_POWER_NS, "dim_s", seconds);
 }
 
 static void settings_do_poweroff_time_change(int32_t seconds)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_POWER_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_i32(h, "poweroff_s", seconds);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    jpp_nvs_set_i32(JPP_NVS_POWER_NS, "poweroff_s", seconds);
 }
 
 static void settings_do_ntp_save(bool enabled, const char *host, int tz_offset_h)
@@ -463,24 +451,18 @@ static void settings_do_backup(jpp_settings_state_t *state)
     mkdir(BACKUP_DIR, 0755);
 
     /* Read settings.json into a cJSON object. */
-    FILE *f = fopen(SETTINGS_PATH, "r");
-    if (f == NULL) {
+    long sz = jpp_read_file_into(SETTINGS_PATH, s_backup_file_buf,
+                                 sizeof(s_backup_file_buf));
+    if (sz == JPP_READ_ERR_OPEN) {
         snprintf(state->backup_result_msg, sizeof(state->backup_result_msg),
                  "Error: no settings file");
         return;
     }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    rewind(f);
-    if (sz <= 0 || (size_t)sz >= sizeof(s_backup_file_buf) - 1u) {
-        fclose(f);
+    if (sz < 0) {
         snprintf(state->backup_result_msg, sizeof(state->backup_result_msg),
                  "Error: settings too large");
         return;
     }
-    size_t n = fread(s_backup_file_buf, 1u, (size_t)sz, f);
-    fclose(f);
-    s_backup_file_buf[n] = '\0';
 
     cJSON *settings_obj = cJSON_Parse(s_backup_file_buf);
     if (settings_obj == NULL) {
@@ -532,8 +514,11 @@ static void settings_do_backup(jpp_settings_state_t *state)
     if (nvs_open(JPP_NVS_SOUND_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t buzzer_vol = 100u;
         nvs_get_u8(h, "buzzer_vol", &buzzer_vol);
+        uint8_t jingle = JPP_STARTUP_JINGLE_DEFAULT;
+        nvs_get_u8(h, "startup_jingle", &jingle);
         nvs_close(h);
-        cJSON_AddNumberToObject(nvs_sound, "buzzer_vol", (double)buzzer_vol);
+        cJSON_AddNumberToObject(nvs_sound, "buzzer_vol",     (double)buzzer_vol);
+        cJSON_AddNumberToObject(nvs_sound, "startup_jingle", (double)jingle);
     }
 
     cJSON *nvs_user = cJSON_CreateObject();
@@ -612,24 +597,18 @@ static void settings_do_restore(jpp_settings_state_t *state)
     }
 
     /* Read backup file. */
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
+    long sz = jpp_read_file_into(path, s_backup_file_buf,
+                                 sizeof(s_backup_file_buf));
+    if (sz == JPP_READ_ERR_OPEN) {
         snprintf(state->backup_result_msg, sizeof(state->backup_result_msg),
                  "Error: cannot open file");
         return;
     }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    rewind(f);
-    if (sz <= 0 || (size_t)sz >= sizeof(s_backup_file_buf) - 1u) {
-        fclose(f);
+    if (sz < 0) {
         snprintf(state->backup_result_msg, sizeof(state->backup_result_msg),
                  "Error: file too large");
         return;
     }
-    size_t n = fread(s_backup_file_buf, 1u, (size_t)sz, f);
-    fclose(f);
-    s_backup_file_buf[n] = '\0';
 
     cJSON *root = cJSON_Parse(s_backup_file_buf);
     if (root == NULL) {
@@ -705,6 +684,11 @@ static void settings_do_restore(jpp_settings_state_t *state)
         nvs_open(JPP_NVS_SOUND_NS, NVS_READWRITE, &h) == ESP_OK) {
         cJSON *v = cJSON_GetObjectItem(nvs_sound, "buzzer_vol");
         if (cJSON_IsNumber(v)) { nvs_set_u8(h, "buzzer_vol", (uint8_t)(int)v->valuedouble); }
+        v = cJSON_GetObjectItem(nvs_sound, "startup_jingle");
+        if (cJSON_IsNumber(v) && (int)v->valuedouble >= 0 &&
+            (int)v->valuedouble < (int)JPP_STARTUP_JINGLE_COUNT) {
+            nvs_set_u8(h, "startup_jingle", (uint8_t)(int)v->valuedouble);
+        }
         nvs_commit(h);
         nvs_close(h);
     }
@@ -781,43 +765,20 @@ static void settings_do_lrv_verify(jpp_settings_state_t *state)
         return;
     }
 
-    /* Build challenge: {username}|{iso8601}. */
-    char username[64] = {0};
-    nvs_handle_t unh;
-    if (nvs_open(JPP_NVS_USER_NS, NVS_READONLY, &unh) == ESP_OK) {
-        size_t ulen = sizeof(username);
-        nvs_get_str(unh, "username", username, &ulen);
-        nvs_close(unh);
-    }
-
-    char iso[32] = "1970-01-01T00:00:00Z";
-    if (s_rtc_for_lrv != NULL) {
-        jpp_rtc_datetime_t now;
-        if (jpp_rtc_get_current(s_rtc_for_lrv, &now) == JPP_RTC_STATUS_OK) {
-            snprintf(iso, sizeof(iso), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                     now.year, now.month, now.day,
-                     now.hour, now.minute, now.second);
-        }
-    }
-    char challenge[128];
-    snprintf(challenge, sizeof(challenge), "%s|%s", username, iso);
+    char challenge[JPP_LRV_CHALLENGE_MAX];
+    jpp_lrv_build_challenge(s_rtc_for_lrv, challenge, sizeof(challenge),
+                            NULL, 0u, NULL, NULL);
 
     uint8_t resp_sig[64] = {0};
     jpp_lrv_sign_challenge(challenge, resp_sig);
 
     /* Format binary fields as hex for logging. */
-    char cert_sig_hex[129] = {0};
-    for (int i = 0; i < 64; i++) {
-        snprintf(cert_sig_hex + i * 2, 3, "%02X", d.cert_sig[i]);
-    }
-    char pubkey_hex[65] = {0};
-    for (int i = 0; i < 32; i++) {
-        snprintf(pubkey_hex + i * 2, 3, "%02X", d.device_pubkey[i]);
-    }
-    char respsig_hex[129] = {0};
-    for (int i = 0; i < 64; i++) {
-        snprintf(respsig_hex + i * 2, 3, "%02X", resp_sig[i]);
-    }
+    char cert_sig_hex[129];
+    char pubkey_hex[65];
+    char respsig_hex[129];
+    jpp_lrv_hex_format(d.cert_sig,      64u, 0u, cert_sig_hex, sizeof(cert_sig_hex));
+    jpp_lrv_hex_format(d.device_pubkey, 32u, 0u, pubkey_hex,   sizeof(pubkey_hex));
+    jpp_lrv_hex_format(resp_sig,        64u, 0u, respsig_hex,  sizeof(respsig_hex));
 
     ESP_LOGW(TAG, "LRV cert=%s", d.cert);
     ESP_LOGW(TAG, "LRV cert_sig=%s", cert_sig_hex);
@@ -853,55 +814,6 @@ static void settings_do_lrv_server_stop(void)
     jpp_lrv_server_stop();
 }
 
-/*
- * Persist Wi-Fi credentials into settings.json so that init_wifi() can
- * reconnect automatically on next boot.
- */
-static void save_wifi_credentials(const char *ssid, const char *password)
-{
-    FILE *f = fopen(SETTINGS_PATH, "r");
-    if (f == NULL) return;
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    rewind(f);
-    char *buf = malloc((size_t)sz + 1u);
-    if (buf == NULL) { fclose(f); return; }
-    fread(buf, 1u, (size_t)sz, f);
-    buf[sz] = '\0';
-    fclose(f);
-
-    cJSON *root = cJSON_Parse(buf);
-    free(buf);
-    if (root == NULL) return;
-
-    /* Navigate / create policy.wifi. */
-    cJSON *policy = cJSON_GetObjectItem(root, "policy");
-    if (!cJSON_IsObject(policy)) {
-        policy = cJSON_AddObjectToObject(root, "policy");
-    }
-    cJSON *wifi = cJSON_GetObjectItem(policy, "wifi");
-    if (!cJSON_IsObject(wifi)) {
-        wifi = cJSON_AddObjectToObject(policy, "wifi");
-    }
-
-    /* Update SSID and password. */
-    cJSON_DeleteItemFromObject(wifi, "preferred_ssid");
-    cJSON_DeleteItemFromObject(wifi, "password");
-    cJSON_AddStringToObject(wifi, "preferred_ssid", ssid ? ssid : "");
-    cJSON_AddStringToObject(wifi, "password",       password ? password : "");
-
-    char *out_str = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (out_str == NULL) return;
-
-    /* Reuse the proven write_settings path (remove + rename) so the write
-     * works on every filesystem and leaves a recoverable temp file on failure. */
-    write_settings(out_str);
-    free(out_str);
-    ESP_LOGI(TAG, "WIFI: credentials saved (ssid=\"%s\")", ssid ? ssid : "");
-}
-
 /* Blocking connect — called from settings after "Connecting..." screen is shown. */
 static void settings_do_wifi_connect(jpp_settings_state_t *state,
                                       const char *ssid, const char *password)
@@ -912,7 +824,7 @@ static void settings_do_wifi_connect(jpp_settings_state_t *state,
     if (ok) {
         snprintf(state->wifi_status_msg, sizeof(state->wifi_status_msg),
                  "Connected: %.18s", ssid);
-        save_wifi_credentials(ssid, password);
+        jpp_settings_save_wifi(ssid, password);
         strncpy(state->wifi_saved_ssid, ssid, sizeof(state->wifi_saved_ssid) - 1u);
         state->wifi_saved_ssid[sizeof(state->wifi_saved_ssid) - 1u] = '\0';
         ESP_LOGI(TAG, "SETTINGS_WIFI: connected and saved");
@@ -1026,33 +938,28 @@ static void settings_do_wifi_scan(jpp_settings_state_t *state)
 
 static void load_webdav_settings(jpp_ui_shell_t *shell)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_WEBDAV_NS, NVS_READONLY, &h) != ESP_OK) { return; }
-    uint8_t is_static = 0u;
-    if (nvs_get_u8(h, "pass_static", &is_static) == ESP_OK) {
-        shell->webdav_pass_is_static = (bool)is_static;
-    }
+    shell->webdav_pass_is_static =
+        (bool)jpp_nvs_get_u8(JPP_NVS_WEBDAV_NS, "pass_static",
+                             (uint8_t)shell->webdav_pass_is_static);
     if (shell->webdav_pass_is_static) {
-        size_t len = sizeof(shell->webdav_static_pass);
-        nvs_get_str(h, "static_pass", shell->webdav_static_pass, &len);
+        jpp_nvs_get_str(JPP_NVS_WEBDAV_NS, "static_pass",
+                        shell->webdav_static_pass,
+                        sizeof(shell->webdav_static_pass));
     }
-    nvs_close(h);
     ESP_LOGI(TAG, "WEBDAV: loaded pass_mode=%s",
              shell->webdav_pass_is_static ? "static" : "random");
 }
 
 static void save_webdav_settings(const jpp_ui_shell_t *shell)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_WEBDAV_NS, NVS_READWRITE, &h) != ESP_OK) { return; }
-    nvs_set_u8(h, "pass_static", (uint8_t)shell->webdav_pass_is_static);
+    jpp_nvs_set_u8(JPP_NVS_WEBDAV_NS, "pass_static",
+                   (uint8_t)shell->webdav_pass_is_static);
     if (shell->webdav_pass_is_static) {
-        nvs_set_str(h, "static_pass", shell->webdav_static_pass);
+        jpp_nvs_set_str(JPP_NVS_WEBDAV_NS, "static_pass",
+                        shell->webdav_static_pass);
     } else {
-        nvs_erase_key(h, "static_pass");
+        jpp_nvs_erase_key(JPP_NVS_WEBDAV_NS, "static_pass");
     }
-    nvs_commit(h);
-    nvs_close(h);
     ESP_LOGI(TAG, "WEBDAV: saved pass_mode=%s",
              shell->webdav_pass_is_static ? "static" : "random");
 }
@@ -1060,12 +967,10 @@ static void save_webdav_settings(const jpp_ui_shell_t *shell)
 /* Load screen standby/sleep times from NVS into the shell state. */
 static void load_screen_settings(jpp_ui_shell_t *shell)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_POWER_NS, NVS_READONLY, &h) != ESP_OK) { return; }
-    int32_t v;
-    if (nvs_get_i32(h, "dim_s",      &v) == ESP_OK) { shell->dim_time_s      = v; }
-    if (nvs_get_i32(h, "poweroff_s", &v) == ESP_OK) { shell->poweroff_time_s = v; }
-    nvs_close(h);
+    shell->dim_time_s      = jpp_nvs_get_i32(JPP_NVS_POWER_NS, "dim_s",
+                                             shell->dim_time_s);
+    shell->poweroff_time_s = jpp_nvs_get_i32(JPP_NVS_POWER_NS, "poweroff_s",
+                                             shell->poweroff_time_s);
     ESP_LOGI(TAG, "SCREEN: standby=%lds sleep=%lds",
              (long)shell->dim_time_s, (long)shell->poweroff_time_s);
 }
@@ -1077,16 +982,13 @@ static uint8_t s_startup_jingle    = JPP_STARTUP_JINGLE_DEFAULT;
 
 static void load_buzzer_volume(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_SOUND_NS, NVS_READONLY, &h) != ESP_OK) { return; }
-    uint8_t vol = 100u;
-    if (nvs_get_u8(h, "buzzer_vol", &vol) == ESP_OK) { s_buzzer_volume_pct = vol; }
-    uint8_t jingle = JPP_STARTUP_JINGLE_DEFAULT;
-    if (nvs_get_u8(h, "startup_jingle", &jingle) == ESP_OK &&
-        jingle < JPP_STARTUP_JINGLE_COUNT) {
+    s_buzzer_volume_pct = jpp_nvs_get_u8(JPP_NVS_SOUND_NS, "buzzer_vol",
+                                         s_buzzer_volume_pct);
+    uint8_t jingle = jpp_nvs_get_u8(JPP_NVS_SOUND_NS, "startup_jingle",
+                                    s_startup_jingle);
+    if (jingle < JPP_STARTUP_JINGLE_COUNT) {
         s_startup_jingle = jingle;
     }
-    nvs_close(h);
     jpp_buzzer_set_volume(s_buzzer_volume_pct);
     ESP_LOGI(TAG, "SOUND: buzzer_vol=%u%% jingle=%u", s_buzzer_volume_pct, s_startup_jingle);
 }
@@ -1095,12 +997,7 @@ static void settings_do_volume_change(uint8_t percent)
 {
     s_buzzer_volume_pct = percent;
     jpp_buzzer_set_volume(percent);
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_SOUND_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "buzzer_vol", percent);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    jpp_nvs_set_u8(JPP_NVS_SOUND_NS, "buzzer_vol", percent);
     ESP_LOGI(TAG, "SOUND: volume changed to %u%%", percent);
 }
 
@@ -1108,12 +1005,7 @@ static void settings_do_jingle_change(uint8_t jingle)
 {
     if (jingle >= JPP_STARTUP_JINGLE_COUNT) { return; }
     s_startup_jingle = jingle;
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_SOUND_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "startup_jingle", jingle);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    jpp_nvs_set_u8(JPP_NVS_SOUND_NS, "startup_jingle", jingle);
     ESP_LOGI(TAG, "SOUND: jingle changed to %u (%s)",
              jingle, jpp_startup_jingle_name((jpp_startup_jingle_t)jingle));
 }
@@ -1123,12 +1015,7 @@ static void settings_do_jingle_change(uint8_t jingle)
 static void settings_do_username_save(jpp_settings_state_t *state,
                                        const char *username)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_USER_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "username", username ? username : "");
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    jpp_nvs_set_str(JPP_NVS_USER_NS, "username", username ? username : "");
     if (state != NULL) {
         strncpy(state->username_current, username ? username : "",
                 sizeof(state->username_current) - 1u);
@@ -1139,11 +1026,8 @@ static void settings_do_username_save(jpp_settings_state_t *state,
 
 static void load_username(jpp_settings_state_t *state)
 {
-    nvs_handle_t h;
-    if (nvs_open(JPP_NVS_USER_NS, NVS_READONLY, &h) != ESP_OK) { return; }
-    size_t len = sizeof(state->username_current);
-    nvs_get_str(h, "username", state->username_current, &len);
-    nvs_close(h);
+    jpp_nvs_get_str(JPP_NVS_USER_NS, "username",
+                    state->username_current, sizeof(state->username_current));
 }
 
 /* ---- Main loop ---------------------------------------------------------- */
@@ -1183,6 +1067,10 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     jpp_battery_config_t bat_cfg;
     jpp_battery_config_defaults(&bat_cfg);
     jpp_battery_state_t bat_state = { .percent = 0, .valid = false };
+
+    /* Background task scheduler: load the persisted schedule table. */
+    jpp_bg_scheduler_init();
+    int64_t bg_run_start_us = 0;
     /* Expose the live battery state to the SDK device.status broker callback.
        run_main_loop never returns, so the address stays valid for app sessions. */
     jpp_native_services_set_battery_state(&bat_state);
@@ -1532,22 +1420,17 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             ESP_LOGW(TAG, "SD_EJECTED fatal screen");
         }
 
-        /* App screen detection */
+        /* App screen detection: every screen name that is not a built-in
+           (reserved) id is an SD app id pushed by the launcher. */
         const char *top_screen = jpp_ui_stack_top(&shell->stack);
-        static const char *const BUILTIN_SCREENS[] = {
-            "launcher", "settings", "webdav", "webdav_passconfig", "shell",
-            "dialog", "app_crash", "sd_ejected", NULL,
-        };
-        bool sd_app_open = false;
-        if (top_screen != NULL) {
-            bool is_builtin = false;
-            for (size_t bi = 0; BUILTIN_SCREENS[bi] != NULL; bi++) {
-                if (strcmp(top_screen, BUILTIN_SCREENS[bi]) == 0) {
-                    is_builtin = true;
-                    break;
-                }
-            }
-            sd_app_open = !is_builtin;
+        bool sd_app_open = (top_screen != NULL) &&
+                           !jpp_manifest_v2_is_reserved_app_id(top_screen);
+
+        /* User preemption: an interactive launch takes priority over a
+           running headless background task. */
+        if (sd_app_open && jpp_app_bg_running()) {
+            ESP_LOGW(TAG, "BG_TASK_PREEMPTED (user launch)");
+            jpp_app_bg_teardown();
         }
 
         if (sd_app_open && s_sd_task == NULL) {
@@ -1571,11 +1454,54 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             }
         }
 
-        if (s_sd_task != NULL && s_sd_ctx.close_requested) {
+        /* Headless background-run supervision. */
+        if (jpp_app_bg_running()) {
+            if (jpp_app_bg_finished()) {
+                jpp_app_bg_teardown();
+            } else if ((esp_timer_get_time() - bg_run_start_us) / 1000 >
+                       (int64_t)JPP_RESOURCE_BG_TASK_RUN_QUOTA_MS) {
+                /* Kill on overrun. The task may hold broker locks or the app
+                   pool mid-run, so a restart is the only state-safe recovery;
+                   last_run was persisted at launch, so the task will not
+                   re-fire immediately after boot. */
+                ESP_LOGE(TAG, "BG_TASK_KILLED (quota exceeded) — restarting");
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+            }
+        } else if (!sd_app_open && s_sd_task == NULL &&
+                   top_screen != NULL && strcmp(top_screen, "launcher") == 0 &&
+                   !jpp_serial_mgr_needs_render() &&
+                   !shell->fileserver_running &&
+                   !jpp_lrv_server_is_running()) {
+            /* Idle on the launcher: run a due background task, if any. */
+            char bg_app[32];
+            char bg_task[32];
+            if (jpp_bg_scheduler_due(rtc_state, bg_app, sizeof(bg_app),
+                                     bg_task, sizeof(bg_task))) {
+                /* Mark before launching so a crash/kill cannot re-fire it. */
+                jpp_bg_scheduler_mark_run(rtc_state, bg_app, bg_task);
+                if (jpp_app_bg_launch(bg_app, bg_task, boot)) {
+                    bg_run_start_us = esp_timer_get_time();
+                }
+            }
+        }
+
+        if (s_sd_task != NULL && !jpp_app_bg_running() &&
+            s_sd_ctx.close_requested) {
             teardown_sd_app(shell);
             sd_app_open = false;
             shell->display.has_last_frame = false;
             top_screen = jpp_ui_stack_top(&shell->stack);
+
+            /* If the app ended in a failure, show the crash dialog (the
+               dispatcher already emitted APP_CRASH and wrote ui_crash.log). */
+            char crash_app[32];
+            char crash_reason[32];
+            if (jpp_app_crash_take(crash_app, sizeof(crash_app),
+                                   crash_reason, sizeof(crash_reason))) {
+                jpp_ui_shell_record_crash(shell, crash_app, crash_reason);
+                top_screen = jpp_ui_stack_top(&shell->stack);
+            }
         }
 
         /* Background app re-discovery: trigger when returning to launcher. */
@@ -1613,11 +1539,22 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             continue;
         }
 
-        /* Serial manager consent dialog / active-session screen */
-        if (jpp_serial_mgr_needs_render()) {
-            jpp_serial_mgr_render();
-            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(JPP_UI_REFRESH_MS));
-            continue;
+        /* Serial manager consent dialog / active-session screen.  When the
+           serial screen goes away (session closed by host, BACK, or timeout)
+           force a launcher redraw — otherwise the last serial frame stays on
+           the OLED because the shell's frame cache still matches. */
+        {
+            static bool serial_rendered_last = false;
+            bool serial_now = jpp_serial_mgr_needs_render();
+            if (serial_rendered_last && !serial_now) {
+                shell->display.has_last_frame = false;
+            }
+            serial_rendered_last = serial_now;
+            if (serial_now) {
+                jpp_serial_mgr_render();
+                vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(JPP_UI_REFRESH_MS));
+                continue;
+            }
         }
 
         /* SD ejection fatal screen: render directly with flashing warning */
@@ -1658,7 +1595,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             /* Signature line under the title — matches the launcher/settings/
                WebDAV header style (title on row 0, 1-px rule on page 1). */
             if (active_ctx->frame_title_rule) {
-                ssd1306_fill_page(1u, 0x08u);
+                jpp_draw_rule(1u);
             }
             /* Canvas (pages 2–7) */
             for (size_t p = 0u; p < 6u; p++) {
@@ -1709,7 +1646,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                                             frame.lines[row], false);
                     }
                     if (on_launcher || on_webdav) {
-                        ssd1306_fill_page(1u, 0x08u);
+                        jpp_draw_rule(1u);
                     }
                     /* Checkmark on the active password mode line in passconfig. */
                     if (on_webdav_passconfig) {
@@ -1744,8 +1681,8 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
 void app_main(void)
 {
-    /* Initialise the static exec pool (64 KB, fits MeetApp at 50 KB loaded). */
-    jpp_native_loader_preinit(64u * 1024u);
+    /* Native app code loads into the shared static app pool (jpp_app_pool). */
+    jpp_native_loader_preinit();
 
     /* Global heap-pressure diagnostics: logs any failed allocation and warns
        when free heap nears the WiFi-frame-alloc floor.  Start it early so it
@@ -1798,10 +1735,6 @@ void app_main(void)
     if (settings_result.recovered_marker) {
         rename(SETTINGS_TMP_PATH, SETTINGS_PATH);
         ESP_LOGI(TAG, "SETTINGS_RECOVERED");
-    }
-    if (settings_result.migrated_marker) {
-        write_settings(DEFAULT_SETTINGS);
-        ESP_LOGI(TAG, "SETTINGS_MIGRATED");
     }
     if (settings_result.corrupt_reset_marker) {
         write_settings(DEFAULT_SETTINGS);
@@ -1860,14 +1793,6 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "RTC: no hardware");
     }
-
-    jpp_sd_state_t sd_state;
-    jpp_sd_state_init(&sd_state, &sd_cfg, sd_mounted);
-
-    jpp_network_config_t net_cfg;
-    jpp_network_config_defaults(&net_cfg);
-    jpp_network_state_t net_state;
-    jpp_network_state_init(&net_state, &net_cfg, true);
 
     jpp_boot_note_services_ready(&boot);
     ESP_LOGI(TAG, "SERVICES_READY");

@@ -1,0 +1,47 @@
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_WIFI_NVS_ENABLED=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# FAT filesystem — long filename support (heap-allocated; required for manifest.json)
+CONFIG_FATFS_LFN_HEAP=y
+# Volume label API used by the storage settings screen (f_getlabel)
+CONFIG_FATFS_USE_LABEL=y
+# Allow FF_MAX_SS=4096 for SD cards with non-512-byte physical sectors
+CONFIG_FATFS_SECTOR_4096=y
+
+# Wi-Fi memory — prevent heap exhaustion during file transfers.
+# Static TX buffers are permanently allocated from the heap at Wi-Fi init,
+# which drains startup heap and causes httpd task creation to fail.
+# Keep TX dynamic but cap it at 8 (was 32): zero heap at startup, and
+# at most 8 × ~1.6 KB = ~13 KB held during a burst transfer instead of ~51 KB.
+# Dynamic RX is likewise capped at 8; TCP flow control (TCP_WND = 5760 B)
+# limits the incoming burst so TCP retransmits any frame the driver drops.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+
+# Native app loader — disable PMP IRAM/DRAM split so the entire unified HP SRAM
+# heap satisfies MALLOC_CAP_EXEC.  With the split enabled, ESP-IDF configures PMP
+# to mark DRAM as non-executable, leaving only a tiny exhausted IRAM-only pool for
+# MALLOC_CAP_EXEC.  Without the split the whole free SRAM (~250 KB) is available
+# for executable allocations, which is what jpp_native_loader_core needs.
+# Trade-off: writable memory is also executable (no W^X).  Acceptable for a
+# single-owner embedded device that controls what binaries are loaded.
+CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT=n
+
+# BLE — NimBLE host stack
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y

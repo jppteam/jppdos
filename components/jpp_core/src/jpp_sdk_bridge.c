@@ -1,6 +1,9 @@
 #include "../include/jpp_sdk_bridge.h"
 #include "../include/jpp_buzzer_core.h"
+#include "../include/jpp_file_browser_core.h"
 #include "../include/jpp_kbd_core.h"
+#include "../include/jpp_string_util.h"
+#include "../include/jpp_ui_core.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -18,35 +21,6 @@ static bool jpp_sdk_text_present(const char *text)
     return text != NULL && text[0] != '\0';
 }
 
-static bool jpp_sdk_name_is_valid(const char *name)
-{
-    size_t index;
-    bool previous_was_dot = false;
-
-    if (!jpp_sdk_text_present(name) || name[0] == '.') {
-        return false;
-    }
-    for (index = 0u; name[index] != '\0'; ++index) {
-        char current = name[index];
-        bool is_lower = current >= 'a' && current <= 'z';
-        bool is_upper = current >= 'A' && current <= 'Z';
-        bool is_digit = current >= '0' && current <= '9';
-        if (current == '.') {
-            if (previous_was_dot || name[index + 1u] == '\0') {
-                return false;
-            }
-            previous_was_dot = true;
-            continue;
-        }
-        if (is_lower || is_upper || is_digit || current == '_') {
-            previous_was_dot = false;
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
 static bool jpp_sdk_relative_path_is_valid(const char *path)
 {
     size_t index = 0u;
@@ -60,26 +34,13 @@ static bool jpp_sdk_relative_path_is_valid(const char *path)
     if (path[index] == '\0') {
         return false;
     }
-    for (; path[index] != '\0'; ++index) {
-        if (path[index] != '.') {
-            continue;
-        }
-        if (path[index + 1u] != '.') {
-            continue;
-        }
-        if ((index == 0u || path[index - 1u] == '/') &&
-            (path[index + 2u] == '\0' || path[index + 2u] == '/')) {
-            return false;
-        }
-    }
-    return true;
+    return !jpp_str_has_parent_segment(path);
 }
 
 static bool jpp_sdk_full_path_is_valid(const char *path)
 {
     static const char sd_prefix[] = "/sd/";
     size_t prefix_len = sizeof(sd_prefix) - 1u;
-    size_t index;
 
     if (path == NULL || path[0] == '\0') {
         return false;
@@ -91,19 +52,7 @@ static bool jpp_sdk_full_path_is_valid(const char *path)
     if (path[prefix_len] == '\0') {
         return false;
     }
-    for (index = prefix_len; path[index] != '\0'; ++index) {
-        if (path[index] != '.') {
-            continue;
-        }
-        if (path[index + 1u] != '.') {
-            continue;
-        }
-        if ((path[index - 1u] == '/') &&
-            (path[index + 2u] == '\0' || path[index + 2u] == '/')) {
-            return false;
-        }
-    }
-    return true;
+    return !jpp_str_has_parent_segment(path);
 }
 
 static jpp_sdk_status_t jpp_sdk_copy_text(char *dest, size_t dest_size, const char *source)
@@ -125,7 +74,7 @@ static jpp_sdk_status_t jpp_sdk_copy_text(char *dest, size_t dest_size, const ch
 
 static bool jpp_sdk_app_id_is_valid(const char *app_id)
 {
-    if (!jpp_sdk_name_is_valid(app_id) || strcmp(app_id, "settings") == 0) {
+    if (!jpp_str_name_valid(app_id) || strcmp(app_id, "settings") == 0) {
         return false;
     }
     return true;
@@ -140,9 +89,45 @@ static jpp_sdk_status_t jpp_sdk_ensure_bound(const jpp_sdk_context_t *context)
 }
 
 /*
- * Builds /sd/apps/<app_id>/<relative_path> into out_path.
- * Strips any leading slashes from relative_path.
+ * Builds <root>/<app_id>/<relative_path> into out_path, where root is the
+ * scoped ("/sd/apps") or shared ("/sd/shared") storage base. Strips any
+ * leading slashes from relative_path; path construction alone enforces the
+ * sandbox root.
  */
+static jpp_sdk_status_t jpp_sdk_build_app_path(
+    const jpp_sdk_context_t *context,
+    const char *root,
+    const char *relative_path,
+    char *out_path,
+    size_t out_path_size
+)
+{
+    size_t root_length;
+    size_t app_id_length;
+    size_t relative_length;
+
+    if (context == NULL || out_path == NULL || out_path_size == 0u ||
+        !jpp_sdk_relative_path_is_valid(relative_path)) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    while (relative_path[0] == '/') {
+        relative_path += 1;
+    }
+    root_length = strlen(root);
+    app_id_length = strlen(context->app_id);
+    relative_length = strlen(relative_path);
+    if (root_length + 1u + app_id_length + 1u + relative_length + 1u > out_path_size) {
+        return JPP_SDK_STATUS_TEXT_TRUNCATED;
+    }
+    memcpy(out_path, root, root_length);
+    out_path[root_length] = '/';
+    memcpy(out_path + root_length + 1u, context->app_id, app_id_length);
+    out_path[root_length + 1u + app_id_length] = '/';
+    memcpy(out_path + root_length + 1u + app_id_length + 1u,
+           relative_path, relative_length + 1u);
+    return JPP_SDK_STATUS_OK;
+}
+
 static jpp_sdk_status_t jpp_sdk_build_scoped_path(
     const jpp_sdk_context_t *context,
     const char *relative_path,
@@ -150,33 +135,10 @@ static jpp_sdk_status_t jpp_sdk_build_scoped_path(
     size_t out_path_size
 )
 {
-    static const char prefix[] = "/sd/apps/";
-    size_t prefix_length = sizeof(prefix) - 1u;
-    size_t app_id_length;
-    size_t relative_length;
-
-    if (context == NULL || out_path == NULL || out_path_size == 0u ||
-        !jpp_sdk_relative_path_is_valid(relative_path)) {
-        return JPP_SDK_STATUS_INVALID_ARGUMENT;
-    }
-    while (relative_path[0] == '/') {
-        relative_path += 1;
-    }
-    app_id_length = strlen(context->app_id);
-    relative_length = strlen(relative_path);
-    if (prefix_length + app_id_length + 1u + relative_length + 1u > out_path_size) {
-        return JPP_SDK_STATUS_TEXT_TRUNCATED;
-    }
-    memcpy(out_path, prefix, prefix_length);
-    memcpy(out_path + prefix_length, context->app_id, app_id_length);
-    out_path[prefix_length + app_id_length] = '/';
-    memcpy(out_path + prefix_length + app_id_length + 1u, relative_path, relative_length + 1u);
-    return JPP_SDK_STATUS_OK;
+    return jpp_sdk_build_app_path(context, "/sd/apps", relative_path,
+                                  out_path, out_path_size);
 }
 
-/*
- * Builds /sd/shared/<app_id>/<relative_path> into out_path.
- */
 static jpp_sdk_status_t jpp_sdk_build_shared_path(
     const jpp_sdk_context_t *context,
     const char *relative_path,
@@ -184,28 +146,8 @@ static jpp_sdk_status_t jpp_sdk_build_shared_path(
     size_t out_path_size
 )
 {
-    static const char prefix[] = "/sd/shared/";
-    size_t prefix_length = sizeof(prefix) - 1u;
-    size_t app_id_length;
-    size_t relative_length;
-
-    if (context == NULL || out_path == NULL || out_path_size == 0u ||
-        !jpp_sdk_relative_path_is_valid(relative_path)) {
-        return JPP_SDK_STATUS_INVALID_ARGUMENT;
-    }
-    while (relative_path[0] == '/') {
-        relative_path += 1;
-    }
-    app_id_length = strlen(context->app_id);
-    relative_length = strlen(relative_path);
-    if (prefix_length + app_id_length + 1u + relative_length + 1u > out_path_size) {
-        return JPP_SDK_STATUS_TEXT_TRUNCATED;
-    }
-    memcpy(out_path, prefix, prefix_length);
-    memcpy(out_path + prefix_length, context->app_id, app_id_length);
-    out_path[prefix_length + app_id_length] = '/';
-    memcpy(out_path + prefix_length + app_id_length + 1u, relative_path, relative_length + 1u);
-    return JPP_SDK_STATUS_OK;
+    return jpp_sdk_build_app_path(context, "/sd/shared", relative_path,
+                                  out_path, out_path_size);
 }
 
 static jpp_sdk_status_t jpp_sdk_ensure_cap(jpp_sdk_context_t *context,
@@ -232,13 +174,6 @@ typedef struct {
     const char *logical_path;
 } jpp_sdk_file_list_context_t;
 
-typedef struct {
-    jpp_vm_context_t *vm_context;
-    const char *task_name;
-    const char *app_id;
-    const char *name;
-} jpp_sdk_background_register_context_t;
-
 static jpp_broker_status_t jpp_sdk_file_read_operation(void *context, jpp_broker_result_t *result)
 {
     jpp_sdk_file_read_context_t *ctx = (jpp_sdk_file_read_context_t *)context;
@@ -257,46 +192,10 @@ static jpp_broker_status_t jpp_sdk_file_list_operation(void *context, jpp_broker
     return ctx->lister(ctx->lister_context, ctx->logical_path, result);
 }
 
-static jpp_broker_status_t jpp_sdk_background_register_operation(
-    void *context,
-    jpp_broker_result_t *result
-)
-{
-    jpp_sdk_background_register_context_t *register_context;
-    jpp_vm_request_t request;
-    jpp_vm_status_t vm_status;
-
-    if (context == NULL || result == NULL) {
-        return JPP_BROKER_STATUS_INVALID_ARGUMENT;
-    }
-    register_context = (jpp_sdk_background_register_context_t *)context;
-    memset(&request, 0, sizeof(request));
-    request.kind = JPP_VM_REQUEST_BACKGROUND;
-    (void)jpp_sdk_copy_text(request.app_id, sizeof(request.app_id), register_context->app_id);
-    (void)jpp_sdk_copy_text(request.module_name, sizeof(request.module_name), register_context->name);
-    vm_status = jpp_vm_schedule_request(register_context->vm_context, register_context->task_name, &request);
-    if (vm_status != JPP_VM_STATUS_OK) {
-        const char *code = vm_status == JPP_VM_STATUS_QUEUE_FULL ? "QUEUE_FULL" : "VM_ERROR";
-        jpp_broker_status_t status = jpp_broker_error_result(result, code);
-        if (status != JPP_BROKER_STATUS_OK) {
-            return status;
-        }
-        status = jpp_broker_result_put(result, "task", register_context->name);
-        if (status != JPP_BROKER_STATUS_OK) {
-            return status;
-        }
-        return jpp_broker_result_put(result, "vm_status", jpp_vm_status_name(vm_status));
-    }
-    if (jpp_broker_ok_result(result) != JPP_BROKER_STATUS_OK) {
-        return JPP_BROKER_STATUS_INVALID_ARGUMENT;
-    }
-    if (jpp_broker_result_put(result, "task", register_context->name) != JPP_BROKER_STATUS_OK) {
-        return JPP_BROKER_STATUS_INVALID_ARGUMENT;
-    }
-    return jpp_broker_result_put(result, "vm_status", jpp_vm_status_name(JPP_VM_STATUS_OK));
-}
-
 /* ---- generic file helpers ---- */
+
+/* capability == NULL means the operation is ungated (scoped/shared storage
+   needs no permission; path construction alone enforces the sandbox root). */
 
 static jpp_sdk_status_t jpp_sdk_do_read(
     jpp_sdk_context_t *context,
@@ -314,7 +213,7 @@ static jpp_sdk_status_t jpp_sdk_do_read(
     if (context->services.locks == NULL || context->services.read_file == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
+    if (capability != NULL) {
         jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, capability);
         if (cap_st != JPP_SDK_STATUS_OK) {
             jpp_broker_error_result(result, "ACCESS_DENIED");
@@ -348,7 +247,7 @@ static jpp_sdk_status_t jpp_sdk_do_write(
     if (context->services.locks == NULL || context->services.write_file == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
+    if (capability != NULL) {
         jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, capability);
         if (cap_st != JPP_SDK_STATUS_OK) {
             jpp_broker_error_result(result, "ACCESS_DENIED");
@@ -382,7 +281,7 @@ static jpp_sdk_status_t jpp_sdk_do_list(
     if (context->services.locks == NULL || context->services.list_files == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
+    if (capability != NULL) {
         jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, capability);
         if (cap_st != JPP_SDK_STATUS_OK) {
             jpp_broker_error_result(result, "ACCESS_DENIED");
@@ -608,9 +507,8 @@ static jpp_sdk_status_t jpp_sdk_ensure_cap(jpp_sdk_context_t *context,
                stable backing string. The pending entry is intentionally left in
                place: the caller-list check above short-circuits all future
                lookups for this cap, so it is never re-prompted this session.
-               (The previous swap-with-last compaction corrupted granted_cap_ptrs
-               because it overwrote the very buffer the new caller entry pointed
-               at, silently substituting a different capability.) */
+               The pending array must never be compacted or reordered —
+               granted_cap_ptrs entries point directly at these buffers. */
             size_t n = context->caller.capability_count;
             if (n < JPP_SDK_PENDING_CAP_MAX) {
                 context->granted_cap_ptrs[n] = context->pending_cap_strs[i];
@@ -646,13 +544,6 @@ jpp_sdk_status_t jpp_sdk_device_status(jpp_sdk_context_t *context, jpp_broker_re
     if (context->services.locks == NULL || context->services.device_status == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
-        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "device.status");
-        if (cap_st != JPP_SDK_STATUS_OK) {
-            jpp_broker_error_result(result, "ACCESS_DENIED");
-            return cap_st;
-        }
-    }
     broker_status = jpp_broker_run_exclusive(
         context->services.locks, "device",
         context->services.device_status, context->services.device_status_context, result
@@ -679,7 +570,7 @@ jpp_sdk_status_t jpp_sdk_file_read(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    return jpp_sdk_do_read(context, path, "files.scoped", result);
+    return jpp_sdk_do_read(context, path, NULL, result);
 }
 
 jpp_sdk_status_t jpp_sdk_file_write(
@@ -700,7 +591,7 @@ jpp_sdk_status_t jpp_sdk_file_write(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    return jpp_sdk_do_write(context, path, text, "files.scoped", result);
+    return jpp_sdk_do_write(context, path, text, NULL, result);
 }
 
 jpp_sdk_status_t jpp_sdk_file_list(
@@ -716,9 +607,8 @@ jpp_sdk_status_t jpp_sdk_file_list(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    /* An empty/NULL dir means "the app's own root". "." resolves to the scoped
-       base directory and lists cleanly; without this the path validator rejected
-       "" as INVALID_ARGUMENT. */
+    /* An empty/NULL dir means "the app's own root": "." resolves to the scoped
+       base directory and passes the path validator, which rejects "". */
     if (relative_dir == NULL || relative_dir[0] == '\0') {
         relative_dir = ".";
     }
@@ -726,7 +616,7 @@ jpp_sdk_status_t jpp_sdk_file_list(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    return jpp_sdk_do_list(context, path, "files.scoped", result);
+    return jpp_sdk_do_list(context, path, NULL, result);
 }
 
 /* ---- files.shared ---- */
@@ -748,7 +638,7 @@ jpp_sdk_status_t jpp_sdk_shared_read(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    return jpp_sdk_do_read(context, path, "files.shared", result);
+    return jpp_sdk_do_read(context, path, NULL, result);
 }
 
 jpp_sdk_status_t jpp_sdk_shared_write(
@@ -769,7 +659,7 @@ jpp_sdk_status_t jpp_sdk_shared_write(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    return jpp_sdk_do_write(context, path, text, "files.shared", result);
+    return jpp_sdk_do_write(context, path, text, NULL, result);
 }
 
 jpp_sdk_status_t jpp_sdk_shared_list(
@@ -793,7 +683,7 @@ jpp_sdk_status_t jpp_sdk_shared_list(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    return jpp_sdk_do_list(context, path, "files.shared", result);
+    return jpp_sdk_do_list(context, path, NULL, result);
 }
 
 /* ---- files.full ---- */
@@ -937,68 +827,28 @@ jpp_sdk_status_t jpp_sdk_handle_close(
 
 /* ---- background tasks ---- */
 
-jpp_sdk_status_t jpp_sdk_add_background_task(
+jpp_sdk_status_t jpp_sdk_background_register(
     jpp_sdk_context_t *context,
-    jpp_vm_context_t *vm_context,
-    const char *task_name,
-    const char *name,
     jpp_broker_result_t *result
 )
 {
-    jpp_broker_status_t broker_status;
-    jpp_sdk_background_register_context_t register_context;
     jpp_sdk_status_t status;
 
     status = jpp_sdk_ensure_bound(context);
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    if (vm_context == NULL || result == NULL || !jpp_sdk_name_is_valid(name)) {
+    if (result == NULL) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
-    if (context->services.locks == NULL) {
-        return JPP_SDK_STATUS_INVALID_STATE;
-    }
-    {
-        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "background.register");
-        if (cap_st != JPP_SDK_STATUS_OK) {
-            jpp_broker_error_result(result, "ACCESS_DENIED");
-            return cap_st;
-        }
-    }
-    if (context->background_task_count >= JPP_SDK_BACKGROUND_TASK_CAPACITY) {
-        if (jpp_broker_error_result(result, "TASK_LIMIT") != JPP_BROKER_STATUS_OK) {
-            return JPP_SDK_STATUS_BROKER_ERROR;
-        }
-        if (jpp_broker_result_put(result, "task", name) != JPP_BROKER_STATUS_OK) {
-            return JPP_SDK_STATUS_BROKER_ERROR;
-        }
-        return JPP_SDK_STATUS_BROKER_ERROR;
-    }
-    register_context.vm_context = vm_context;
-    register_context.task_name = task_name;
-    register_context.app_id = context->app_id;
-    register_context.name = name;
-    broker_status = jpp_broker_run_exclusive(
-        context->services.locks, "vm_queue",
-        jpp_sdk_background_register_operation, &register_context, result
-    );
-    if (broker_status != JPP_BROKER_STATUS_OK) {
-        return JPP_SDK_STATUS_BROKER_ERROR;
-    }
-    if (!result->ok) {
-        return JPP_SDK_STATUS_BROKER_ERROR;
-    }
-    status = jpp_sdk_copy_text(
-        context->background_tasks[context->background_task_count].name,
-        sizeof(context->background_tasks[context->background_task_count].name),
-        name
-    );
+    status = jpp_sdk_ensure_cap(context, "background.register");
     if (status != JPP_SDK_STATUS_OK) {
+        jpp_broker_error_result(result, "ACCESS_DENIED");
         return status;
     }
-    context->background_tasks[context->background_task_count].strikes = 0u;
-    context->background_task_count += 1u;
+    if (jpp_broker_ok_result(result) != JPP_BROKER_STATUS_OK) {
+        return JPP_SDK_STATUS_BROKER_ERROR;
+    }
     return JPP_SDK_STATUS_OK;
 }
 
@@ -1722,13 +1572,6 @@ jpp_sdk_status_t jpp_sdk_get_time(jpp_sdk_context_t *context, jpp_broker_result_
     if (context->services.locks == NULL || context->services.rtc_reader == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
-        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "device.status");
-        if (cap_st != JPP_SDK_STATUS_OK) {
-            jpp_broker_error_result(result, "ACCESS_DENIED");
-            return cap_st;
-        }
-    }
     broker_status = jpp_broker_run_exclusive(
         context->services.locks, "device",
         context->services.rtc_reader, context->services.rtc_reader_context, result
@@ -1798,6 +1641,177 @@ jpp_sdk_status_t jpp_sdk_http_request(
         jpp_sdk_http_request_operation, &op, result
     );
     return broker_status == JPP_BROKER_STATUS_OK ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
+}
+
+/* ---- network.bind — TCP server sockets ---- */
+
+/* Shared gate for every net call: bound context, declared+consented
+   capability, and a wired native callback set. */
+static jpp_sdk_status_t jpp_sdk_net_ensure(jpp_sdk_context_t *context,
+                                           jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (result == NULL) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    if (context->services.locks == NULL || context->services.net_bind == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    {
+        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "network.bind");
+        if (cap_st != JPP_SDK_STATUS_OK) {
+            jpp_broker_error_result(result, "ACCESS_DENIED");
+            return cap_st;
+        }
+    }
+    return JPP_SDK_STATUS_OK;
+}
+
+typedef struct {
+    jpp_sdk_context_t *sdk;
+    uint16_t  port;
+    uint32_t  timeout_ms;
+    int       sock;
+    int      *out_sock;
+    uint8_t  *buf;
+    const uint8_t *data;
+    size_t    len;
+    size_t   *out_len;
+} jpp_sdk_net_op_t;
+
+static jpp_broker_status_t jpp_sdk_net_bind_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
+    return op->sdk->services.net_bind(op->sdk->services.net_context, op->port, result);
+}
+
+static jpp_broker_status_t jpp_sdk_net_accept_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
+    return op->sdk->services.net_accept(op->sdk->services.net_context,
+                                        op->timeout_ms, op->out_sock, result);
+}
+
+static jpp_broker_status_t jpp_sdk_net_recv_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
+    return op->sdk->services.net_recv(op->sdk->services.net_context, op->sock,
+                                      op->buf, op->len, op->out_len,
+                                      op->timeout_ms, result);
+}
+
+static jpp_broker_status_t jpp_sdk_net_send_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
+    return op->sdk->services.net_send(op->sdk->services.net_context, op->sock,
+                                      op->data, op->len, result);
+}
+
+static jpp_broker_status_t jpp_sdk_net_close_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
+    return op->sdk->services.net_close(op->sdk->services.net_context, op->sock, result);
+}
+
+static jpp_sdk_status_t jpp_sdk_net_run(jpp_sdk_context_t *context,
+                                        jpp_broker_exclusive_operation_t operation,
+                                        jpp_sdk_net_op_t *op,
+                                        jpp_broker_result_t *result)
+{
+    jpp_broker_status_t broker_status = jpp_broker_run_exclusive(
+        context->services.locks, "network", operation, op, result);
+    return broker_status == JPP_BROKER_STATUS_OK
+        ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
+}
+
+jpp_sdk_status_t jpp_sdk_net_bind(
+    jpp_sdk_context_t *context,
+    uint16_t port,
+    jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if (port == 0u) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
+
+    jpp_sdk_net_op_t op = { .sdk = context, .port = port };
+    return jpp_sdk_net_run(context, jpp_sdk_net_bind_operation, &op, result);
+}
+
+jpp_sdk_status_t jpp_sdk_net_accept(
+    jpp_sdk_context_t *context,
+    uint32_t timeout_ms,
+    int *out_sock,
+    jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if (out_sock == NULL) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
+    *out_sock = -1;
+
+    jpp_sdk_net_op_t op = { .sdk = context, .timeout_ms = timeout_ms,
+                            .out_sock = out_sock };
+    return jpp_sdk_net_run(context, jpp_sdk_net_accept_operation, &op, result);
+}
+
+jpp_sdk_status_t jpp_sdk_net_recv(
+    jpp_sdk_context_t *context,
+    int sock,
+    uint8_t *buf,
+    size_t buf_len,
+    size_t *out_len,
+    uint32_t timeout_ms,
+    jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if (buf == NULL || buf_len == 0u || out_len == NULL) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    *out_len = 0u;
+
+    jpp_sdk_net_op_t op = { .sdk = context, .sock = sock, .buf = buf,
+                            .len = buf_len, .out_len = out_len,
+                            .timeout_ms = timeout_ms };
+    return jpp_sdk_net_run(context, jpp_sdk_net_recv_operation, &op, result);
+}
+
+jpp_sdk_status_t jpp_sdk_net_send(
+    jpp_sdk_context_t *context,
+    int sock,
+    const uint8_t *data,
+    size_t len,
+    jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if (data == NULL || len == 0u) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
+
+    jpp_sdk_net_op_t op = { .sdk = context, .sock = sock, .data = data,
+                            .len = len };
+    return jpp_sdk_net_run(context, jpp_sdk_net_send_operation, &op, result);
+}
+
+jpp_sdk_status_t jpp_sdk_net_close(
+    jpp_sdk_context_t *context,
+    int sock,
+    jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+
+    jpp_sdk_net_op_t op = { .sdk = context, .sock = sock };
+    return jpp_sdk_net_run(context, jpp_sdk_net_close_operation, &op, result);
+}
+
+void jpp_sdk_net_close_all(jpp_sdk_context_t *context)
+{
+    if (context == NULL || context->services.net_close_all == NULL) {
+        return;
+    }
+    context->services.net_close_all(context->services.net_context);
 }
 
 /* ---- canvas ---- */
@@ -1950,13 +1964,6 @@ jpp_sdk_status_t jpp_sdk_ipc_send(
     if (context->services.locks == NULL || context->services.write_file == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
-        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "ipc.send");
-        if (cap_st != JPP_SDK_STATUS_OK) {
-            jpp_broker_error_result(result, "ACCESS_DENIED");
-            return cap_st;
-        }
-    }
     /* Build /sd/ipc/<recipient>/<sender>/msg_<tick>.json */
     app_id_len = strlen(context->app_id);
     recipient_len = strlen(recipient_app_id);
@@ -2010,13 +2017,6 @@ jpp_sdk_status_t jpp_sdk_ipc_recv(
         context->services.delete_file == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
-        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "ipc.send");
-        if (cap_st != JPP_SDK_STATUS_OK) {
-            jpp_broker_error_result(result, "ACCESS_DENIED");
-            return cap_st;
-        }
-    }
     /* List /sd/ipc/<own_id>/ to find sender directories */
     snprintf(dir_path, sizeof(dir_path), "/sd/ipc/%s", context->app_id);
     list_op.lister = context->services.list_files;
@@ -2027,14 +2027,15 @@ jpp_sdk_status_t jpp_sdk_ipc_recv(
         jpp_sdk_ipc_list_op, &list_op, &list_result
     );
     if (broker_status != JPP_BROKER_STATUS_OK || !list_result.ok) {
+        /* Mailbox directory absent: no message has ever been delivered. */
         jpp_broker_error_result(result, "NO_MESSAGES");
-        return JPP_SDK_STATUS_ACCESS_DENIED;
+        return JPP_SDK_STATUS_NO_DATA;
     }
     /* list_result should have field "entry_0" or similar — take first entry */
     first_entry = jpp_broker_result_get(&list_result, "entry_0");
     if (first_entry == NULL || first_entry[0] == '\0') {
         jpp_broker_error_result(result, "NO_MESSAGES");
-        return JPP_SDK_STATUS_ACCESS_DENIED;
+        return JPP_SDK_STATUS_NO_DATA;
     }
     /* first_entry is the sender app_id; find its first message */
     sender = first_entry;
@@ -2046,12 +2047,12 @@ jpp_sdk_status_t jpp_sdk_ipc_recv(
     );
     if (broker_status != JPP_BROKER_STATUS_OK || !list_result.ok) {
         jpp_broker_error_result(result, "NO_MESSAGES");
-        return JPP_SDK_STATUS_ACCESS_DENIED;
+        return JPP_SDK_STATUS_NO_DATA;
     }
     first_entry = jpp_broker_result_get(&list_result, "entry_0");
     if (first_entry == NULL || first_entry[0] == '\0') {
         jpp_broker_error_result(result, "NO_MESSAGES");
-        return JPP_SDK_STATUS_ACCESS_DENIED;
+        return JPP_SDK_STATUS_NO_DATA;
     }
     snprintf(msg_path, sizeof(msg_path), "/sd/ipc/%s/%s/%s",
              context->app_id, sender, first_entry);
@@ -2130,11 +2131,6 @@ static jpp_broker_status_t jpp_sdk_kv_delete_operation(void *context, jpp_broker
     return op->fn(op->ctx, op->app_id, op->key, result);
 }
 
-static jpp_sdk_status_t jpp_sdk_kv_require(jpp_sdk_context_t *context)
-{
-    return jpp_sdk_ensure_cap(context, "device.kv");
-}
-
 jpp_sdk_status_t jpp_sdk_kv_get(
     jpp_sdk_context_t *context,
     const char *key,
@@ -2159,10 +2155,6 @@ jpp_sdk_status_t jpp_sdk_kv_get(
     if (context->services.locks == NULL || context->services.kv_read == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    status = jpp_sdk_kv_require(context);
-    if (status != JPP_SDK_STATUS_OK) {
-        return status;
-    }
     op.fn = context->services.kv_read;
     op.ctx = context->services.kv_context;
     op.app_id = context->app_id;
@@ -2170,7 +2162,7 @@ jpp_sdk_status_t jpp_sdk_kv_get(
     op.out_value = out_value;
     op.buf_len = value_buf_len;
     jpp_broker_status_t bs = jpp_broker_run_exclusive(
-        context->services.locks, "kv",
+        context->services.locks, "storage",
         jpp_sdk_kv_read_operation, &op, &result
     );
     if (bs != JPP_BROKER_STATUS_OK) {
@@ -2179,8 +2171,7 @@ jpp_sdk_status_t jpp_sdk_kv_get(
     /* The KV callback reports a missing key with result.ok == false (e.g.
        "KEY_NOT_FOUND"). Surface that as a non-OK status so callers can tell a
        present empty value apart from an absent key — the read buffer is only
-       valid when the key exists. Without this, a get after a delete returned OK
-       with a stale/empty buffer and the key looked like it was still there. */
+       valid when the key exists. */
     if (!result.ok) {
         out_value[0] = '\0';
         return JPP_SDK_STATUS_BROKER_ERROR;
@@ -2211,17 +2202,13 @@ jpp_sdk_status_t jpp_sdk_kv_set(
     if (context->services.locks == NULL || context->services.kv_write == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    status = jpp_sdk_kv_require(context);
-    if (status != JPP_SDK_STATUS_OK) {
-        return status;
-    }
     op.fn = context->services.kv_write;
     op.ctx = context->services.kv_context;
     op.app_id = context->app_id;
     op.key = key;
     op.value = value;
     jpp_broker_status_t bs = jpp_broker_run_exclusive(
-        context->services.locks, "kv",
+        context->services.locks, "storage",
         jpp_sdk_kv_write_operation, &op, &result
     );
     return bs == JPP_BROKER_STATUS_OK ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
@@ -2246,16 +2233,12 @@ jpp_sdk_status_t jpp_sdk_kv_delete(
     if (context->services.locks == NULL || context->services.kv_delete == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    status = jpp_sdk_kv_require(context);
-    if (status != JPP_SDK_STATUS_OK) {
-        return status;
-    }
     op.fn = context->services.kv_delete;
     op.ctx = context->services.kv_context;
     op.app_id = context->app_id;
     op.key = key;
     jpp_broker_status_t bs = jpp_broker_run_exclusive(
-        context->services.locks, "kv",
+        context->services.locks, "storage",
         jpp_sdk_kv_delete_operation, &op, &result
     );
     return bs == JPP_BROKER_STATUS_OK ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
@@ -2300,10 +2283,9 @@ jpp_sdk_status_t jpp_sdk_wait_key(jpp_sdk_context_t *context, uint32_t timeout_m
         return JPP_SDK_STATUS_INVALID_STATE;
     }
     jpp_sdk_key_event_t ev = JPP_SDK_KEY_NONE;
-    /* timeout_ms == 0 means "wait indefinitely" (use jpp_sdk_poll_key for a
-       non-blocking check). Mapping 0 to 0 ticks made this a non-blocking poll,
-       which caused apps with an idle screen to fall straight through to their
-       "no key" branch and exit the instant they launched. */
+    /* timeout_ms == 0 means "wait indefinitely" — never a zero-tick poll, or
+       apps with an idle screen would fall straight through to their "no key"
+       branch and exit on launch. jpp_sdk_poll_key is the non-blocking form. */
     TickType_t ticks = (timeout_ms == 0u) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
     xQueueReceive(context->key_queue, &ev, ticks);
     *out_event = ev;
@@ -2342,14 +2324,9 @@ static jpp_sdk_key_event_t jpp_sdk_ui_next_key(jpp_sdk_context_t *context)
     return key;
 }
 
-/*
- * Word-wrap `text` into up to `max_lines` rows of at most JPP_SDK_DISPLAY_COLS
- * characters. Returns the number of rows used. Words longer than a row are
- * hard-split; text past max_lines is dropped.
- */
-static size_t jpp_sdk_ui_wrap(const char *text,
-                              char lines[][JPP_SDK_FRAME_TEXT_MAX],
-                              size_t max_lines)
+size_t jpp_sdk_wrap_text(const char *text,
+                         char lines[][JPP_SDK_FRAME_TEXT_MAX],
+                         size_t max_lines)
 {
     if (text == NULL || max_lines == 0u) {
         return 0u;
@@ -2412,7 +2389,7 @@ jpp_sdk_status_t jpp_sdk_dialog(
         body[1][0] = '\0';
         n = 2u;
     }
-    n += jpp_sdk_ui_wrap(text, &body[n], JPP_SDK_FRAME_LINE_CAPACITY - n);
+    n += jpp_sdk_wrap_text(text, &body[n], JPP_SDK_FRAME_LINE_CAPACITY - n);
     for (size_t i = 0u; i < n; i++) {
         lines[i] = body[i];
     }
@@ -2469,7 +2446,7 @@ jpp_sdk_status_t jpp_sdk_confirm(
             n++;
         }
         jpp_sdk_copy_text(frame[n], JPP_SDK_FRAME_TEXT_MAX,
-                          allow ? " Deny       >Allow" : ">Deny        Allow");
+                          jpp_ui_consent_selector_row(allow));
         n++;
         for (size_t i = 0u; i < n; i++) {
             lines[i] = frame[i];
@@ -2520,11 +2497,7 @@ jpp_sdk_status_t jpp_sdk_list(
     size_t top        = 0u;
 
     for (;;) {
-        if (cursor < top) {
-            top = cursor;
-        } else if (cursor >= top + visible) {
-            top = cursor - visible + 1u;
-        }
+        top = jpp_ui_scroll_clamp(cursor, total_rows, visible, top);
 
         char body[JPP_SDK_FRAME_LINE_CAPACITY][JPP_SDK_FRAME_TEXT_MAX];
         const char *lines[JPP_SDK_FRAME_LINE_CAPACITY];
@@ -2905,107 +2878,61 @@ jpp_sdk_status_t jpp_sdk_input(
 
 
 /* ---- jpp_sdk_file_pick ---------------------------------------------------
- * Navigable SD card file browser using the text frame and dir_list callback.
- * Requires: files.full
- * Marquee cadence: 400 ms per tick via jpp_sdk_wait_key timeout.            */
+ * Navigable SD card file browser. The state machine lives in
+ * jpp_file_browser_core; this shim feeds it the dir_list service callback,
+ * renders rows through the text frame, and maps SDK key events.
+ * Requires: files.full                                                      */
 
-#define SDK_FP_ENTRY_MAX   32u
-#define SDK_FP_NAME_MAX    65u   /* display name incl. "/" suffix and NUL */
-#define SDK_FP_VISIBLE      6u   /* JPP_RESOURCE_SDK_FRAME_LINE_LIMIT - 1 header */
-#define SDK_FP_ITEM_CHARS  20u   /* chars available after ">" / " " prefix */
-#define SDK_FP_MARQUEE_MS  400u
-#define SDK_FP_PAUSE_TICKS   3u
-
-typedef struct {
-    char   root[JPP_SDK_PATH_MAX];
-    char   dir[JPP_SDK_PATH_MAX];
-    char   names[SDK_FP_ENTRY_MAX][SDK_FP_NAME_MAX];
-    bool   is_dir[SDK_FP_ENTRY_MAX];
-    size_t count;
-    bool   has_parent;
-    size_t cursor;
-    size_t scroll;
-    uint32_t marquee;
-} sdk_fp_state_t;
-
-static size_t sdk_fp_total(const sdk_fp_state_t *s)
+static size_t sdk_fp_list_dir(void *ctx, const char *abs_dir,
+                              char names[][JPP_FB_NAME_MAX],
+                              bool *is_dir, size_t max)
 {
-    return s->count + (s->has_parent ? 1u : 0u);
-}
-
-static const char *sdk_fp_item_name(const sdk_fp_state_t *s, size_t i)
-{
-    if (s->has_parent) { if (i == 0u) return ".."; return s->names[i - 1u]; }
-    return s->names[i];
-}
-
-static bool sdk_fp_item_is_dir(const sdk_fp_state_t *s, size_t i)
-{
-    if (s->has_parent && i == 0u) return true;
-    size_t ei = s->has_parent ? i - 1u : i;
-    return s->is_dir[ei];
-}
-
-static size_t sdk_fp_marquee_off(uint32_t tick, size_t namelen)
-{
-    if (namelen <= SDK_FP_ITEM_CHARS) return 0u;
-    size_t max_off = namelen - SDK_FP_ITEM_CHARS;
-    size_t cycle   = 2u * SDK_FP_PAUSE_TICKS + max_off;
-    size_t phase   = (size_t)(tick % (uint32_t)cycle);
-    if (phase < SDK_FP_PAUSE_TICKS)                    return 0u;
-    if (phase < SDK_FP_PAUSE_TICKS + max_off)          return phase - SDK_FP_PAUSE_TICKS;
-    return max_off;
-}
-
-static void sdk_fp_load(sdk_fp_state_t *s, jpp_sdk_context_t *ctx)
-{
-    s->count = 0u;
-    if (ctx->services.dir_list == NULL) return;
+    jpp_sdk_context_t *context = (jpp_sdk_context_t *)ctx;
+    size_t count = 0u;
 
     static char s_dir_buf[2048];
-    ctx->services.dir_list(ctx->services.dir_list_context,
-                            s->dir, s_dir_buf, sizeof(s_dir_buf));
+    context->services.dir_list(context->services.dir_list_context,
+                               abs_dir, s_dir_buf, sizeof(s_dir_buf));
 
     char *p = s_dir_buf;
-    while (*p != '\0' && s->count < SDK_FP_ENTRY_MAX) {
+    while (*p != '\0' && count < max) {
         char *nl  = strchr(p, '\n');
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
         if (len == 0u) { if (nl) { p = nl + 1u; } else { break; } continue; }
         bool is_d = (p[len - 1u] == '/');
-        if (len >= SDK_FP_NAME_MAX) { len = SDK_FP_NAME_MAX - 1u; }
-        memcpy(s->names[s->count], p, len);
-        s->names[s->count][len] = '\0';
-        s->is_dir[s->count]     = is_d;
-        s->count++;
+        if (len >= JPP_FB_NAME_MAX) { len = JPP_FB_NAME_MAX - 1u; }
+        memcpy(names[count], p, len);
+        names[count][len] = '\0';
+        is_dir[count]     = is_d;
+        count++;
         if (nl) { p = nl + 1u; } else { break; }
     }
-
-    /* Bubble sort by name. */
-    for (size_t i = 0u; i < s->count; i++) {
-        for (size_t j = 0u; j + 1u < s->count - i; j++) {
-            if (strcmp(s->names[j], s->names[j + 1u]) > 0) {
-                char tmp[SDK_FP_NAME_MAX];
-                memcpy(tmp, s->names[j], SDK_FP_NAME_MAX);
-                memcpy(s->names[j], s->names[j + 1u], SDK_FP_NAME_MAX);
-                memcpy(s->names[j + 1u], tmp, SDK_FP_NAME_MAX);
-                bool bt         = s->is_dir[j];
-                s->is_dir[j]           = s->is_dir[j + 1u];
-                s->is_dir[j + 1u]      = bt;
-            }
-        }
-    }
-
-    s->has_parent = (strcmp(s->dir, s->root) != 0);
+    return count;
 }
 
-static void sdk_fp_go_up(sdk_fp_state_t *s, jpp_sdk_context_t *ctx)
+static void sdk_fp_render(void *ctx, const char *const *rows, size_t row_count)
 {
-    char *slash = strrchr(s->dir, '/');
-    if (slash != NULL && slash != s->dir) { *slash = '\0'; }
-    sdk_fp_load(s, ctx);
-    s->cursor  = 0u;
-    s->scroll  = 0u;
-    s->marquee = 0u;
+    jpp_sdk_context_t *context = (jpp_sdk_context_t *)ctx;
+    const char *lines[JPP_FB_VISIBLE + 1u];
+    lines[0] = "Select a file:";
+    for (size_t i = 0u; i < row_count && i < JPP_FB_VISIBLE; i++) {
+        lines[i + 1u] = rows[i];
+    }
+    jpp_sdk_set_frame(context, lines, row_count + 1u);
+}
+
+static jpp_fb_key_t sdk_fp_wait_key(void *ctx, uint32_t timeout_ms)
+{
+    jpp_sdk_context_t *context = (jpp_sdk_context_t *)ctx;
+    jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
+    jpp_sdk_wait_key(context, timeout_ms, &key);
+    switch (key) {
+    case JPP_SDK_KEY_UP:          return JPP_FB_KEY_UP;
+    case JPP_SDK_KEY_DOWN:        return JPP_FB_KEY_DOWN;
+    case JPP_SDK_KEY_CENTER:      return JPP_FB_KEY_OK;
+    case JPP_SDK_KEY_CENTER_LONG: return JPP_FB_KEY_BACK;
+    default:                      return JPP_FB_KEY_NONE;
+    }
 }
 
 jpp_sdk_status_t jpp_sdk_file_pick(
@@ -3029,106 +2956,19 @@ jpp_sdk_status_t jpp_sdk_file_pick(
         if (cap_st != JPP_SDK_STATUS_OK) { return cap_st; }
     }
 
-    static sdk_fp_state_t fp;
-    memset(&fp, 0, sizeof(fp));
-    jpp_sdk_copy_text(fp.root, JPP_SDK_PATH_MAX, "/sd");
-    jpp_sdk_copy_text(fp.dir,  JPP_SDK_PATH_MAX, "/sd");
-    sdk_fp_load(&fp, context);
-
-    for (;;) {
-        size_t total = sdk_fp_total(&fp);
-
-        /* Keep cursor in view. */
-        if (fp.cursor < fp.scroll) {
-            fp.scroll = fp.cursor;
-        } else if (total > SDK_FP_VISIBLE && fp.cursor >= fp.scroll + SDK_FP_VISIBLE) {
-            fp.scroll = fp.cursor - SDK_FP_VISIBLE + 1u;
-        }
-        if (total >= SDK_FP_VISIBLE && fp.scroll + SDK_FP_VISIBLE > total) {
-            fp.scroll = total - SDK_FP_VISIBLE;
-        }
-
-        /* Build text frame: row 0 = header, rows 1-6 = list items. */
-        char body[JPP_SDK_FRAME_LINE_CAPACITY][JPP_SDK_FRAME_TEXT_MAX];
-        const char *lines[JPP_SDK_FRAME_LINE_CAPACITY];
-        jpp_sdk_copy_text(body[0], JPP_SDK_FRAME_TEXT_MAX, "Select a file:");
-        lines[0] = body[0];
-        size_t n = 1u;
-
-        for (size_t v = 0u; v < SDK_FP_VISIBLE && n < JPP_SDK_FRAME_LINE_CAPACITY; v++) {
-            size_t idx = fp.scroll + v;
-            if (idx >= total) break;
-            bool        sel  = (idx == fp.cursor);
-            const char *name = sdk_fp_item_name(&fp, idx);
-            size_t      nlen = strlen(name);
-            size_t      off  = sdk_fp_marquee_off(fp.marquee, nlen);
-            snprintf(body[n], JPP_SDK_FRAME_TEXT_MAX, "%c%.20s",
-                     sel ? '>' : ' ', name + off);
-            lines[n] = body[n];
-            n++;
-        }
-        jpp_sdk_set_frame(context, lines, n);
-
-        /* Wait for key with marquee timeout. */
-        jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
-        jpp_sdk_wait_key(context, SDK_FP_MARQUEE_MS, &key);
-
-        if (key == JPP_SDK_KEY_NONE) {
-            fp.marquee++;
-            continue;
-        }
-
-        fp.marquee = 0u;
-
-        switch (key) {
-        case JPP_SDK_KEY_UP:
-            if (fp.cursor > 0u) { fp.cursor--; }
-            break;
-        case JPP_SDK_KEY_DOWN:
-            if (fp.cursor + 1u < total) { fp.cursor++; }
-            break;
-        case JPP_SDK_KEY_CENTER:
-            if (total == 0u) break;
-            if (sdk_fp_item_is_dir(&fp, fp.cursor)) {
-                if (fp.has_parent && fp.cursor == 0u) {
-                    sdk_fp_go_up(&fp, context);
-                } else {
-                    size_t ei = fp.has_parent ? fp.cursor - 1u : fp.cursor;
-                    char subname[SDK_FP_NAME_MAX];
-                    strncpy(subname, fp.names[ei], SDK_FP_NAME_MAX - 1u);
-                    subname[SDK_FP_NAME_MAX - 1u] = '\0';
-                    size_t slen = strlen(subname);
-                    if (slen > 0u && subname[slen - 1u] == '/') {
-                        subname[slen - 1u] = '\0';
-                    }
-                    char newdir[JPP_SDK_PATH_MAX * 2];
-                    snprintf(newdir, sizeof(newdir), "%s/%s", fp.dir, subname);
-                    jpp_sdk_copy_text(fp.dir, JPP_SDK_PATH_MAX, newdir);
-                    sdk_fp_load(&fp, context);
-                    fp.cursor  = 0u;
-                    fp.scroll  = 0u;
-                    fp.marquee = 0u;
-                }
-            } else {
-                size_t ei = fp.has_parent ? fp.cursor - 1u : fp.cursor;
-                snprintf(out_path, out_path_len, "%s/%s", fp.dir, fp.names[ei]);
-                *out_result = JPP_SDK_UI_OK;
-                return JPP_SDK_STATUS_OK;
-            }
-            break;
-        case JPP_SDK_KEY_CENTER_LONG:
-            if (fp.has_parent) {
-                sdk_fp_go_up(&fp, context);
-            } else {
-                out_path[0] = '\0';
-                *out_result = JPP_SDK_UI_BACK;
-                return JPP_SDK_STATUS_OK;
-            }
-            break;
-        default:
-            break;
-        }
+    const jpp_file_browser_io_t io = {
+        .list_dir = sdk_fp_list_dir,
+        .render   = sdk_fp_render,
+        .wait_key = sdk_fp_wait_key,
+        .ctx      = context,
+    };
+    if (jpp_file_browser_run(&io, "/sd", out_path, out_path_len)) {
+        *out_result = JPP_SDK_UI_OK;
+    } else {
+        out_path[0] = '\0';
+        *out_result = JPP_SDK_UI_BACK;
     }
+    return JPP_SDK_STATUS_OK;
 }
 
 /* ---- Wakelock ------------------------------------------------------------ */
@@ -3212,6 +3052,8 @@ const char *jpp_sdk_status_name(jpp_sdk_status_t status)
         return "BLE_CONN_LIMIT";
     case JPP_SDK_STATUS_INVALID_BLE_CONN:
         return "INVALID_BLE_CONN";
+    case JPP_SDK_STATUS_NO_DATA:
+        return "NO_DATA";
     }
     return "UNKNOWN";
 }

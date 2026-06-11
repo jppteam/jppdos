@@ -60,12 +60,6 @@ jpp_broker_status_t jpp_broker_result_put(
 const char *jpp_broker_result_get(const jpp_broker_result_t *result, const char *key);
 
 bool jpp_broker_caller_has_capability(const jpp_broker_caller_t *caller, const char *capability);
-jpp_broker_status_t jpp_broker_require(
-    const jpp_broker_caller_t *caller,
-    const char *required,
-    const char *operation,
-    jpp_broker_result_t *result
-);
 
 jpp_broker_status_t jpp_broker_lock_set_init(jpp_broker_lock_set_t *lock_set);
 jpp_broker_status_t jpp_broker_run_exclusive(

@@ -3,6 +3,18 @@
 
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+/*
+ * The request queue has multiple producers (keypad task, main loop) and one
+ * consumer (the app task).  All queue index/count mutations happen inside this
+ * spinlock so a preemption mid-enqueue cannot corrupt the ring.  The protected
+ * sections are a bounds check plus one struct copy (~100 B) — short enough for
+ * a critical section.
+ */
+static portMUX_TYPE s_vm_queue_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static bool jpp_vm_task_name_matches(const char *left, const char *right)
 {
     return jpp_str_eq(left, right) && jpp_str_nonempty(left);
@@ -10,66 +22,12 @@ static bool jpp_vm_task_name_matches(const char *left, const char *right)
 
 static bool jpp_vm_module_is_blocked(const char *module_name);
 
-static bool jpp_vm_name_is_valid(const char *name)
-{
-    size_t index;
-    bool previous_was_dot = false;
-
-    if (!jpp_str_nonempty(name)) {
-        return false;
-    }
-    if (name[0] == '.') {
-        return false;
-    }
-    for (index = 0u; name[index] != '\0'; ++index) {
-        char current = name[index];
-        bool is_lower = current >= 'a' && current <= 'z';
-        bool is_upper = current >= 'A' && current <= 'Z';
-        bool is_digit = current >= '0' && current <= '9';
-        if (current == '.') {
-            if (previous_was_dot || name[index + 1u] == '\0') {
-                return false;
-            }
-            previous_was_dot = true;
-            continue;
-        }
-        if (is_lower || is_upper || is_digit || current == '_') {
-            previous_was_dot = false;
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
 static bool jpp_vm_app_id_is_valid(const char *app_id)
 {
-    if (!jpp_vm_name_is_valid(app_id)) {
+    if (!jpp_str_name_valid(app_id)) {
         return false;
     }
     return strcmp(app_id, "settings") != 0;
-}
-
-static bool jpp_vm_has_parent_traversal(const char *path)
-{
-    size_t index;
-
-    if (!jpp_str_nonempty(path)) {
-        return true;
-    }
-    for (index = 0u; path[index] != '\0'; ++index) {
-        if (path[index] != '.') {
-            continue;
-        }
-        if (path[index + 1u] != '.') {
-            continue;
-        }
-        if ((index == 0u || path[index - 1u] == '/')
-            && (path[index + 2u] == '\0' || path[index + 2u] == '/')) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static bool jpp_vm_path_is_under_root(const char *path, const char *root)
@@ -79,7 +37,7 @@ static bool jpp_vm_path_is_under_root(const char *path, const char *root)
     if (!jpp_str_nonempty(path) || !jpp_str_nonempty(root) || path[0] != '/') {
         return false;
     }
-    if (jpp_vm_has_parent_traversal(path)) {
+    if (jpp_str_has_parent_segment(path)) {
         return false;
     }
     root_length = strlen(root);
@@ -108,7 +66,7 @@ static bool jpp_vm_app_root_is_valid(const char *path)
     if (path[prefix_length] == '\0') {
         return false;
     }
-    return !jpp_vm_has_parent_traversal(path);
+    return !jpp_str_has_parent_segment(path);
 }
 
 static bool jpp_vm_import_surface_is_valid(const jpp_vm_import_surface_t *surface)
@@ -131,7 +89,7 @@ static bool jpp_vm_import_surface_is_valid(const jpp_vm_import_surface_t *surfac
         return false;
     }
     for (index = 0u; index < surface->allowed_module_count; ++index) {
-        if (!jpp_vm_name_is_valid(surface->allowed_modules[index])) {
+        if (!jpp_str_name_valid(surface->allowed_modules[index])) {
             return false;
         }
         if (jpp_vm_module_is_blocked(surface->allowed_modules[index])) {
@@ -206,7 +164,7 @@ static bool jpp_vm_module_is_allowed(const jpp_vm_import_surface_t *surface, con
 {
     size_t index;
 
-    if (surface == NULL || !jpp_vm_name_is_valid(module_name) || jpp_vm_module_is_blocked(module_name)) {
+    if (surface == NULL || !jpp_str_name_valid(module_name) || jpp_vm_module_is_blocked(module_name)) {
         return false;
     }
     for (index = 0u; index < surface->allowed_module_count; ++index) {
@@ -224,9 +182,7 @@ static bool jpp_vm_request_targets_sd_app(const jpp_vm_request_t *request)
     }
     switch (request->kind) {
     case JPP_VM_REQUEST_STARTUP:
-    case JPP_VM_REQUEST_FOREGROUND:
     case JPP_VM_REQUEST_IDLE:
-    case JPP_VM_REQUEST_BACKGROUND:
     case JPP_VM_REQUEST_IMPORT_MODULE:
     case JPP_VM_REQUEST_ACTION:
         return jpp_vm_app_id_is_valid(request->app_id);
@@ -342,7 +298,9 @@ jpp_vm_status_t jpp_vm_schedule_request(
     if (!jpp_vm_request_is_valid(request)) {
         return JPP_VM_STATUS_APP_NOT_ALLOWED;
     }
+    taskENTER_CRITICAL(&s_vm_queue_mux);
     if (context->queue_count >= context->queue_capacity) {
+        taskEXIT_CRITICAL(&s_vm_queue_mux);
         return JPP_VM_STATUS_QUEUE_FULL;
     }
     insert_index = (context->queue_head + context->queue_count) % context->queue_capacity;
@@ -350,6 +308,7 @@ jpp_vm_status_t jpp_vm_schedule_request(
     strncpy(context->queue[insert_index].origin_task_name, task_name, JPP_VM_TASK_NAME_MAX - 1u);
     context->queue[insert_index].origin_task_name[JPP_VM_TASK_NAME_MAX - 1u] = '\0';
     context->queue_count += 1u;
+    taskEXIT_CRITICAL(&s_vm_queue_mux);
     return JPP_VM_STATUS_OK;
 }
 
@@ -368,12 +327,15 @@ jpp_vm_status_t jpp_vm_owner_dequeue_request(
     if (!jpp_vm_task_can_touch_python_objects(context, task_name)) {
         return JPP_VM_STATUS_ACCESS_DENIED;
     }
+    taskENTER_CRITICAL(&s_vm_queue_mux);
     if (context->queue_count == 0u) {
+        taskEXIT_CRITICAL(&s_vm_queue_mux);
         return JPP_VM_STATUS_INVALID_STATE;
     }
     *request = context->queue[context->queue_head];
     context->queue_head = (context->queue_head + 1u) % context->queue_capacity;
     context->queue_count -= 1u;
+    taskEXIT_CRITICAL(&s_vm_queue_mux);
     return JPP_VM_STATUS_OK;
 }
 
@@ -392,7 +354,7 @@ jpp_vm_status_t jpp_vm_check_import(
     if (context->state != JPP_VM_STATE_RUNNING) {
         return JPP_VM_STATUS_INVALID_STATE;
     }
-    if (!jpp_vm_name_is_valid(module_name)) {
+    if (!jpp_str_name_valid(module_name)) {
         return JPP_VM_STATUS_INVALID_ARGUMENT;
     }
     if (jpp_vm_module_is_blocked(module_name)) {
@@ -502,12 +464,8 @@ const char *jpp_vm_request_kind_name(jpp_vm_request_kind_t kind)
         return "NONE";
     case JPP_VM_REQUEST_STARTUP:
         return "STARTUP";
-    case JPP_VM_REQUEST_FOREGROUND:
-        return "FOREGROUND";
     case JPP_VM_REQUEST_IDLE:
         return "IDLE";
-    case JPP_VM_REQUEST_BACKGROUND:
-        return "BACKGROUND";
     case JPP_VM_REQUEST_IMPORT_MODULE:
         return "IMPORT_MODULE";
     case JPP_VM_REQUEST_ACTION:

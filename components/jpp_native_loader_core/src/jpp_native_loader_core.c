@@ -25,10 +25,8 @@ static const char *TAG = "native_loader";
  * and MicroPython apps are mutually exclusive, so one pool serves both and the
  * second pool's worth of SRAM stays in the general heap for WiFi/lwIP.
  */
-void jpp_native_loader_preinit(size_t pool_bytes)
+void jpp_native_loader_preinit(void)
 {
-    /* Nothing to do — the shared pool is always ready. */
-    (void)pool_bytes;
     ESP_LOGI(TAG, "EXEC pool: shared app pool, %u bytes",
              (unsigned)jpp_app_pool_size());
 }
@@ -52,6 +50,7 @@ struct jpp_native_loaded_app {
     uintptr_t load_base;        /* = (uintptr_t)mem                            */
     uintptr_t vaddr_base;       /* min PT_LOAD p_vaddr (load bias denominator) */
     void   (*entry)(void *);    /* jpp_app_entry, resolved during load         */
+    void   (*task_entry)(void *, const char *);  /* jpp_app_task_entry, optional */
 };
 
 /* ---- Symbol lookup -------------------------------------------------------- */
@@ -394,8 +393,10 @@ dyn_done:;
 
 #undef SYM_AT
 
-    /* --- 9. Find jpp_app_entry in .dynsym --------------------------------- */
+    /* --- 9. Find jpp_app_entry (required) and jpp_app_task_entry (optional,
+       the headless background-task entry) in .dynsym ------------------------ */
     void (*entry_fn)(void *) = NULL;
+    void (*task_entry_fn)(void *, const char *) = NULL;
     if (sym_count > 0u) {
         for (size_t i = 1u; i < sym_count; i++) {
             const Elf32_Sym *s = (const Elf32_Sym *)
@@ -409,6 +410,11 @@ dyn_done:;
             const char *sname = strtab + s->st_name;
             if (strcmp(sname, "jpp_app_entry") == 0) {
                 entry_fn = (void (*)(void *))(delta + s->st_value);
+            } else if (strcmp(sname, "jpp_app_task_entry") == 0) {
+                task_entry_fn =
+                    (void (*)(void *, const char *))(delta + s->st_value);
+            }
+            if (entry_fn != NULL && task_entry_fn != NULL) {
                 break;
             }
         }
@@ -440,6 +446,7 @@ dyn_done:;
     app->load_base     = load_base;
     app->vaddr_base = (uintptr_t)vaddr_min;
     app->entry      = entry_fn;
+    app->task_entry = task_entry_fn;
 
     ESP_LOGI(TAG, "LOADED %s base=0x%08x size=%zu entry=0x%08x",
              path, (unsigned)load_base, total_size,
@@ -457,6 +464,18 @@ void jpp_native_loader_run(jpp_native_loaded_app_t *app,
         return;
     }
     app->entry(ctx);
+}
+
+bool jpp_native_loader_run_task(jpp_native_loaded_app_t *app,
+                                jpp_sdk_context_t       *ctx,
+                                const char              *task_name)
+{
+    if (app == NULL || app->task_entry == NULL || ctx == NULL ||
+        task_name == NULL) {
+        return false;
+    }
+    app->task_entry(ctx, task_name);
+    return true;
 }
 
 void jpp_native_loader_free(jpp_native_loaded_app_t *app)

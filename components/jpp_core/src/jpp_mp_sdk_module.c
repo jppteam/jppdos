@@ -12,7 +12,6 @@
 
 #include "../include/jpp_mp_sdk_module.h"
 #include "../include/jpp_sdk_bridge.h"
-#include "../include/jpp_vm_core.h"
 #include "../include/jpp_buzzer_core.h"
 
 /* STATIC was removed from MicroPython v1.20+; define it here for jpp_core usage. */
@@ -23,9 +22,6 @@
 #include "py/runtime.h"
 #include "py/builtin.h"
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
 #include <string.h>
 
 /* -------------------------------------------------------------------------- */
@@ -33,16 +29,10 @@
 /* -------------------------------------------------------------------------- */
 
 static jpp_sdk_context_t *s_sdk_ctx;
-static jpp_vm_context_t  *s_vm_ctx;
 
 void jpp_mp_sdk_module_set_context(jpp_sdk_context_t *ctx)
 {
     s_sdk_ctx = ctx;
-}
-
-void jpp_mp_sdk_module_set_vm_context(jpp_vm_context_t *vm)
-{
-    s_vm_ctx = vm;
 }
 
 static jpp_sdk_context_t *get_ctx(void)
@@ -152,7 +142,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_log_obj, mp_sdk_log);
 /* Device                                                                      */
 /* -------------------------------------------------------------------------- */
 
-/* device_status() → dict  (requires: device.status) */
+/* device_status() → dict  (ungated) */
 STATIC mp_obj_t mp_sdk_device_status(void)
 {
     jpp_broker_result_t result;
@@ -164,7 +154,7 @@ STATIC mp_obj_t mp_sdk_device_status(void)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_device_status_obj, mp_sdk_device_status);
 
-/* get_time() → str "YYYY-MM-DD HH:mm"  (requires: device.rtc) */
+/* get_time() → str "YYYY-MM-DD HH:mm"  (ungated) */
 STATIC mp_obj_t mp_sdk_get_time(void)
 {
     jpp_broker_result_t result;
@@ -179,7 +169,7 @@ STATIC mp_obj_t mp_sdk_get_time(void)
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_get_time_obj, mp_sdk_get_time);
 
 /* -------------------------------------------------------------------------- */
-/* Scoped file I/O  (requires: files.scoped)                                  */
+/* Scoped file I/O  (ungated — sandboxed to /sd/apps/<app_id>/)              */
 /* -------------------------------------------------------------------------- */
 
 /* file_read(path) → dict */
@@ -223,7 +213,7 @@ STATIC mp_obj_t mp_sdk_file_list(mp_obj_t dir_obj)
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_file_list_obj, mp_sdk_file_list);
 
 /* -------------------------------------------------------------------------- */
-/* Shared file I/O  (requires: files.shared)                                  */
+/* Shared file I/O  (ungated — sandboxed to /sd/shared/<app_id>/)            */
 /* -------------------------------------------------------------------------- */
 
 /* shared_read(path) → dict */
@@ -531,26 +521,21 @@ STATIC mp_obj_t mp_sdk_ble_service_unregister(void)
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_ble_service_unregister_obj, mp_sdk_ble_service_unregister);
 
 /* -------------------------------------------------------------------------- */
-/* Background tasks  (requires: background.register, system-granted)          */
+/* Background tasks  (requires: background.register)                          */
 /* -------------------------------------------------------------------------- */
 
-/* add_background_task(name) → None */
-STATIC mp_obj_t mp_sdk_add_background_task(mp_obj_t name_obj)
+/* background_register() → None — consent trigger; the schedule itself comes
+   from the manifest's background.tasks and is synced at app exit. */
+STATIC mp_obj_t mp_sdk_background_register(void)
 {
     jpp_broker_result_t result;
-    const char *name = mp_obj_str_get_str(name_obj);
-    if (s_vm_ctx == NULL) {
-        mp_raise_msg(&mp_type_RuntimeError,
-                     MP_ERROR_TEXT("jppsdk: no active VM context"));
-    }
-    jpp_sdk_status_t st = jpp_sdk_add_background_task(
-        get_ctx(), s_vm_ctx, pcTaskGetName(NULL), name, &result);
+    jpp_sdk_status_t st = jpp_sdk_background_register(get_ctx(), &result);
     if (st != JPP_SDK_STATUS_OK || !result.ok) {
         raise_sdk_error(st, &result);
     }
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_add_background_task_obj, mp_sdk_add_background_task);
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_background_register_obj, mp_sdk_background_register);
 
 /* -------------------------------------------------------------------------- */
 /* HTTP  (requires: http.request)                                             */
@@ -571,6 +556,95 @@ STATIC mp_obj_t mp_sdk_http_request(size_t n_args, const mp_obj_t *args)
     return broker_result_to_dict(&result);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_sdk_http_request_obj, 2, 3, mp_sdk_http_request);
+
+/* -------------------------------------------------------------------------- */
+/* Network  (requires: network.bind)                                          */
+/* -------------------------------------------------------------------------- */
+
+/* net_bind(port) → None */
+STATIC mp_obj_t mp_sdk_net_bind(mp_obj_t port_obj)
+{
+    jpp_broker_result_t result;
+    mp_int_t port = mp_obj_get_int(port_obj);
+    if (port <= 0 || port > 65535) {
+        mp_raise_ValueError(MP_ERROR_TEXT("port must be 1-65535"));
+    }
+    jpp_sdk_status_t st = jpp_sdk_net_bind(get_ctx(), (uint16_t)port, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_net_bind_obj, mp_sdk_net_bind);
+
+/* net_accept(timeout_ms) → int socket id, or None on timeout */
+STATIC mp_obj_t mp_sdk_net_accept(mp_obj_t timeout_obj)
+{
+    jpp_broker_result_t result;
+    int sock = -1;
+    uint32_t timeout_ms = (uint32_t)mp_obj_get_int(timeout_obj);
+    jpp_sdk_status_t st = jpp_sdk_net_accept(get_ctx(), timeout_ms, &sock, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    if (sock < 0) {
+        return mp_const_none;
+    }
+    return mp_obj_new_int(sock);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_net_accept_obj, mp_sdk_net_accept);
+
+/* net_recv(sock, max_len, timeout_ms) → bytes (b"" on timeout or peer close) */
+STATIC mp_obj_t mp_sdk_net_recv(mp_obj_t sock_obj, mp_obj_t max_obj, mp_obj_t timeout_obj)
+{
+    jpp_broker_result_t result;
+    int sock        = (int)mp_obj_get_int(sock_obj);
+    mp_int_t maxlen = mp_obj_get_int(max_obj);
+    uint32_t timeout_ms = (uint32_t)mp_obj_get_int(timeout_obj);
+    static uint8_t s_net_rx[1024];
+    if (maxlen <= 0 || (size_t)maxlen > sizeof(s_net_rx)) {
+        maxlen = (mp_int_t)sizeof(s_net_rx);
+    }
+    size_t out_len = 0u;
+    jpp_sdk_status_t st = jpp_sdk_net_recv(get_ctx(), sock, s_net_rx,
+                                           (size_t)maxlen, &out_len,
+                                           timeout_ms, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_obj_new_bytes(s_net_rx, out_len);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_net_recv_obj, mp_sdk_net_recv);
+
+/* net_send(sock, data) → None */
+STATIC mp_obj_t mp_sdk_net_send(mp_obj_t sock_obj, mp_obj_t data_obj)
+{
+    jpp_broker_result_t result;
+    int sock = (int)mp_obj_get_int(sock_obj);
+    mp_buffer_info_t buf;
+    mp_get_buffer_raise(data_obj, &buf, MP_BUFFER_READ);
+    jpp_sdk_status_t st = jpp_sdk_net_send(get_ctx(), sock,
+                                           (const uint8_t *)buf.buf, buf.len,
+                                           &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(mp_sdk_net_send_obj, mp_sdk_net_send);
+
+/* net_close(sock) → None  (sock = -1 closes the listener) */
+STATIC mp_obj_t mp_sdk_net_close(mp_obj_t sock_obj)
+{
+    jpp_broker_result_t result;
+    int sock = (int)mp_obj_get_int(sock_obj);
+    jpp_sdk_status_t st = jpp_sdk_net_close(get_ctx(), sock, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_net_close_obj, mp_sdk_net_close);
 
 /* -------------------------------------------------------------------------- */
 /* Canvas  (no capability required)                                           */
@@ -619,7 +693,7 @@ STATIC mp_obj_t mp_sdk_canvas_draw_pixel(mp_obj_t x_obj, mp_obj_t y_obj, mp_obj_
 STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_canvas_draw_pixel_obj, mp_sdk_canvas_draw_pixel);
 
 /* -------------------------------------------------------------------------- */
-/* IPC  (requires: ipc.send)                                                  */
+/* IPC  (ungated — mailbox files live in the recipient's scoped storage)     */
 /* -------------------------------------------------------------------------- */
 
 /* ipc_send(recipient_id, payload) → None */
@@ -643,9 +717,8 @@ STATIC mp_obj_t mp_sdk_ipc_recv(void)
     char payload[JPP_SDK_IPC_PAYLOAD_MAX];
     payload[0] = '\0';
     jpp_sdk_status_t st = jpp_sdk_ipc_recv(get_ctx(), payload, sizeof(payload), &result);
-    if (st == JPP_SDK_STATUS_ACCESS_DENIED && !result.ok) {
-        /* NO_MESSAGES — return None */
-        return mp_const_none;
+    if (st == JPP_SDK_STATUS_NO_DATA) {
+        return mp_const_none;   /* empty mailbox */
     }
     if (st != JPP_SDK_STATUS_OK || !result.ok) {
         raise_sdk_error(st, &result);
@@ -661,7 +734,7 @@ STATIC mp_obj_t mp_sdk_ipc_recv(void)
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_ipc_recv_obj, mp_sdk_ipc_recv);
 
 /* -------------------------------------------------------------------------- */
-/* KV store  (requires: device.kv)                                            */
+/* KV helper  (ungated — JSON file in the app's scoped storage)              */
 /* -------------------------------------------------------------------------- */
 
 /* kv_get(key) → str or None */
@@ -985,10 +1058,15 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_SOUND_CLICK),   MP_ROM_INT(JPP_BUZZER_SOUND_CLICK)   },
 
     /* Background tasks */
-    { MP_ROM_QSTR(MP_QSTR_add_background_task), MP_ROM_PTR(&mp_sdk_add_background_task_obj) },
+    { MP_ROM_QSTR(MP_QSTR_background_register), MP_ROM_PTR(&mp_sdk_background_register_obj) },
 
     /* HTTP */
     { MP_ROM_QSTR(MP_QSTR_http_request),        MP_ROM_PTR(&mp_sdk_http_request_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_bind),            MP_ROM_PTR(&mp_sdk_net_bind_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_accept),          MP_ROM_PTR(&mp_sdk_net_accept_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_recv),            MP_ROM_PTR(&mp_sdk_net_recv_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_send),            MP_ROM_PTR(&mp_sdk_net_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_close),           MP_ROM_PTR(&mp_sdk_net_close_obj) },
 
     /* Canvas */
     { MP_ROM_QSTR(MP_QSTR_canvas_write),        MP_ROM_PTR(&mp_sdk_canvas_write_obj) },

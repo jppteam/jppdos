@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "app_type": "micropython",
+  "name": "Wrong Suffix",
+  "version": "1.0.0",
+  "entry": "main.py",
+  "toolchain": { "runtime_version": "v1.28.0", "cross_version": "1.28.0", "bytecode_abi": 6 }
+}

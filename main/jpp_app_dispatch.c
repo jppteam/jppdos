@@ -1,4 +1,5 @@
 #include "jpp_app_dispatch.h"
+#include "jpp_file_util.h"
 #include "jpp_native_services.h"
 #include "jpp_settings_load.h"
 
@@ -23,14 +24,14 @@
 #include "jpp_sdk_bridge.h"
 #include "jpp_ui_core.h"
 #include "jpp_native_loader_core.h"
+#include "jpp_bg_scheduler.h"
 
 static const char *TAG = "app_dispatch";
 
 #define SD_APPS_PATH       "/sd/apps"
 /* Must be >= the largest capability list any manifest can declare, and
-   <= JPP_SDK_PENDING_CAP_MAX. The full SDK surface is 11 capabilities; a smaller
-   value silently truncated the manifest list, dropping the trailing caps (e.g.
-   ble.connect / ble.host) so they could never be granted. */
+   <= JPP_SDK_PENDING_CAP_MAX. A smaller value silently truncates the manifest
+   list, dropping the trailing caps so they can never be granted. */
 #define SD_MANIFEST_CAP_MAX 16u
 
 /* ---- Shared runtime state (externs declared in jpp_app_dispatch.h) ------- */
@@ -51,15 +52,64 @@ static char s_sd_app_root[160];
 static StackType_t  s_sd_task_stack[SD_APP_TASK_STACK_BYTES / sizeof(StackType_t)];
 static StaticTask_t s_sd_task_tcb;
 
-/* entry_fn: non-NULL only for the legacy registry bridge path. */
-typedef void (*jpp_dispatch_entry_fn_t)(jpp_sdk_context_t *);
-
 typedef struct {
     jpp_manifest_app_type_t  app_type;
     char                     entry_path[256];
-    jpp_dispatch_entry_fn_t  entry_fn;
+    char                     bg_task[32];   /* "" = foreground session */
 } sd_task_args_t;
 static sd_task_args_t s_sd_task_args;
+
+/* Headless background-run state (one run at a time, same task slot). */
+static volatile bool s_bg_run_active = false;
+static volatile bool s_bg_run_done   = false;
+
+static bool grant_is_persisted(const char *app_id, const char *cap);
+
+/* ---- Crash reporting ------------------------------------------------------ */
+
+#define CRASH_LOG_PATH "/data/ui_crash.log"
+
+static volatile bool s_crash_pending = false;
+static char          s_crash_app[64];     /* snapshot: teardown clears s_sd_app_id */
+static char          s_crash_reason[32];
+
+/* Record an app failure: emit the APP_CRASH marker, append a line to the
+   crash log, and arm the flag the main loop consumes via jpp_app_crash_take()
+   to show the crash dialog after teardown.  Runs on the app task. */
+static void record_app_crash(const char *reason)
+{
+    ESP_LOGE(TAG, "APP_CRASH app=%s reason=%s", s_sd_app_id, reason);
+
+    FILE *f = fopen(CRASH_LOG_PATH, "a");
+    if (f != NULL) {
+        fprintf(f, "app=%s reason=%s\n", s_sd_app_id, reason);
+        fclose(f);
+    }
+
+    strncpy(s_crash_app, s_sd_app_id, sizeof(s_crash_app) - 1u);
+    s_crash_app[sizeof(s_crash_app) - 1u] = '\0';
+    strncpy(s_crash_reason, reason, sizeof(s_crash_reason) - 1u);
+    s_crash_reason[sizeof(s_crash_reason) - 1u] = '\0';
+    s_crash_pending = true;
+}
+
+bool jpp_app_crash_take(char *app_id, size_t app_id_len,
+                        char *reason, size_t reason_len)
+{
+    if (!s_crash_pending) {
+        return false;
+    }
+    if (app_id != NULL && app_id_len > 0u) {
+        strncpy(app_id, s_crash_app, app_id_len - 1u);
+        app_id[app_id_len - 1u] = '\0';
+    }
+    if (reason != NULL && reason_len > 0u) {
+        strncpy(reason, s_crash_reason, reason_len - 1u);
+        reason[reason_len - 1u] = '\0';
+    }
+    s_crash_pending = false;
+    return true;
+}
 
 /* ---- App discovery ------------------------------------------------------- */
 
@@ -71,19 +121,16 @@ void discover_apps(bool normal_mode,
 
     summary->builtin_count = 2u;
     jpp_ui_shell_add_app(shell, "settings", "Settings",
-                         JPP_UI_APP_SOURCE_BUILTIN, true);
+                         JPP_UI_APP_SOURCE_BUILTIN);
     jpp_ui_shell_add_app(shell, "webdav", "WebDAV server",
-                         JPP_UI_APP_SOURCE_BUILTIN, true);
-
-    /* Native apps come from the SD card and are discovered by the SD scan below;
-       the registry bridge has been retired now that the dynamic loader exists. */
+                         JPP_UI_APP_SOURCE_BUILTIN);
 
 #ifdef JPP_WOKWI_EMBED_APP
     {
         summary->sd_count++;
         jpp_ui_shell_add_app(shell, JPP_WOKWI_EMBED_APP_ID,
                              JPP_WOKWI_EMBED_APP_ID,
-                             JPP_UI_APP_SOURCE_SD, true);
+                             JPP_UI_APP_SOURCE_SD);
         ESP_LOGI(TAG, "EMBED app registered: %s", JPP_WOKWI_EMBED_APP_ID);
     }
 #endif
@@ -107,10 +154,15 @@ void discover_apps(bool normal_mode,
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
             continue;
         }
+        if (jpp_manifest_v2_is_reserved_app_id(ent->d_name)) {
+            ESP_LOGW(TAG, "APP_REJECTED %s: RESERVED_APP_ID", ent->d_name);
+            summary->rejected_count++;
+            continue;
+        }
         char manifest_path[300];
         snprintf(manifest_path, sizeof(manifest_path),
                  "%s/%s/manifest.json", SD_APPS_PATH, ent->d_name);
-        ESP_LOGW(TAG, "Loading app manifest from %s", manifest_path);
+        ESP_LOGI(TAG, "Loading app manifest from %s", manifest_path);
         if (!file_exists(manifest_path)) {
             ESP_LOGW(TAG, "APP_REJECTED %s: manifest.json missing", ent->d_name);
             summary->rejected_count++;
@@ -120,7 +172,7 @@ void discover_apps(bool normal_mode,
         ESP_LOGI(TAG, "SD app discovered: %s", ent->d_name);
         summary->sd_count++;
         jpp_ui_shell_add_app(shell, ent->d_name, ent->d_name,
-                             JPP_UI_APP_SOURCE_SD, true);
+                             JPP_UI_APP_SOURCE_SD);
     }
     closedir(dir);
 
@@ -160,6 +212,7 @@ static void bg_discover_task(void *arg)
                 if (ent->d_type != DT_DIR) { continue; }
                 if (strcmp(ent->d_name, ".") == 0 ||
                     strcmp(ent->d_name, "..") == 0) { continue; }
+                if (jpp_manifest_v2_is_reserved_app_id(ent->d_name)) { continue; }
                 char mpath[300];
                 snprintf(mpath, sizeof(mpath), "%s/%s/manifest.json",
                          SD_APPS_PATH, ent->d_name);
@@ -203,7 +256,7 @@ void discover_apps_apply_to_shell(jpp_ui_shell_t *shell)
     for (size_t i = 0u; i < s_bg_disc_count; i++) {
         jpp_ui_shell_add_app(shell, s_bg_disc_apps[i].id,
                              s_bg_disc_apps[i].name,
-                             JPP_UI_APP_SOURCE_SD, true);
+                             JPP_UI_APP_SOURCE_SD);
     }
 }
 
@@ -216,11 +269,18 @@ typedef struct {
     char entry[160];
     char runtime_version[32];
     char cross_version[32];
-    char background_mode[16];
     char cap_strs[SD_MANIFEST_CAP_MAX][32];
     const char *cap_ptrs[SD_MANIFEST_CAP_MAX];
     size_t cap_count;
+    char bg_task_names[JPP_MANIFEST_V2_BG_TASK_MAX][32];
+    char bg_task_crons[JPP_MANIFEST_V2_BG_TASK_MAX][24];
+    jpp_manifest_bg_task_t bg_tasks[JPP_MANIFEST_V2_BG_TASK_MAX];
 } sd_manifest_strings_t;
+
+/* Manifest of the most recently launched app — file-scope statics so the app
+   task can read the background.tasks list when the session ends. */
+static sd_manifest_strings_t s_sd_manifest_strs;
+static jpp_manifest_v2_t     s_sd_manifest;
 
 static bool load_sd_manifest(const char *app_root,
                               const char *app_id,
@@ -230,21 +290,10 @@ static bool load_sd_manifest(const char *app_root,
     char path[300];
     snprintf(path, sizeof(path), "%s/%s/manifest.json", app_root, app_id);
 
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
-        return false;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    rewind(f);
-    char *buf = malloc((size_t)size + 1u);
+    char *buf = jpp_read_file(path, NULL);
     if (buf == NULL) {
-        fclose(f);
         return false;
     }
-    fread(buf, 1u, (size_t)size, f);
-    buf[size] = '\0';
-    fclose(f);
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
@@ -307,17 +356,36 @@ static bool load_sd_manifest(const char *app_root,
 
     cJSON *bg = cJSON_GetObjectItem(root, "background");
     out->background.enabled = 0;
-    strncpy(strs->background_mode, "serialized", sizeof(strs->background_mode) - 1u);
+    out->background.tasks = strs->bg_tasks;
+    out->background.task_count = 0u;
     if (cJSON_IsObject(bg)) {
         j = cJSON_GetObjectItem(bg, "enabled");
         out->background.enabled = cJSON_IsTrue(j) ? 1 : 0;
-        j = cJSON_GetObjectItem(bg, "mode");
-        if (cJSON_IsString(j) && j->valuestring) {
-            strncpy(strs->background_mode, j->valuestring,
-                    sizeof(strs->background_mode) - 1u);
+        cJSON *tasks = cJSON_GetObjectItem(bg, "tasks");
+        cJSON *t;
+        cJSON_ArrayForEach(t, tasks) {
+            size_t n = out->background.task_count;
+            if (n >= JPP_MANIFEST_V2_BG_TASK_MAX) { break; }
+            cJSON *tname = cJSON_GetObjectItem(t, "name");
+            cJSON *tivl  = cJSON_GetObjectItem(t, "interval_s");
+            cJSON *tcron = cJSON_GetObjectItem(t, "cron");
+            if (!cJSON_IsString(tname) || tname->valuestring == NULL) { continue; }
+            strncpy(strs->bg_task_names[n], tname->valuestring,
+                    sizeof(strs->bg_task_names[n]) - 1u);
+            strs->bg_task_names[n][sizeof(strs->bg_task_names[n]) - 1u] = '\0';
+            strs->bg_task_crons[n][0] = '\0';
+            if (cJSON_IsString(tcron) && tcron->valuestring) {
+                strncpy(strs->bg_task_crons[n], tcron->valuestring,
+                        sizeof(strs->bg_task_crons[n]) - 1u);
+                strs->bg_task_crons[n][sizeof(strs->bg_task_crons[n]) - 1u] = '\0';
+            }
+            strs->bg_tasks[n].name       = strs->bg_task_names[n];
+            strs->bg_tasks[n].interval_s = cJSON_IsNumber(tivl)
+                                           ? (unsigned)tivl->valuedouble : 0u;
+            strs->bg_tasks[n].cron       = strs->bg_task_crons[n];
+            out->background.task_count = n + 1u;
         }
     }
-    out->background.mode = strs->background_mode;
 
     cJSON *tc = cJSON_GetObjectItem(root, "toolchain");
     if (cJSON_IsObject(tc)) {
@@ -349,46 +417,67 @@ static bool load_sd_manifest(const char *app_root,
 static void sd_app_task_fn(void *arg)
 {
     sd_task_args_t *a = (sd_task_args_t *)arg;
+    bool is_bg = (a->bg_task[0] != '\0');
 
     if (a->app_type == JPP_APP_TYPE_MICROPYTHON) {
-        jpp_mp_runner_result_t res =
-            jpp_mp_runner_run(&s_sd_ctx, &s_sd_vm, a->entry_path);
+        jpp_mp_runner_result_t res = is_bg
+            ? jpp_mp_runner_run_task(&s_sd_ctx, &s_sd_vm, a->entry_path,
+                                     a->bg_task)
+            : jpp_mp_runner_run(&s_sd_ctx, &s_sd_vm, a->entry_path);
         if (res != JPP_MP_RUNNER_OK) {
-            ESP_LOGE(TAG, "SD_APP_MP_RUNNER %s: %s",
-                     s_sd_app_id, jpp_mp_runner_result_name(res));
+            if (is_bg) {
+                ESP_LOGE(TAG, "BG_TASK_ERROR %s/%s: %s", s_sd_app_id,
+                         a->bg_task, jpp_mp_runner_result_name(res));
+            } else {
+                record_app_crash(jpp_mp_runner_result_name(res));
+            }
         }
-    } else if (a->entry_fn != NULL) {
-        /* Registry bridge: compiled-in entry (kept for special cases; ordinary
-           apps should go through the SD card loader path below). */
-        a->entry_fn(&s_sd_ctx);
     } else {
         /* Native binary from SD card: load the ELF, run it, then free. */
         jpp_native_loaded_app_t *loaded = NULL;
         jpp_native_loader_result_t lr =
             jpp_native_loader_load(a->entry_path, &loaded);
         if (lr == JPP_NATIVE_LOADER_OK) {
-            ESP_LOGI(TAG, "NATIVE_RUN %s", s_sd_app_id);
-            jpp_native_loader_run(loaded, &s_sd_ctx);
+            if (is_bg) {
+                ESP_LOGI(TAG, "BG_TASK_RUN %s/%s", s_sd_app_id, a->bg_task);
+                if (!jpp_native_loader_run_task(loaded, &s_sd_ctx, a->bg_task)) {
+                    ESP_LOGE(TAG, "BG_TASK_ERROR %s/%s: NO_TASK_ENTRY",
+                             s_sd_app_id, a->bg_task);
+                }
+            } else {
+                ESP_LOGI(TAG, "NATIVE_RUN %s", s_sd_app_id);
+                jpp_native_loader_run(loaded, &s_sd_ctx);
+            }
             jpp_native_loader_free(loaded);
         } else {
-            ESP_LOGE(TAG, "NATIVE_LOAD_FAILED %s: %s",
-                     s_sd_app_id, jpp_native_loader_result_name(lr));
-            /* Surface a brief error message via the SDK dialog so the user
-               sees why the app didn't start, then close. */
-            {
-                const char *reason = jpp_native_loader_result_name(lr);
-                char msg[64];
-                snprintf(msg, sizeof(msg), "Load failed: %s", reason);
-                jpp_sdk_ui_result_t r;
-                jpp_sdk_dialog(&s_sd_ctx, "App error", msg, &r);
+            if (is_bg) {
+                ESP_LOGE(TAG, "BG_TASK_ERROR %s/%s: %s", s_sd_app_id,
+                         a->bg_task, jpp_native_loader_result_name(lr));
+            } else {
+                record_app_crash(jpp_native_loader_result_name(lr));
             }
             s_sd_ctx.close_requested = true;
         }
     }
 
+    /* Sync this app's background schedule: entries exist while the
+       background.register grant is persisted and the manifest has
+       background.enabled; otherwise the app's entries are removed. */
+    if (!is_bg) {
+        bool scheduled = s_sd_manifest.background.enabled != 0 &&
+                         grant_is_persisted(s_sd_app_id, "background.register");
+        jpp_bg_scheduler_sync_app(
+            s_sd_app_id,
+            scheduled ? s_sd_manifest.background.tasks : NULL,
+            scheduled ? s_sd_manifest.background.task_count : 0u);
+    }
+
     /* Signal the main loop that this app has finished. */
     if (!s_sd_ctx.close_requested) {
         s_sd_ctx.close_requested = true;
+    }
+    if (is_bg) {
+        s_bg_run_done = true;
     }
 
     /* Suspend until the main loop deletes us (avoid double vTaskDelete). */
@@ -397,15 +486,16 @@ static void sd_app_task_fn(void *arg)
 
 /* ---- Capability consent -------------------------------------------------- */
 
+/*
+ * Tier 1 capabilities prompt once and persist the grant; every other declared
+ * capability is tier 2 (prompted on first use, each session).  Capabilities
+ * outside the manifest whitelist never reach here — preflight rejects them.
+ */
 static int cap_tier(const char *cap)
 {
-    if (strcmp(cap, "files.scoped") == 0 || strcmp(cap, "files.shared") == 0 ||
-        strcmp(cap, "device.status") == 0) {
-        return 0;
-    }
-    if (strcmp(cap, "ipc.send") == 0 || strcmp(cap, "http.request") == 0 ||
-        strcmp(cap, "device.kv") == 0 || strcmp(cap, "ble.scan") == 0 ||
-        strcmp(cap, "ble.advertise") == 0) {
+    if (strcmp(cap, "http.request") == 0 || strcmp(cap, "ble.scan") == 0 ||
+        strcmp(cap, "ble.advertise") == 0 ||
+        strcmp(cap, "background.register") == 0) {
         return 1;
     }
     return 2;
@@ -413,11 +503,11 @@ static int cap_tier(const char *cap)
 
 static const char *cap_description(const char *cap)
 {
-    if (strcmp(cap, "ipc.send") == 0)      return "exchange messages with other apps";
     if (strcmp(cap, "http.request") == 0)  return "make requests over the network";
-    if (strcmp(cap, "device.kv") == 0)     return "store its own saved data";
     if (strcmp(cap, "ble.scan") == 0)      return "scan for nearby Bluetooth devices";
     if (strcmp(cap, "ble.advertise") == 0) return "broadcast over Bluetooth";
+    if (strcmp(cap, "background.register") == 0)
+        return "run scheduled tasks in the background";
     if (strcmp(cap, "files.full") == 0)    return "open any file on the SD card";
     if (strcmp(cap, "network.bind") == 0)  return "open network servers and sockets";
     if (strcmp(cap, "ble.connect") == 0)   return "connect to Bluetooth devices";
@@ -426,7 +516,7 @@ static const char *cap_description(const char *cap)
 }
 
 static const char *const TIER1_CAPS[] = {
-    "ipc.send", "http.request", "device.kv", "ble.scan", "ble.advertise",
+    "http.request", "ble.scan", "ble.advertise", "background.register",
 };
 #define TIER1_CAP_COUNT (sizeof(TIER1_CAPS) / sizeof(TIER1_CAPS[0]))
 
@@ -484,25 +574,8 @@ static bool prompt_permission(jpp_sdk_context_t *sdk_ctx, const char *cap, int t
 {
     if (sdk_ctx == NULL) return false;
 
-    const char *full = cap_description(cap);
-    char desc1[22], desc2[22];
-    size_t flen = strlen(full);
-    if (flen <= 21u) {
-        strncpy(desc1, full, 22u);
-        desc1[21] = '\0';
-        desc2[0] = '\0';
-    } else {
-        size_t brk = 21u;
-        for (size_t k = 20u; k > 0u; k--) {
-            if (full[k] == ' ') { brk = k; break; }
-        }
-        strncpy(desc1, full, brk);
-        desc1[brk] = '\0';
-        const char *rest = full + brk;
-        while (*rest == ' ') rest++;
-        strncpy(desc2, rest, 22u);
-        desc2[21] = '\0';
-    }
+    char desc[2][JPP_SDK_FRAME_TEXT_MAX];
+    size_t desc_count = jpp_sdk_wrap_text(cap_description(cap), desc, 2u);
 
     const char *tier_note = (tier == 1) ? "(saved if allowed)" : "(asked each time)";
 
@@ -513,9 +586,8 @@ static bool prompt_permission(jpp_sdk_context_t *sdk_ctx, const char *cap, int t
     const char *body[4];
     size_t bn = 0u;
     body[bn++] = "This app wants to:";
-    body[bn++] = desc1;
-    if (desc2[0] != '\0') {
-        body[bn++] = desc2;
+    for (size_t i = 0u; i < desc_count; i++) {
+        body[bn++] = desc[i];
     }
     body[bn++] = tier_note;
 
@@ -525,9 +597,9 @@ static bool prompt_permission(jpp_sdk_context_t *sdk_ctx, const char *cap, int t
 }
 
 /*
- * Partition declared caps into immediately-granted (tier-0 + already-persisted
- * tier-1) and pending (tier-1 not yet persisted + all tier-2).  Pending caps
- * are deferred to first use via jpp_sdk_ensure_cap / consent_prompt_cb.
+ * Partition declared caps into immediately-granted (already-persisted tier-1)
+ * and pending (tier-1 not yet persisted + all tier-2).  Pending caps are
+ * deferred to first use via jpp_sdk_ensure_cap / consent_prompt_cb.
  */
 static void apply_consent(const char *app_id,
                           const char *const *declared, size_t declared_count,
@@ -540,10 +612,7 @@ static void apply_consent(const char *app_id,
     for (size_t i = 0u; i < declared_count; i++) {
         const char *cap = declared[i];
         int tier = cap_tier(cap);
-        if (tier == 0) {
-            out_caps[n++] = cap;
-            ESP_LOGI(TAG, "CONSENT %s %s tier=0 -> GRANT (auto)", app_id, cap);
-        } else if (tier == 1 && grant_is_persisted(app_id, cap)) {
+        if (tier == 1 && grant_is_persisted(app_id, cap)) {
             out_caps[n++] = cap;
             ESP_LOGI(TAG, "CONSENT %s %s tier=1 -> GRANT (persisted)", app_id, cap);
         } else if (p < JPP_SDK_PENDING_CAP_MAX) {
@@ -560,6 +629,12 @@ static void apply_consent(const char *app_id,
 bool jpp_app_consent_prompt(jpp_sdk_context_t *sdk_ctx, const char *cap, int tier)
 {
     if (sdk_ctx == NULL) return false;
+    if (s_bg_run_active) {
+        /* Headless runs have no consent surface: only capabilities already
+           persisted at launch are available; everything else is denied. */
+        ESP_LOGW(TAG, "CONSENT_HEADLESS_DENY %s %s", sdk_ctx->app_id, cap);
+        return false;
+    }
     bool granted = prompt_permission(sdk_ctx, cap, tier);
     if (granted && tier == 1) {
         grant_persist(sdk_ctx->app_id, cap);
@@ -573,12 +648,13 @@ bool jpp_app_consent_prompt(jpp_sdk_context_t *sdk_ctx, const char *cap, int tie
 
 static bool launch_app_from(const char *app_root,
                              const char *app_id,
-                             const jpp_boot_context_t *boot)
+                             const jpp_boot_context_t *boot,
+                             const char *bg_task)
 {
-    static sd_manifest_strings_t strs;
-    static jpp_manifest_v2_t manifest;
+    sd_manifest_strings_t *strs_p = &s_sd_manifest_strs;
+    jpp_manifest_v2_t *manifest_p = &s_sd_manifest;
 
-    if (!load_sd_manifest(app_root, app_id, &strs, &manifest)) {
+    if (!load_sd_manifest(app_root, app_id, strs_p, manifest_p)) {
         ESP_LOGE(TAG, "SD_APP_LAUNCH %s: manifest load failed (root=%s)", app_id, app_root);
         return false;
     }
@@ -588,20 +664,20 @@ static bool launch_app_from(const char *app_root,
 
     static char abs_entry[256];
     snprintf(abs_entry, sizeof(abs_entry),
-             "%s/%s/%s", app_root, app_id, manifest.entry);
-    entry_rec.path    = manifest.entry;
+             "%s/%s/%s", app_root, app_id, manifest_p->entry);
+    entry_rec.path    = manifest_p->entry;
     entry_rec.present = file_exists(abs_entry);
     if (entry_rec.present) {
         struct stat st;
         stat(abs_entry, &st);
         entry_rec.size_bytes = (size_t)st.st_size;
     }
-    entry_rec.runtime_version = manifest.toolchain.runtime_version;
-    entry_rec.cross_version   = manifest.toolchain.cross_version;
-    entry_rec.bytecode_abi    = manifest.toolchain.bytecode_abi;
+    entry_rec.runtime_version = manifest_p->toolchain.runtime_version;
+    entry_rec.cross_version   = manifest_p->toolchain.cross_version;
+    entry_rec.bytecode_abi    = manifest_p->toolchain.bytecode_abi;
 
     jpp_app_loader_check_t check =
-        jpp_app_loader_preflight(&manifest, &entry_rec);
+        jpp_app_loader_preflight(manifest_p, &entry_rec);
     if (check.result != JPP_APP_LOADER_OK) {
         ESP_LOGE(TAG, "SD_APP_LAUNCH %s: preflight %s (manifest: %s)",
                  app_id,
@@ -615,7 +691,7 @@ static bool launch_app_from(const char *app_root,
     static const char *pending_caps[JPP_SDK_PENDING_CAP_MAX];
     static int         pending_tiers[JPP_SDK_PENDING_CAP_MAX];
     size_t pending_count = 0u;
-    apply_consent(app_id, (const char *const *)strs.cap_ptrs, strs.cap_count,
+    apply_consent(app_id, (const char *const *)strs_p->cap_ptrs, strs_p->cap_count,
                   granted_caps, &granted_count,
                   pending_caps, pending_tiers, &pending_count);
 
@@ -625,7 +701,7 @@ static bool launch_app_from(const char *app_root,
 
     strncpy(s_sd_app_id, app_id, sizeof(s_sd_app_id) - 1u);
 
-    if (manifest.app_type == JPP_APP_TYPE_MICROPYTHON) {
+    if (manifest_p->app_type == JPP_APP_TYPE_MICROPYTHON) {
         snprintf(s_sd_app_root, sizeof(s_sd_app_root),
                  "%s/%s", app_root, app_id);
 
@@ -671,12 +747,19 @@ static bool launch_app_from(const char *app_root,
         jpp_sdk_set_pending_caps(&s_sd_ctx, pending_caps, pending_tiers, pending_count);
     }
 
-    s_sd_task_args.app_type  = manifest.app_type;
-    s_sd_task_args.entry_fn  = NULL;
-    s_sd_is_mp = (manifest.app_type == JPP_APP_TYPE_MICROPYTHON);
+    s_sd_task_args.app_type  = manifest_p->app_type;
+    s_sd_is_mp = (manifest_p->app_type == JPP_APP_TYPE_MICROPYTHON);
     snprintf(s_sd_task_args.entry_path,
              sizeof(s_sd_task_args.entry_path),
-             "%s/%s/%s", app_root, app_id, manifest.entry);
+             "%s/%s/%s", app_root, app_id, manifest_p->entry);
+    s_sd_task_args.bg_task[0] = '\0';
+    if (bg_task != NULL) {
+        strncpy(s_sd_task_args.bg_task, bg_task,
+                sizeof(s_sd_task_args.bg_task) - 1u);
+        s_sd_task_args.bg_task[sizeof(s_sd_task_args.bg_task) - 1u] = '\0';
+        s_bg_run_active = true;
+        s_bg_run_done   = false;
+    }
 
     s_active_sdk_context = &s_sd_ctx;
     s_sd_task = xTaskCreateStatic(sd_app_task_fn, "sd_app",
@@ -687,20 +770,20 @@ static bool launch_app_from(const char *app_root,
         ESP_LOGE(TAG, "SD_APP_LAUNCH %s: xTaskCreateStatic failed", app_id);
         return false;
     }
-    ESP_LOGI(TAG, "SD_APP_LAUNCHED %s root=%s (%s)", app_id, app_root,
-             manifest.app_type == JPP_APP_TYPE_MICROPYTHON
-                 ? "micropython" : "native");
+    if (bg_task != NULL) {
+        ESP_LOGI(TAG, "BG_TASK_LAUNCHED %s/%s", app_id, bg_task);
+    } else {
+        ESP_LOGI(TAG, "SD_APP_LAUNCHED %s root=%s (%s)", app_id, app_root,
+                 manifest_p->app_type == JPP_APP_TYPE_MICROPYTHON
+                     ? "micropython" : "native");
+    }
     return true;
 }
 
 bool launch_sd_app(const char *app_id, const jpp_boot_context_t *boot)
 {
-    return launch_app_from(SD_APPS_PATH, app_id, boot);
+    return launch_app_from(SD_APPS_PATH, app_id, boot, NULL);
 }
-
-/* Registry-based launch/lookup functions removed: the dynamic loader handles
-   all native apps from the SD card. launch_sd_app() now covers both
-   MicroPython and native binary apps uniformly. */
 
 void teardown_sd_app(jpp_ui_shell_t *shell)
 {
@@ -708,10 +791,50 @@ void teardown_sd_app(jpp_ui_shell_t *shell)
         vTaskDelete(s_sd_task);
         s_sd_task = NULL;
     }
+    jpp_sdk_net_close_all(&s_sd_ctx);
     s_active_sdk_context = NULL;
     s_sd_app_id[0] = '\0';
     jpp_ui_stack_pop(&shell->stack);
     ESP_LOGI(TAG, "SD_APP_CLOSED");
+}
+
+/* ---- Headless background-task runs ---------------------------------------- */
+
+bool jpp_app_bg_launch(const char *app_id, const char *task_name,
+                       const jpp_boot_context_t *boot)
+{
+    if (s_sd_task != NULL || s_bg_run_active) {
+        return false;
+    }
+    if (!launch_app_from(SD_APPS_PATH, app_id, boot, task_name)) {
+        s_bg_run_active = false;
+        return false;
+    }
+    return true;
+}
+
+bool jpp_app_bg_running(void)
+{
+    return s_bg_run_active;
+}
+
+bool jpp_app_bg_finished(void)
+{
+    return s_bg_run_done;
+}
+
+void jpp_app_bg_teardown(void)
+{
+    if (s_sd_task != NULL) {
+        vTaskDelete(s_sd_task);
+        s_sd_task = NULL;
+    }
+    jpp_sdk_net_close_all(&s_sd_ctx);
+    s_active_sdk_context = NULL;
+    s_sd_app_id[0] = '\0';
+    s_bg_run_active = false;
+    s_bg_run_done   = false;
+    ESP_LOGI(TAG, "BG_TASK_CLOSED");
 }
 
 /* ---- Wokwi embedded app launcher ---------------------------------------- */
@@ -719,6 +842,6 @@ void teardown_sd_app(jpp_ui_shell_t *shell)
 #ifdef JPP_WOKWI_EMBED_APP
 bool launch_wokwi_embed_app(const char *app_id, const jpp_boot_context_t *boot)
 {
-    return launch_app_from("/data/apps", app_id, boot);
+    return launch_app_from("/data/apps", app_id, boot, NULL);
 }
 #endif

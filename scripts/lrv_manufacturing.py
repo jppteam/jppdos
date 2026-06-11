@@ -49,8 +49,9 @@ The plaintext is a packed binary structure:
     cert_len   2 B LE
     cert       cert_len B (including NUL terminator)
 
-Note: run_size, device_type, and mfr_pubkey are encoded in the certificate
-text and are NOT stored as separate binary fields in the blob.
+Note: run_size and device_type are encoded in the certificate text and are
+NOT stored as separate binary fields in the blob. The manufacturer public key
+is never stored on the device at all — verifiers hold it out-of-band.
 
 The plaintext is encrypted with libsodium crypto_secretbox_easy:
     key  = BLAKE2b-256(password)
@@ -209,7 +210,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
     print(f"\nLRV Certificate:\n{cert_text}")
     print(f"Certificate signature: {cert_sig.hex()}\n")
 
-    # Serialise plaintext (run_size, device_type, and mfr_pubkey are in the
+    # Serialise plaintext (run_size and device_type are in the
     # certificate text; they are not stored as separate blob fields).
     plaintext = serialise_plaintext(
         serial           = args.serial,

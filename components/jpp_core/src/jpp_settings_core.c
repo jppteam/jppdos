@@ -41,11 +41,6 @@ jpp_settings_status_t jpp_settings_classify(
         result->source = JPP_SETTINGS_SOURCE_STORED;
         result->used_stored_marker = true;
         return JPP_SETTINGS_STATUS_OK;
-    case JPP_SETTINGS_PAYLOAD_MIGRATION_REQUIRED:
-        result->source = JPP_SETTINGS_SOURCE_STORED;
-        result->used_stored_marker = true;
-        result->migrated_marker = true;
-        return JPP_SETTINGS_STATUS_OK;
     case JPP_SETTINGS_PAYLOAD_CORRUPT:
         result->source = JPP_SETTINGS_SOURCE_DEFAULTS;
         result->used_defaults_marker = true;
@@ -77,8 +72,6 @@ const char *jpp_settings_payload_status_name(jpp_settings_payload_status_t statu
         return "missing";
     case JPP_SETTINGS_PAYLOAD_VALID:
         return "valid";
-    case JPP_SETTINGS_PAYLOAD_MIGRATION_REQUIRED:
-        return "migration_required";
     case JPP_SETTINGS_PAYLOAD_CORRUPT:
         return "corrupt";
     }

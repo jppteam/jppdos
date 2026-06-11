@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "app_id": "valid_native",
+  "app_type": "native",
+  "name": "Valid Native",
+  "version": "1.0.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "main.bin",
+  "background": { "enabled": false },
+  "capabilities": ["files.full"]
+}

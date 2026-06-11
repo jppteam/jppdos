@@ -1,9 +1,15 @@
 /*
  * testapp_native — exercises every App SDK capability from C.
  *
- * Top-level menu: UI | Device | Files | KV | IPC | HTTP | BLE | Buzzer | System | Exit
- * Each section has a sub-menu of individual test cases.  Every test reports
- * pass/fail via a dialog so the result is visible on hardware.
+ * Top-level menu: UI | Device | Files | KV | IPC | HTTP | Network | BLE |
+ * Buzzer | System | Exit.  Each section has a sub-menu of individual test
+ * cases.  Every test reports pass/fail via a dialog so the result is visible
+ * on hardware.
+ *
+ * Background: the manifest declares a "heartbeat" task (every 300 s).  The
+ * System menu's "Background register" item triggers the background.register
+ * consent prompt; once granted, the firmware calls jpp_app_task_entry()
+ * headlessly while the device idles on the launcher.
  *
  * BLE tests that require a peer device (ble.connect) will show "No peer"
  * if the scan preceding them finds nothing.  All other tests are self-contained.
@@ -458,7 +464,7 @@ static void test_ipc(jpp_sdk_context_t *ctx)
                  sender ? sender : "?", payload);
         show_result(ctx, "ipc_recv", JPP_SDK_STATUS_OK, buf);
     } else {
-        show_result(ctx, "ipc_recv", st, "no msg / denied");
+        show_result(ctx, "ipc_recv", st, "no messages");
     }
 }
 
@@ -505,6 +511,43 @@ static void menu_http(jpp_sdk_context_t *ctx)
         if (sel == 0) test_http_get(ctx);
         else          test_http_post(ctx);
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Network tests                                                                */
+/* -------------------------------------------------------------------------- */
+
+/* Bind port 8266, echo one message back, then close everything. */
+static void test_net_echo(jpp_sdk_context_t *ctx)
+{
+    jpp_broker_result_t r;
+    jpp_sdk_status_t st = jpp_sdk_net_bind(ctx, 8266u, &r);
+    if (st != JPP_SDK_STATUS_OK || !r.ok) {
+        show_result(ctx, "net_bind", st, r.ok ? "" : (r.code ? r.code : "err"));
+        return;
+    }
+    show(ctx, "net echo :8266", "Waiting 15s for a connection...");
+
+    int sock = -1;
+    st = jpp_sdk_net_accept(ctx, 15000u, &sock, &r);
+    if (st != JPP_SDK_STATUS_OK || !r.ok) {
+        show_result(ctx, "net_accept", st, r.ok ? "" : (r.code ? r.code : "err"));
+    } else if (sock < 0) {
+        show_result(ctx, "net_accept", JPP_SDK_STATUS_OK, "no connection (timeout)");
+    } else {
+        static uint8_t rx[256];
+        size_t n = 0u;
+        st = jpp_sdk_net_recv(ctx, sock, rx, sizeof(rx), &n, 5000u, &r);
+        if (st == JPP_SDK_STATUS_OK && r.ok && n > 0u) {
+            jpp_sdk_net_send(ctx, sock, (const uint8_t *)"echo: ", 6u, &r);
+            jpp_sdk_net_send(ctx, sock, rx, n, &r);
+        }
+        char buf[32];
+        snprintf(buf, sizeof(buf), "echoed %u byte(s)", (unsigned)n);
+        show_result(ctx, "net echo", st, buf);
+        jpp_sdk_net_close(ctx, sock, &r);
+    }
+    jpp_sdk_net_close(ctx, -1, &r);   /* close the listener */
 }
 
 /* -------------------------------------------------------------------------- */
@@ -724,14 +767,26 @@ static void test_log(jpp_sdk_context_t *ctx)
     show_result(ctx, "sdk_log", st, "testapp_native.test_log");
 }
 
+static void test_background_register(jpp_sdk_context_t *ctx)
+{
+    jpp_broker_result_t r;
+    jpp_sdk_status_t st = jpp_sdk_background_register(ctx, &r);
+    show_result(ctx, "background_register", st,
+                st == JPP_SDK_STATUS_OK ? "granted; schedule syncs at exit"
+                                        : r.code);
+}
+
 static void menu_system(jpp_sdk_context_t *ctx)
 {
-    static const char *items[] = { "Wakelock acq/rel", "Log event" };
+    static const char *items[] = {
+        "Wakelock acq/rel", "Log event", "Background register"
+    };
     for (;;) {
-        int sel = pick(ctx, "System Tests", items, 2);
+        int sel = pick(ctx, "System Tests", items, 3);
         if (sel < 0) return;
-        if (sel == 0) test_wakelock(ctx);
-        else          test_log(ctx);
+        if (sel == 0)      test_wakelock(ctx);
+        else if (sel == 1) test_log(ctx);
+        else               test_background_register(ctx);
     }
 }
 
@@ -748,6 +803,7 @@ void testapp_native_run(jpp_sdk_context_t *ctx)
         "KV Store",
         "IPC",
         "HTTP",
+        "Network",
         "BLE",
         "Buzzer",
         "System",
@@ -758,21 +814,41 @@ void testapp_native_run(jpp_sdk_context_t *ctx)
     show(ctx, "SDK Test (C)", "All SDK caps. Use menu to run tests.");
 
     for (;;) {
-        int sel = pick(ctx, "SDK Test (C)", items, 10);
-        if (sel < 0 || sel == 9) break;
+        int sel = pick(ctx, "SDK Test (C)", items, 11);
+        if (sel < 0 || sel == 10) break;
         switch (sel) {
-        case 0: menu_ui(ctx);     break;
-        case 1: menu_device(ctx); break;
-        case 2: menu_files(ctx);  break;
-        case 3: test_kv(ctx);     break;
-        case 4: test_ipc(ctx);    break;
-        case 5: menu_http(ctx);   break;
-        case 6: menu_ble(ctx);    break;
-        case 7: test_buzzer(ctx); break;
-        case 8: menu_system(ctx); break;
+        case 0: menu_ui(ctx);       break;
+        case 1: menu_device(ctx);   break;
+        case 2: menu_files(ctx);    break;
+        case 3: test_kv(ctx);       break;
+        case 4: test_ipc(ctx);      break;
+        case 5: menu_http(ctx);     break;
+        case 6: test_net_echo(ctx); break;
+        case 7: menu_ble(ctx);      break;
+        case 8: test_buzzer(ctx);   break;
+        case 9: menu_system(ctx);   break;
         }
     }
 
     jpp_sdk_wakelock_release(ctx);
     jpp_sdk_request_close(ctx);
+}
+
+/* Headless background entry — the loader resolves jpp_app_task_entry and the
+   firmware calls it (no UI available) when a scheduled task is due. */
+void testapp_native_run_task(jpp_sdk_context_t *ctx, const char *name)
+{
+    char path[64];
+    char text[48] = "(time unavailable)";
+    jpp_broker_result_t r;
+
+    if (jpp_sdk_get_time(ctx, &r) == JPP_SDK_STATUS_OK && r.ok) {
+        const char *t = jpp_broker_result_get(&r, "text");
+        if (t != NULL) {
+            snprintf(text, sizeof(text), "%s", t);
+        }
+    }
+    snprintf(path, sizeof(path), "bg_%s.txt", name);
+    jpp_sdk_file_write(ctx, path, text, &r);
+    jpp_sdk_log(ctx, "testapp_native.on_task");
 }

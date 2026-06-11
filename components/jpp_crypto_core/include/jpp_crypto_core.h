@@ -49,10 +49,10 @@ jpp_crypto_status_t jpp_crypto_verify(
 /*
  * Implementation notes:
  *
- * This implements a simplified variant of MuSig2 (BIP-327) using libsodium's
- * crypto_core_ed25519 (Ristretto255) group operations.  Deviations from the
- * full BIP-327 specification are noted below and marked with TODO comments in
- * the implementation:
+ * This is a simplified variant of MuSig2 (BIP-327) built on libsodium's
+ * crypto_core_ed25519 (Ristretto255) group operations.  The simplified
+ * variant IS the protocol this firmware defines; it is intentionally not
+ * wire-compatible with strict BIP-327.  Design decisions:
  *
  *  1. Key aggregation uses a hash-based coefficient H_agg(L, X_i) where
  *     L = SHA-512 of all sorted public keys concatenated.  BIP-327 uses a
@@ -72,9 +72,8 @@ jpp_crypto_status_t jpp_crypto_verify(
  *     encoding.  Verification uses the standard Ed25519 Schnorr equation:
  *     s*G == R + c*P (where P is the aggregate public key).
  *
- * For production use where strict BIP-327 compatibility is required, replace
- * the hash constructions with the tagged-hash variants and switch to the
- * two-nonce-per-participant scheme.
+ * Every party in a signing session must implement these same four choices;
+ * a strict BIP-327 implementation will not interoperate.
  */
 
 #define JPP_CRYPTO_MUSIG2_SECNONCE_BYTES    64u

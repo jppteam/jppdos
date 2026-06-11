@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "app_type": "micropython",
+  "name": "Runtime Mismatch",
+  "version": "1.0.0",
+  "entry": "main.mpy",
+  "toolchain": { "runtime_version": "v1.20.0", "cross_version": "1.20.0", "bytecode_abi": 6 }
+}

@@ -23,6 +23,7 @@ static const char *TAG = "jpp_lrv";
 #define LRV_KEY_SECKEY   "lrv_seckey"    /* blob 64 B                        */
 #define LRV_KEY_CERT     "lrv_cert"      /* blob ≤192 B                      */
 #define LRV_KEY_CERT_SIG "lrv_cert_sig"  /* blob 64 B                        */
+#define LRV_KEY_HWID     "lrv_hwid"      /* str ≤23 B (eFuse MAC text)       */
 #define LRV_KEY_PASSWORD "lrv_password"  /* str ≤64 B (cached after unlock)  */
 
 /* ---- Plaintext serialisation layout (little-endian) --------------------- */
@@ -198,6 +199,10 @@ jpp_lrv_result_t jpp_lrv_unlock(const char *password)
     size_t cert_len = strnlen(data.cert, JPP_LRV_CERT_MAX - 1u) + 1u;
     nvs_set_blob(h, LRV_KEY_CERT, data.cert, cert_len);
 
+    /* hwid must survive the unlock: jpp_lrv_get_encrypted_blob() re-serialises
+       the full record (including hwid) when a backup re-encrypts it. */
+    nvs_set_str(h, LRV_KEY_HWID, data.hwid);
+
     nvs_set_str(h, LRV_KEY_PASSWORD, password);
 
     nvs_erase_key(h, LRV_KEY_ENC);
@@ -257,8 +262,47 @@ jpp_lrv_result_t jpp_lrv_get_full_data(jpp_lrv_data_t *out)
     nvs_get_blob(h, LRV_KEY_CERT, out->cert, &sz);
     out->cert[JPP_LRV_CERT_MAX - 1u] = '\0';
 
+    sz = sizeof(out->hwid);
+    nvs_get_str(h, LRV_KEY_HWID, out->hwid, &sz);
+    out->hwid[JPP_LRV_HWID_MAX - 1u] = '\0';
+
     nvs_close(h);
     return JPP_LRV_OK;
+}
+
+void jpp_lrv_build_challenge(jpp_rtc_state_t *rtc,
+                              char *out, size_t out_len,
+                              char *out_username, size_t username_len,
+                              jpp_rtc_datetime_t *out_dt, bool *out_has_time)
+{
+    if (out == NULL || out_len == 0u) { return; }
+
+    char username[64] = {0};
+    nvs_handle_t h;
+    if (nvs_open("jpp_user", NVS_READONLY, &h) == ESP_OK) {
+        size_t ulen = sizeof(username);
+        nvs_get_str(h, "username", username, &ulen);
+        nvs_close(h);
+    }
+
+    jpp_rtc_datetime_t now = {0};
+    bool has_time = (rtc != NULL) &&
+                    (jpp_rtc_get_current(rtc, &now) == JPP_RTC_STATUS_OK);
+
+    char iso[32] = "1970-01-01T00:00:00Z";
+    if (has_time) {
+        snprintf(iso, sizeof(iso), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                 now.year, now.month, now.day,
+                 now.hour, now.minute, now.second);
+    }
+    snprintf(out, out_len, "%s|%s", username, iso);
+
+    if (out_username != NULL && username_len > 0u) {
+        strncpy(out_username, username, username_len - 1u);
+        out_username[username_len - 1u] = '\0';
+    }
+    if (out_dt != NULL)       { *out_dt = now; }
+    if (out_has_time != NULL) { *out_has_time = has_time; }
 }
 
 jpp_lrv_result_t jpp_lrv_sign_challenge(const char *challenge, uint8_t sig[64])
@@ -368,12 +412,13 @@ jpp_lrv_result_t jpp_lrv_store_encrypted_blob(const uint8_t *blob, size_t len)
         return JPP_LRV_ERR_INTERNAL;
     }
 
-    /* Remove any previously unlocked keys so the namespace is back to locked state. */
+    /* Remove any unlocked-state keys so the namespace holds only the blob. */
     nvs_erase_key(h, LRV_KEY_SERIAL);
     nvs_erase_key(h, LRV_KEY_PUBKEY);
     nvs_erase_key(h, LRV_KEY_SECKEY);
     nvs_erase_key(h, LRV_KEY_CERT);
     nvs_erase_key(h, LRV_KEY_CERT_SIG);
+    nvs_erase_key(h, LRV_KEY_HWID);
     nvs_erase_key(h, LRV_KEY_PASSWORD);
 
     if (nvs_set_blob(h, LRV_KEY_ENC, blob, len) != ESP_OK) {
@@ -384,4 +429,20 @@ jpp_lrv_result_t jpp_lrv_store_encrypted_blob(const uint8_t *blob, size_t len)
     nvs_close(h);
     ESP_LOGI(TAG, "LRV encrypted blob stored (%zu bytes)", len);
     return JPP_LRV_OK;
+}
+
+void jpp_lrv_hex_format(const uint8_t *data, size_t len,
+                        size_t bytes_per_row, char *buf, size_t buf_len)
+{
+    size_t pos = 0u;
+    for (size_t i = 0u; i < len; i++) {
+        if (bytes_per_row > 0u && i > 0u) {
+            char sep = (i % bytes_per_row == 0u) ? '\n' : ' ';
+            if (pos + 1u < buf_len) { buf[pos++] = sep; }
+        }
+        if (pos + 2u < buf_len) {
+            pos += (size_t)snprintf(buf + pos, buf_len - pos, "%02X", data[i]);
+        }
+    }
+    if (pos < buf_len) { buf[pos] = '\0'; }
 }

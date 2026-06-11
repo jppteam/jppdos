@@ -25,7 +25,8 @@
 /* ---- SD card (SPI) ------------------------------------------------------ */
 /*
  * Shared SPI2 bus (SD card + SX1276 LoRa).  CLK=14, MOSI=15, MISO=18.
- * SD chip-select = GPIO7 (LoRa CS=GPIO6 is reserved but not yet driven).
+ * SD chip-select = GPIO7. GPIO6 is wired to the LoRa radio's CS and is
+ * reserved on the bus; the firmware does not drive it.
  */
 #define JPP_HW_SD_SCK_PIN        14
 #define JPP_HW_SD_MOSI_PIN       15

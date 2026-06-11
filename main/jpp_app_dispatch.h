@@ -58,6 +58,31 @@ void discover_apps_apply_to_shell(jpp_ui_shell_t *shell);
 void teardown_sd_app(jpp_ui_shell_t *shell);
 
 /*
+ * jpp_app_crash_take — one-shot crash report consumer for the main loop.
+ * When the app task ends in a failure (MicroPython load/hook error or native
+ * load failure) the dispatcher records the APP_CRASH marker, appends a line to
+ * /data/ui_crash.log, and arms this flag.  The main loop calls this after
+ * teardown; on true it copies the crashed app id and reason (for the crash
+ * dialog) and clears the flag.
+ */
+bool jpp_app_crash_take(char *app_id, size_t app_id_len,
+                        char *reason, size_t reason_len);
+
+/*
+ * Headless background-task runs (driven by jpp_bg_scheduler from the main
+ * loop). jpp_app_bg_launch starts the app's on_task(name) /
+ * jpp_app_task_entry run on the shared app task slot; the main loop polls
+ * jpp_app_bg_finished() and calls jpp_app_bg_teardown() (also used to kill an
+ * over-quota run before esp_restart). Consent prompts are denied while a
+ * headless run is active.
+ */
+bool jpp_app_bg_launch(const char *app_id, const char *task_name,
+                       const jpp_boot_context_t *boot);
+bool jpp_app_bg_running(void);
+bool jpp_app_bg_finished(void);
+void jpp_app_bg_teardown(void);
+
+/*
  * jpp_app_consent_prompt — show an interactive permission dialog for `cap` and
  * (for tier-1 caps) persist the grant.  Called from the consent_prompt_cb in
  * jpp_native_services when jpp_sdk_ensure_cap triggers a lazy prompt.

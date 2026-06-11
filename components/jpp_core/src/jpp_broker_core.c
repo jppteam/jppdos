@@ -139,37 +139,6 @@ jpp_broker_status_t jpp_broker_run_exclusive(
     return status;
 }
 
-jpp_broker_status_t jpp_broker_require(
-    const jpp_broker_caller_t *caller,
-    const char *required,
-    const char *operation,
-    jpp_broker_result_t *result
-)
-{
-    jpp_broker_status_t status;
-
-    if (required == NULL || operation == NULL || result == NULL) {
-        return JPP_BROKER_STATUS_INVALID_ARGUMENT;
-    }
-    if (jpp_broker_caller_has_capability(caller, "system") ||
-        jpp_broker_caller_has_capability(caller, required)) {
-        status = jpp_broker_ok_result(result);
-        if (status != JPP_BROKER_STATUS_OK) {
-            return status;
-        }
-        return jpp_broker_result_put(result, "required", required);
-    }
-    status = jpp_broker_error_result(result, "ACCESS_DENIED");
-    if (status != JPP_BROKER_STATUS_OK) {
-        return status;
-    }
-    status = jpp_broker_result_put(result, "required", required);
-    if (status != JPP_BROKER_STATUS_OK) {
-        return status;
-    }
-    return jpp_broker_result_put(result, "operation", operation);
-}
-
 const char *jpp_broker_status_name(jpp_broker_status_t status)
 {
     switch (status) {

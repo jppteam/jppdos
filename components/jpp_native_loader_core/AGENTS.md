@@ -21,16 +21,20 @@ A native app binary is an ELF32 shared object (`ET_DYN`) compiled for
    - `R_RISCV_JUMP_SLOT` — external function PLT/GOT slots; resolved from the
      firmware export table in `jpp_native_symtab.c`.
    - `R_RISCV_32` — absolute 32-bit refs, resolved likewise.
-6. Finds `jpp_app_entry` in `.dynsym` and returns a handle.
+6. Finds `jpp_app_entry` in `.dynsym` (required) and `jpp_app_task_entry`
+   (optional, for scheduled background tasks) and returns a handle.
 7. Flushes the instruction cache (`__builtin___clear_cache`).
 
 `jpp_native_loader_run(app, ctx)` calls `jpp_app_entry(ctx)` and blocks.
+`jpp_native_loader_run_task(app, ctx, name)` calls
+`jpp_app_task_entry(ctx, name)` for headless background runs; it returns false
+when the binary does not export that symbol.
 `jpp_native_loader_free(app)` releases the shared app pool and frees the handle.
 
 ## Symbol table (`jpp_native_symtab.c`)
 
 Every external symbol an app may call through its PLT must be present. The
-table currently covers the full `jpp_sdk_*` surface, `jpp_broker_result_*`,
+table covers the full `jpp_sdk_*` surface, `jpp_broker_result_*`,
 `jpp_crypto_*`, `randombytes_buf`, `esp_log_write`, key FreeRTOS functions, and
 the newlib standard C library.
 
@@ -50,6 +54,8 @@ riscv32-esp-elf-gcc \
 ```
 
 The binary must export `jpp_app_entry(jpp_sdk_context_t *)` as a global symbol.
+Apps with scheduled background tasks additionally export
+`jpp_app_task_entry(jpp_sdk_context_t *, const char *task_name)`.
 The resulting `.so` file (which is a valid ELF) is placed on the SD card as
 `/sd/apps/<app_id>/<entry>` (matching `manifest.json` `entry` field).
 

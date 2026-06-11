@@ -96,7 +96,7 @@ docker compose run --rm build idf.py -DJPP_WOKWI_SIM=ON build
 ```
 
 The build always produces `build/merged.bin` (bootloader + partition table + app
-merged into a single flat flash image).  `wokwi.toml` in the repo root already
+merged into a single flat flash image).  `wokwi/wokwi.toml` already
 points at that file, so you can open the project straight in the Wokwi VS Code
 extension or at wokwi.com after building.
 
@@ -124,10 +124,11 @@ both flags.
 ## 4. Configure it
 
 The J++Device is configured **from its own screen** — open the **Settings** app
-in the launcher. Settings covers Wi-Fi (scan and connect), time (NTP, timezone),
-sleep timers (standby and power-off durations), SD card status, backup and
-restore of saved settings, shutdown/reboot, factory reset, and an About screen.
-You do not need to edit any files by hand.
+in the launcher. Settings covers shutdown/reboot, Wi-Fi (scan and connect),
+time (NTP, timezone), sleep timers (standby and power-off durations), sound
+(buzzer volume and startup jingle), SD card status, backup and restore of saved
+settings, factory reset, the user's name, and an About screen. You do not need
+to edit any files by hand.
 
 Under the hood, settings are stored on internal flash at `/data/settings.json`
 and are self-healing: if the file is ever missing or corrupt, the device resets
@@ -157,11 +158,11 @@ reference for both MicroPython and C.
 | Build fails immediately | Make sure Docker is installed and running, and that you're in the project folder. |
 | Flash can't find the device | Confirm the USB cable is a data cable, the device is plugged in, and (Linux) that Docker can access the serial port. |
 | Blank screen after flashing | Check the OLED ribbon/wiring; the panel must be SSD1306-compatible. |
-| D-pad presses misread | Recalibrate the keypad in the Settings app. |
+| D-pad presses misread | Check the resistor-ladder wiring against the pin map in [HARDWARE_SUMMARY.md](HARDWARE_SUMMARY.md); each button must produce its expected ADC level. |
 | Apps don't appear | Confirm the card is inserted and each app has `/sd/apps/<app_id>/manifest.json`. The device hides installed apps in recovery mode. |
 
 The serial monitor prints markers that explain what happened, including
-`SYSTEM_READY`, `SD_MOUNT_FAILED`, `RECOVERY_MODE`, `APP_REJECTED`,
+`SYSTEM_READY`, `SD_MOUNT_FAILED`, `BOOT_MODE`, `APP_REJECTED`,
 `ACCESS_DENIED`, and `APP_CRASH`.
 
 ---

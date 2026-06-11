@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "app_type": "micropython",
+  "name": "Bad Capability",
+  "version": "1.0.0",
+  "entry": "main.mpy",
+  "capabilities": ["device.kv"],
+  "toolchain": { "runtime_version": "v1.28.0", "cross_version": "1.28.0", "bytecode_abi": 6 }
+}

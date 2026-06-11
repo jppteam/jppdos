@@ -1,4 +1,5 @@
 #include "jpp_native_services.h"
+#include "jpp_file_util.h"
 #include "jpp_app_dispatch.h"  /* for s_active_sdk_context */
 
 #include <stdio.h>
@@ -13,7 +14,11 @@
 #include "esp_netif.h"
 #include "cJSON.h"
 
+#include "lwip/sockets.h"
+
 #include "jpp_ble_native.h"
+#include "jpp_fileserver_core.h"
+#include "jpp_lrv_server.h"
 #include "jpp_sdk_bridge.h"
 #include "jpp_broker_core.h"
 #include "jpp_battery_core.h"
@@ -80,20 +85,6 @@ static bool sd_path_prompt_cb(void *context, const char *path, jpp_sdk_open_mode
 /* Static buffer for file content; safe under the "storage" exclusive lock. */
 static char s_file_read_buf[4096];
 
-static void make_parent_dirs(const char *path)
-{
-    char tmp[256];
-    strncpy(tmp, path, sizeof(tmp) - 1u);
-    tmp[sizeof(tmp) - 1u] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
-        }
-    }
-}
-
 /* Set ejection flag if the error is a hardware/media failure on the SD. */
 static void check_sd_ejection(const char *path)
 {
@@ -135,7 +126,7 @@ static jpp_broker_status_t sd_file_write_cb(void *context,
     if (result == NULL || logical_path == NULL || text == NULL) {
         return JPP_BROKER_STATUS_INVALID_ARGUMENT;
     }
-    make_parent_dirs(logical_path);
+    jpp_make_parent_dirs(logical_path);
     FILE *f = fopen(logical_path, "w");
     if (f == NULL) {
         jpp_broker_error_result(result, "WRITE_FAILED");
@@ -276,6 +267,208 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+/* ---- network.bind callbacks (TCP server over lwIP) ----------------------- */
+
+/* One app runs at a time, so one static socket table serves the whole SDK. */
+static int s_net_listener = -1;
+static int s_net_conns[JPP_RESOURCE_SDK_NET_SOCKET_LIMIT] = {-1, -1};
+
+static bool net_sock_is_open(int sock)
+{
+    for (size_t i = 0u; i < JPP_RESOURCE_SDK_NET_SOCKET_LIMIT; i++) {
+        if (s_net_conns[i] == sock && sock >= 0) { return true; }
+    }
+    return false;
+}
+
+static jpp_broker_status_t net_bind_cb(void *context, uint16_t port,
+                                       jpp_broker_result_t *result)
+{
+    (void)context;
+    jpp_fileserver_status_t fs_status;
+    jpp_fileserver_get_status(&fs_status);
+    if (fs_status.state == JPP_FILESERVER_STATE_RUNNING ||
+        jpp_lrv_server_is_running()) {
+        jpp_broker_error_result(result, "SERVER_ACTIVE");
+        return JPP_BROKER_STATUS_OK;
+    }
+    if (s_net_listener >= 0) {
+        jpp_broker_error_result(result, "ALREADY_BOUND");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) {
+        jpp_broker_error_result(result, "SOCKET_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in addr = {
+        .sin_family      = AF_INET,
+        .sin_port        = htons(port),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(fd, 1) != 0) {
+        close(fd);
+        jpp_broker_error_result(result, "BIND_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    s_net_listener = fd;
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    jpp_broker_ok_result(result);
+    jpp_broker_result_put(result, "port", port_str);
+    ESP_LOGI(TAG, "NET_BIND port=%u", (unsigned)port);
+    return JPP_BROKER_STATUS_OK;
+}
+
+/* Wait up to timeout_ms for readability on fd. Returns >0 ready, 0 timeout. */
+static int net_wait_readable(int fd, uint32_t timeout_ms)
+{
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    struct timeval tv = {
+        .tv_sec  = (time_t)(timeout_ms / 1000u),
+        .tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u),
+    };
+    return select(fd + 1, &rfds, NULL, NULL, &tv);
+}
+
+static jpp_broker_status_t net_accept_cb(void *context, uint32_t timeout_ms,
+                                         int *out_sock, jpp_broker_result_t *result)
+{
+    (void)context;
+    *out_sock = -1;
+    if (s_net_listener < 0) {
+        jpp_broker_error_result(result, "NOT_BOUND");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int slot = -1;
+    for (size_t i = 0u; i < JPP_RESOURCE_SDK_NET_SOCKET_LIMIT; i++) {
+        if (s_net_conns[i] < 0) { slot = (int)i; break; }
+    }
+
+    int ready = net_wait_readable(s_net_listener, timeout_ms);
+    if (ready <= 0) {
+        jpp_broker_ok_result(result);   /* timeout: *out_sock stays -1 */
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int conn = accept(s_net_listener, NULL, NULL);
+    if (conn < 0) {
+        jpp_broker_error_result(result, "ACCEPT_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+    if (slot < 0) {
+        /* Connection table full: refuse the peer rather than leak the fd. */
+        close(conn);
+        jpp_broker_error_result(result, "SOCKET_LIMIT");
+        return JPP_BROKER_STATUS_OK;
+    }
+    s_net_conns[slot] = conn;
+    *out_sock = conn;
+    jpp_broker_ok_result(result);
+    return JPP_BROKER_STATUS_OK;
+}
+
+static jpp_broker_status_t net_recv_cb(void *context, int sock, uint8_t *buf,
+                                       size_t buf_len, size_t *out_len,
+                                       uint32_t timeout_ms, jpp_broker_result_t *result)
+{
+    (void)context;
+    *out_len = 0u;
+    if (!net_sock_is_open(sock)) {
+        jpp_broker_error_result(result, "INVALID_SOCKET");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int ready = net_wait_readable(sock, timeout_ms);
+    if (ready <= 0) {
+        jpp_broker_ok_result(result);   /* timeout: *out_len stays 0 */
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    ssize_t n = recv(sock, buf, buf_len, 0);
+    if (n < 0) {
+        jpp_broker_error_result(result, "RECV_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+    jpp_broker_ok_result(result);
+    if (n == 0) {
+        jpp_broker_result_put(result, "closed", "1");   /* peer disconnected */
+    }
+    *out_len = (size_t)n;
+    return JPP_BROKER_STATUS_OK;
+}
+
+static jpp_broker_status_t net_send_cb(void *context, int sock,
+                                       const uint8_t *data, size_t len,
+                                       jpp_broker_result_t *result)
+{
+    (void)context;
+    if (!net_sock_is_open(sock)) {
+        jpp_broker_error_result(result, "INVALID_SOCKET");
+        return JPP_BROKER_STATUS_OK;
+    }
+    size_t sent = 0u;
+    while (sent < len) {
+        ssize_t n = send(sock, data + sent, len - sent, 0);
+        if (n <= 0) {
+            jpp_broker_error_result(result, "SEND_FAILED");
+            return JPP_BROKER_STATUS_OK;
+        }
+        sent += (size_t)n;
+    }
+    jpp_broker_ok_result(result);
+    return JPP_BROKER_STATUS_OK;
+}
+
+static jpp_broker_status_t net_close_cb(void *context, int sock,
+                                        jpp_broker_result_t *result)
+{
+    (void)context;
+    if (sock == -1) {
+        if (s_net_listener >= 0) {
+            close(s_net_listener);
+            s_net_listener = -1;
+        }
+        jpp_broker_ok_result(result);
+        return JPP_BROKER_STATUS_OK;
+    }
+    for (size_t i = 0u; i < JPP_RESOURCE_SDK_NET_SOCKET_LIMIT; i++) {
+        if (s_net_conns[i] == sock) {
+            close(sock);
+            s_net_conns[i] = -1;
+            jpp_broker_ok_result(result);
+            return JPP_BROKER_STATUS_OK;
+        }
+    }
+    jpp_broker_error_result(result, "INVALID_SOCKET");
+    return JPP_BROKER_STATUS_OK;
+}
+
+static void net_close_all_cb(void *context)
+{
+    (void)context;
+    for (size_t i = 0u; i < JPP_RESOURCE_SDK_NET_SOCKET_LIMIT; i++) {
+        if (s_net_conns[i] >= 0) {
+            close(s_net_conns[i]);
+            s_net_conns[i] = -1;
+        }
+    }
+    if (s_net_listener >= 0) {
+        close(s_net_listener);
+        s_net_listener = -1;
+        ESP_LOGI(TAG, "NET_CLOSED (teardown)");
+    }
+}
+
 static jpp_broker_status_t sd_http_request_cb(void *context,
                                                const char *method,
                                                const char *url,
@@ -340,7 +533,7 @@ static jpp_broker_status_t sd_kv_read_cb(void *context,
         return JPP_BROKER_STATUS_INVALID_ARGUMENT;
     }
     char path[128];
-    snprintf(path, sizeof(path), "/data/kv/%s.json", app_id);
+    snprintf(path, sizeof(path), "/sd/apps/%s/.kv.json", app_id);
 
     FILE *f = fopen(path, "r");
     if (f == NULL) {
@@ -382,9 +575,9 @@ static jpp_broker_status_t sd_kv_write_cb(void *context,
     }
     char path[128];
     char tmp_path[136];
-    snprintf(path, sizeof(path), "/data/kv/%s.json", app_id);
+    snprintf(path, sizeof(path), "/sd/apps/%s/.kv.json", app_id);
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    make_parent_dirs(path);
+    jpp_make_parent_dirs(path);
 
     cJSON *root = NULL;
     FILE *f = fopen(path, "r");
@@ -431,7 +624,7 @@ static jpp_broker_status_t sd_kv_delete_cb(void *context,
     }
     char path[128];
     char tmp_path[136];
-    snprintf(path, sizeof(path), "/data/kv/%s.json", app_id);
+    snprintf(path, sizeof(path), "/sd/apps/%s/.kv.json", app_id);
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
     FILE *f = fopen(path, "r");
@@ -520,8 +713,9 @@ static jpp_broker_status_t device_status_cb(void *context, jpp_broker_result_t *
 
     jpp_broker_ok_result(result);
     jpp_broker_result_put(result, "battery_pct", battery_pct);
-    /* No dedicated charge-detect line on this hardware profile; report unknown. */
-    jpp_broker_result_put(result, "charging", "0");
+    /* The board has no charge-detect line; charging state is unknown ("-1"),
+       mirroring the battery_pct convention. */
+    jpp_broker_result_put(result, "charging", "-1");
     return JPP_BROKER_STATUS_OK;
 }
 
@@ -590,6 +784,14 @@ void jpp_native_services_init(jpp_rtc_state_t *rtc_state)
 
     s_native_services.http_request        = sd_http_request_cb;
     s_native_services.http_request_context = NULL;
+
+    s_native_services.net_bind      = net_bind_cb;
+    s_native_services.net_accept    = net_accept_cb;
+    s_native_services.net_recv      = net_recv_cb;
+    s_native_services.net_send      = net_send_cb;
+    s_native_services.net_close     = net_close_cb;
+    s_native_services.net_close_all = net_close_all_cb;
+    s_native_services.net_context   = NULL;
 
     s_native_services.kv_read    = sd_kv_read_cb;
     s_native_services.kv_write   = sd_kv_write_cb;

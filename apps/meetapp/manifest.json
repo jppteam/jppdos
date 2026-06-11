@@ -8,16 +8,12 @@
   "sdk_max": 1,
   "entry": "meetapp.bin",
   "background": {
-    "enabled": false,
-    "mode": "serialized"
+    "enabled": false
   },
   "capabilities": [
-    "files.scoped",
-    "device.status",
     "ble.scan",
     "ble.advertise",
     "ble.connect",
     "ble.host"
-  ],
-  "modules": []
+  ]
 }

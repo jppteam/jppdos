@@ -29,9 +29,21 @@ typedef enum {
     JPP_MANIFEST_RUNTIME_MISMATCH,
 } jpp_manifest_result_t;
 
+#define JPP_MANIFEST_V2_BG_TASK_MAX 4u
+
+/* One scheduled background task: exactly one of interval_s (seconds, at least
+   JPP_RESOURCE_BG_INTERVAL_MIN_S) or cron (5-field "min hour dom mon dow",
+   each field "*" or a single number) must be set. */
+typedef struct {
+    const char *name;
+    unsigned    interval_s;   /* 0 = cron-scheduled */
+    const char *cron;         /* NULL or "" when interval-based */
+} jpp_manifest_bg_task_t;
+
 typedef struct {
     int enabled;
-    const char *mode;
+    const jpp_manifest_bg_task_t *tasks;
+    size_t task_count;
 } jpp_manifest_background_t;
 
 typedef struct {
@@ -59,6 +71,18 @@ jpp_manifest_result_t jpp_manifest_v2_validate(const jpp_manifest_v2_t *manifest
 const char *jpp_manifest_result_name(jpp_manifest_result_t result);
 int jpp_manifest_v2_is_allowed_capability(const char *capability);
 int jpp_manifest_v2_is_valid_entry_path(const char *path);
+
+/*
+ * True for app ids that collide with built-in screen names (launcher,
+ * settings, webdav, dialogs, ...).  The launcher routes screens by name, so an
+ * SD app with one of these ids could never be opened; manifests using them are
+ * rejected and discovery skips matching directories.
+ */
+int jpp_manifest_v2_is_reserved_app_id(const char *app_id);
+
+/* True for a valid 5-field cron expression ("min hour dom mon dow", each field
+   "*" or a single in-range number). */
+int jpp_manifest_v2_is_valid_cron(const char *cron);
 
 #ifdef __cplusplus
 }

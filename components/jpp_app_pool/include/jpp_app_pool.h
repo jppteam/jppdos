@@ -20,14 +20,14 @@ extern "C" {
  *     fragmented post-WiFi/BLE heap cannot starve an app launch
  *
  * Crucially, native and MicroPython apps are mutually exclusive — only one SD
- * app task runs at a time — so a single pool serves both.  Merging the former
- * separate 64 KB exec pool and 32 KB GC pool into one 64 KB pool returns ~32 KB
- * of SRAM to the general heap, which on this single-SRAM part is the same heap
- * WiFi/lwIP draw frame buffers from.
+ * app task runs at a time — so a single pool serves both.  Sharing one pool
+ * instead of reserving separate exec and GC pools keeps the static footprint
+ * minimal, which on this single-SRAM part matters: every reserved KB comes out
+ * of the same heap WiFi/lwIP draw frame buffers from.
  *
  * Sizing: 64 KB fits the largest native app (MeetApp, ~50 KB loaded) with
  * headroom, and is far above the typical MicroPython GC footprint (~15-20 KB).
- * Raise JPP_APP_POOL_BYTES (and rebuild) if a future app needs more.
+ * Raise JPP_APP_POOL_BYTES (and rebuild) if an app needs more.
  */
 
 #define JPP_APP_POOL_BYTES (64u * 1024u)

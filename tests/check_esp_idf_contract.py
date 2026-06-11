@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import cast
 
@@ -8,24 +9,21 @@ from typing import cast
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "ESP_IDF_CONTRACT.md"
 REQUIRED_HEADINGS = (
-    "Compatibility matrix",
     "Boot order",
-    "Settings v2",
+    "Settings storage model",
     "Logical paths",
+    "Capability model",
     "Broker ownership",
-    "SSD1306 text UI parity",
+    "SSD1306 text UI",
     "Single shared VM",
+    "Resource budget slice",
     "Best-effort sandbox",
     "Manifest v2 package model",
     "SDK surface and versioning",
     "App lifecycle",
+    "Background scheduler",
     "Failure taxonomy",
     "Out-of-scope items",
-)
-REQUIRED_MATRIX_HEADINGS = (
-    "Preserved behavior",
-    "Changed behavior",
-    "Removed behavior",
 )
 REQUIRED_MANIFEST_FIELDS = (
     "schema_version",
@@ -37,29 +35,31 @@ REQUIRED_MANIFEST_FIELDS = (
     "entry",
     "capabilities",
     "background.enabled",
-    "background.mode",
-    "modules",
+    "background.tasks",
     "toolchain.runtime_version",
     "toolchain.cross_version",
     "toolchain.bytecode_abi",
 )
 REQUIRED_FAILURE_CODES = (
-    "INVALID_JSON",
-    "INVALID_MANIFEST",
+    "APP_REJECTED",
+    "RESERVED_APP_ID",
+    "MANIFEST_REJECTED",
     "SCHEMA_MISMATCH",
     "INVALID_ENTRY",
-    "SDK_MISMATCH",
-    "DUPLICATE_APP_ID",
-    "ENTRY_MISSING",
-    "ENTRY_CORRUPT",
+    "INVALID_CAPABILITY",
+    "INVALID_BACKGROUND",
     "RUNTIME_MISMATCH",
+    "MISSING_ENTRY",
     "UNSUPPORTED_IMPORT",
-    "CREATE_APP_FAILED",
     "APP_CRASH",
-    "APP_BG_ERROR",
+    "BG_TASK_ERROR",
+    "NO_TASK_ENTRY",
+    "BG_TASK_KILLED",
+    "CAP_DENIED",
     "ACCESS_DENIED",
-    "SD_REMOVED",
-    "STORAGE_FULL",
+    "SD_EJECTION_DETECTED",
+    "SETTINGS_RESET",
+    "SETTINGS_RECOVERED",
 )
 PROHIBITED_SCOPE_TERMS = (
     "OTA",
@@ -96,20 +96,17 @@ def run_contract_check() -> int:
     normalized = text.lower()
 
     missing_headings = _missing_labels(heading_titles, REQUIRED_HEADINGS)
-    missing_matrix = _missing_labels(heading_titles, REQUIRED_MATRIX_HEADINGS)
     missing_fields = [field for field in REQUIRED_MANIFEST_FIELDS if field.lower() not in normalized]
     missing_codes = [code for code in REQUIRED_FAILURE_CODES if code.lower() not in normalized]
 
     print(f"CONTRACT_PATH|{CONTRACT_PATH.relative_to(ROOT)}")
     print(f"LINES|{len(lines)}")
     print(f"HEADINGS_PRESENT|{len(REQUIRED_HEADINGS) - len(missing_headings)}/{len(REQUIRED_HEADINGS)}")
-    print(f"MATRIX_HEADINGS_PRESENT|{len(REQUIRED_MATRIX_HEADINGS) - len(missing_matrix)}/{len(REQUIRED_MATRIX_HEADINGS)}")
     print(f"MANIFEST_FIELDS_PRESENT|{len(REQUIRED_MANIFEST_FIELDS) - len(missing_fields)}/{len(REQUIRED_MANIFEST_FIELDS)}")
     print(f"FAILURE_CODES_PRESENT|{len(REQUIRED_FAILURE_CODES) - len(missing_codes)}/{len(REQUIRED_FAILURE_CODES)}")
 
     errors: list[str] = []
     errors.extend(f"MISSING_HEADING|{label}" for label in missing_headings)
-    errors.extend(f"MISSING_MATRIX_HEADING|{label}" for label in missing_matrix)
     errors.extend(f"MISSING_MANIFEST_FIELD|{field}" for field in missing_fields)
     errors.extend(f"MISSING_FAILURE_CODE|{code}" for code in missing_codes)
     if errors:
@@ -140,10 +137,11 @@ def run_scope_check() -> int:
                 current_h3 = title
         lowered = line.lower()
         for term in PROHIBITED_SCOPE_TERMS:
-            if term.lower() not in lowered:
+            # Word-boundary match so e.g. "quota" does not count as "OTA".
+            if re.search(r"\b" + re.escape(term.lower()) + r"\b", lowered) is None:
                 continue
             seen_terms[term] += 1
-            allowed = current_h2 == "Out-of-scope items" or current_h3 == "Removed behavior"
+            allowed = current_h2 == "Out-of-scope items"
             print(
                 "SCOPE_TERM|term=%s|line=%s|h2=%s|h3=%s|allowed=%s"
                 % (term, line_number, current_h2 or "-", current_h3 or "-", int(allowed))

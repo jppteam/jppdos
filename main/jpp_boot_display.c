@@ -1,7 +1,9 @@
 #include "jpp_boot_display.h"
+#include "jpp_settings_screen.h"   /* JPPDOS_VERSION */
 #include "ssd1306.h"
 
 #include <stdio.h>
+#include <string.h>
 
 static void boot_disp_draw_step(uint8_t step_idx,
                                  const char *name,
@@ -29,12 +31,12 @@ void boot_disp_show_splash(boot_disp_t *d)
      */
     ssd1306_draw_string_2x(0, 10, "J++Device", false);
 
-    /*
-     * Page 2: subtitle on an inverted (white) background.
-     * "JPPDOS v1.0" = 11 chars × 6 px = 66 px → centre at col 31.
-     */
+    /* Page 2: version subtitle on an inverted (white) background, centred. */
+    char subtitle[22];
+    snprintf(subtitle, sizeof(subtitle), "JPPDOS v" JPPDOS_VERSION);
+    uint8_t sub_col = (uint8_t)((128u - strlen(subtitle) * 6u) / 2u);
     ssd1306_fill_page(2, 0xFFu);
-    ssd1306_draw_string(2, 31, "JPPDOS v1.0", true);
+    ssd1306_draw_string(2, sub_col, subtitle, true);
 
     /*
      * Page 3: separator — single pixel line at the top of the page

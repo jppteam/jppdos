@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "app_type": "micropython",
+  "name": "Bad Entry",
+  "version": "1.0.0",
+  "entry": "../main.mpy",
+  "toolchain": { "runtime_version": "v1.28.0", "cross_version": "1.28.0", "bytecode_abi": 6 }
+}

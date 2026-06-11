@@ -1,9 +1,10 @@
 /*
- * testapp_native_entry — standard native-app entry point.
+ * testapp_native_entry — standard native-app entry points.
  *
- * The firmware's native loader finds and calls jpp_app_entry(ctx) by name.
- * This translation unit provides that symbol and forwards to
- * testapp_native_run() so the rest of the app code does not need to know the
+ * The firmware's native loader finds and calls jpp_app_entry(ctx) by name;
+ * jpp_app_task_entry(ctx, name) is the optional headless entry used for
+ * scheduled background tasks. This translation unit provides both symbols
+ * and forwards to the app code so the rest of it does not need to know the
  * loader's naming contract.
  */
 
@@ -13,4 +14,9 @@
 void jpp_app_entry(jpp_sdk_context_t *ctx)
 {
     testapp_native_run(ctx);
+}
+
+void jpp_app_task_entry(jpp_sdk_context_t *ctx, const char *task_name)
+{
+    testapp_native_run_task(ctx, task_name);
 }

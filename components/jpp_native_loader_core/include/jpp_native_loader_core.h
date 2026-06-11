@@ -44,12 +44,12 @@ typedef enum {
 typedef struct jpp_native_loaded_app jpp_native_loaded_app_t;
 
 /*
- * Optional boot-time call that logs the static EXEC pool address.
- * The pool is a static .bss buffer (always contiguous, always executable with
- * CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT=n); no heap allocation is performed.
- * `pool_bytes` is accepted for API compatibility but ignored.
+ * Optional boot-time call that logs the executable app-pool capacity.
+ * Native code loads into the shared jpp_app_pool — a static .bss buffer
+ * (always contiguous, executable because CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT=n
+ * maps SRAM RWX); no heap allocation is performed.
  */
-void jpp_native_loader_preinit(size_t pool_bytes);
+void jpp_native_loader_preinit(void);
 
 /*
  * Load a native app binary from `path` (absolute path to the .bin ELF).
@@ -67,6 +67,16 @@ jpp_native_loader_result_t jpp_native_loader_load(
  */
 void jpp_native_loader_run(jpp_native_loaded_app_t *app,
                             jpp_sdk_context_t       *ctx);
+
+/*
+ * Call the loaded app's jpp_app_task_entry(ctx, task_name) — the optional
+ * headless background-task entry point — and block until it returns.
+ * Returns false (without calling anything) when the binary does not export
+ * jpp_app_task_entry.
+ */
+bool jpp_native_loader_run_task(jpp_native_loaded_app_t *app,
+                                jpp_sdk_context_t       *ctx,
+                                const char              *task_name);
 
 /*
  * Release all memory owned by the loaded app handle.

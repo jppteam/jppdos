@@ -1,3 +1,1 @@
-screen=launcher
-error=RuntimeError
-log=/data/ui_crash.log
+app=demo_clock reason=HOOK_ERROR

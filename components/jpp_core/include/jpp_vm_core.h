@@ -39,9 +39,7 @@ typedef enum {
 typedef enum {
     JPP_VM_REQUEST_NONE = 0,
     JPP_VM_REQUEST_STARTUP,
-    JPP_VM_REQUEST_FOREGROUND,
     JPP_VM_REQUEST_IDLE,
-    JPP_VM_REQUEST_BACKGROUND,
     JPP_VM_REQUEST_IMPORT_MODULE,
     JPP_VM_REQUEST_ACTION,     /* handle_action(action_payload) lifecycle hook */
 } jpp_vm_request_kind_t;

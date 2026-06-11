@@ -21,8 +21,6 @@ extern "C" {
 #define JPP_SDK_FRAME_TEXT_MAX 64u
 #define JPP_SDK_APP_ID_MAX JPP_VM_APP_ID_MAX
 #define JPP_SDK_PATH_MAX 160u
-#define JPP_SDK_BACKGROUND_TASK_CAPACITY JPP_RESOURCE_SDK_BACKGROUND_TASK_LIMIT
-#define JPP_SDK_BACKGROUND_TASK_NAME_MAX JPP_VM_MODULE_NAME_MAX
 #define JPP_SDK_HANDLE_CAPACITY JPP_RESOURCE_SDK_HANDLE_LIMIT
 #define JPP_SDK_HANDLE_INVALID 0xFFu
 
@@ -68,6 +66,7 @@ typedef enum {
     JPP_SDK_STATUS_INVALID_HANDLE,
     JPP_SDK_STATUS_BLE_CONN_LIMIT,
     JPP_SDK_STATUS_INVALID_BLE_CONN,
+    JPP_SDK_STATUS_NO_DATA,          /* nothing to consume (e.g. empty IPC mailbox) */
 } jpp_sdk_status_t;
 
 typedef uint8_t jpp_sdk_handle_t;
@@ -227,6 +226,47 @@ typedef jpp_broker_status_t (*jpp_sdk_http_request_fn_t)(
 );
 
 /*
+ * network.bind — TCP server sockets over lwIP. The firmware enforces
+ * JPP_RESOURCE_SDK_NET_LISTENER_LIMIT listeners and
+ * JPP_RESOURCE_SDK_NET_SOCKET_LIMIT accepted connections, and refuses to bind
+ * while the WebDAV or LRV HTTP server is running.
+ */
+typedef jpp_broker_status_t (*jpp_sdk_net_bind_fn_t)(
+    void *context,
+    uint16_t port,
+    jpp_broker_result_t *result   /* result field: port */
+);
+typedef jpp_broker_status_t (*jpp_sdk_net_accept_fn_t)(
+    void *context,
+    uint32_t timeout_ms,
+    int *out_sock,                /* -1 when no connection arrived in time */
+    jpp_broker_result_t *result
+);
+typedef jpp_broker_status_t (*jpp_sdk_net_recv_fn_t)(
+    void *context,
+    int sock,
+    uint8_t *buf,
+    size_t buf_len,
+    size_t *out_len,              /* 0 on timeout; result notes peer close */
+    uint32_t timeout_ms,
+    jpp_broker_result_t *result
+);
+typedef jpp_broker_status_t (*jpp_sdk_net_send_fn_t)(
+    void *context,
+    int sock,
+    const uint8_t *data,
+    size_t len,
+    jpp_broker_result_t *result
+);
+typedef jpp_broker_status_t (*jpp_sdk_net_close_fn_t)(
+    void *context,
+    int sock,                     /* a connection socket, or -1 = the listener */
+    jpp_broker_result_t *result
+);
+/* Close the listener and every connection — app teardown path. */
+typedef void (*jpp_sdk_net_close_all_fn_t)(void *context);
+
+/*
  * Lazy capability consent — called the first time an app tries to use a
  * capability that was declared in the manifest but not pre-granted at launch.
  * Returns true if the user allows, false if denied.
@@ -237,7 +277,7 @@ typedef bool (*jpp_sdk_consent_prompt_t)(
     int tier
 );
 
-/* Delete a file at logical_path. Used by ipc.send for consumed messages. */
+/* Delete a file at logical_path. Used by IPC for consumed messages. */
 typedef jpp_broker_status_t (*jpp_sdk_file_deleter_t)(
     void *context,
     const char *logical_path,
@@ -257,7 +297,7 @@ typedef size_t (*jpp_sdk_dir_list_fn_t)(
     size_t buf_len
 );
 
-/* Per-app persistent key-value store backed by internal flash storage. */
+/* Per-app persistent key-value helper backed by a file in scoped storage. */
 typedef jpp_broker_status_t (*jpp_sdk_kv_read_fn_t)(
     void *context,
     const char *app_id,
@@ -294,7 +334,7 @@ typedef struct {
     void *path_prompt_context;
     jpp_sdk_log_writer_t log_writer;
     void *log_context;
-    /* RTC — device.rtc */
+    /* RTC — backs jpp_sdk_get_time() */
     jpp_sdk_rtc_reader_t rtc_reader;
     void *rtc_reader_context;
     /* BLE — ble.scan */
@@ -321,10 +361,18 @@ typedef struct {
     /* http.request */
     jpp_sdk_http_request_fn_t http_request;
     void *http_request_context;
-    /* ipc.send — delete file after consuming a received message */
+    /* network.bind — TCP server sockets */
+    jpp_sdk_net_bind_fn_t      net_bind;
+    jpp_sdk_net_accept_fn_t    net_accept;
+    jpp_sdk_net_recv_fn_t      net_recv;
+    jpp_sdk_net_send_fn_t      net_send;
+    jpp_sdk_net_close_fn_t     net_close;
+    jpp_sdk_net_close_all_fn_t net_close_all;
+    void *net_context;
+    /* IPC — delete file after consuming a received message */
     jpp_sdk_file_deleter_t delete_file;
     void *delete_file_context;
-    /* device.kv — persistent key-value store */
+    /* key-value helper — JSON file in the app's scoped storage */
     jpp_sdk_kv_read_fn_t   kv_read;
     jpp_sdk_kv_write_fn_t  kv_write;
     jpp_sdk_kv_delete_fn_t kv_delete;
@@ -336,11 +384,6 @@ typedef struct {
     jpp_sdk_consent_prompt_t consent_prompt;
     void *consent_prompt_context;
 } jpp_sdk_native_services_t;
-
-typedef struct {
-    char name[JPP_SDK_BACKGROUND_TASK_NAME_MAX];
-    unsigned int strikes;
-} jpp_sdk_background_task_t;
 
 typedef struct {
     char path[JPP_SDK_PATH_MAX];
@@ -401,8 +444,6 @@ typedef struct {
        separating the title on row 0 from the body on rows 2+. Set by the modal
        UI helpers (dialog/list/confirm); cleared on every jpp_sdk_set_frame. */
     bool frame_title_rule;
-    jpp_sdk_background_task_t background_tasks[JPP_SDK_BACKGROUND_TASK_CAPACITY];
-    size_t background_task_count;
     jpp_sdk_handle_entry_t handles[JPP_SDK_HANDLE_CAPACITY];
     jpp_sdk_ble_conn_entry_t ble_conns[JPP_SDK_BLE_CONN_CAPACITY];
     bool ble_host_registered;
@@ -464,10 +505,10 @@ jpp_sdk_status_t jpp_sdk_set_frame(
 jpp_sdk_status_t jpp_sdk_request_close(jpp_sdk_context_t *context);
 jpp_sdk_status_t jpp_sdk_log(jpp_sdk_context_t *context, const char *event_name);
 
-/* Requires: device.status */
+/* Ungated — battery/charging status is available to every app. */
 jpp_sdk_status_t jpp_sdk_device_status(jpp_sdk_context_t *context, jpp_broker_result_t *result);
 
-/* Requires: files.scoped */
+/* Ungated — scoped storage under /sd/apps/<app_id>/ is private to the app. */
 jpp_sdk_status_t jpp_sdk_file_read(
     jpp_sdk_context_t *context,
     const char *relative_path,
@@ -485,7 +526,7 @@ jpp_sdk_status_t jpp_sdk_file_list(
     jpp_broker_result_t *result
 );
 
-/* Requires: files.shared */
+/* Ungated — shared storage under /sd/shared/<app_id>/ is world-readable. */
 jpp_sdk_status_t jpp_sdk_shared_read(
     jpp_sdk_context_t *context,
     const char *relative_path,
@@ -536,11 +577,15 @@ jpp_sdk_status_t jpp_sdk_handle_close(
     jpp_sdk_handle_t handle
 );
 
-jpp_sdk_status_t jpp_sdk_add_background_task(
+/*
+ * Requires: background.register
+ * Request permission to run the manifest-declared background.tasks schedule.
+ * The call itself only triggers the consent prompt; enrollment happens when
+ * the app exits — the firmware syncs the schedule table from the manifest iff
+ * the background.register grant is persisted.
+ */
+jpp_sdk_status_t jpp_sdk_background_register(
     jpp_sdk_context_t *context,
-    jpp_vm_context_t *vm_context,
-    const char *task_name,
-    const char *name,
     jpp_broker_result_t *result
 );
 
@@ -664,7 +709,7 @@ jpp_sdk_status_t jpp_sdk_ble_set_connectable(
     jpp_broker_result_t *result
 );
 
-/* Requires: device.status — returns UTC time as "YYYY-MM-DD HH:mm" */
+/* Ungated — returns UTC time as "YYYY-MM-DD HH:mm" */
 jpp_sdk_status_t jpp_sdk_get_time(jpp_sdk_context_t *context, jpp_broker_result_t *result);
 
 /* Requires: http.request — method is "GET" or "POST"; body may be NULL for GET */
@@ -690,7 +735,53 @@ jpp_sdk_status_t jpp_sdk_canvas_draw_pixel(
     bool on
 );
 
-/* Requires: ipc.send */
+/*
+ * Requires: network.bind — TCP server sockets over lwIP.
+ * net_bind opens the single listener on `port`; net_accept waits up to
+ * timeout_ms for an inbound connection and returns a socket id; net_recv /
+ * net_send move bytes on an accepted socket (net_recv writes 0 to *out_len on
+ * timeout and sets result field "closed" when the peer disconnected);
+ * net_close closes one socket (sock = -1 closes the listener). All sockets
+ * are closed automatically when the app session ends. Binding fails with
+ * SERVER_ACTIVE while the WebDAV or LRV server runs.
+ */
+jpp_sdk_status_t jpp_sdk_net_bind(
+    jpp_sdk_context_t *context,
+    uint16_t port,
+    jpp_broker_result_t *result
+);
+jpp_sdk_status_t jpp_sdk_net_accept(
+    jpp_sdk_context_t *context,
+    uint32_t timeout_ms,
+    int *out_sock,
+    jpp_broker_result_t *result
+);
+jpp_sdk_status_t jpp_sdk_net_recv(
+    jpp_sdk_context_t *context,
+    int sock,
+    uint8_t *buf,
+    size_t buf_len,
+    size_t *out_len,
+    uint32_t timeout_ms,
+    jpp_broker_result_t *result
+);
+jpp_sdk_status_t jpp_sdk_net_send(
+    jpp_sdk_context_t *context,
+    int sock,
+    const uint8_t *data,
+    size_t len,
+    jpp_broker_result_t *result
+);
+jpp_sdk_status_t jpp_sdk_net_close(
+    jpp_sdk_context_t *context,
+    int sock,
+    jpp_broker_result_t *result
+);
+/* Close the listener and every open connection (no capability check — used by
+   the app teardown path; a no-op when nothing is open). */
+void jpp_sdk_net_close_all(jpp_sdk_context_t *context);
+
+/* Ungated — mailbox files live in the recipient's scoped storage. */
 #define JPP_SDK_IPC_PAYLOAD_MAX 512u
 jpp_sdk_status_t jpp_sdk_ipc_send(
     jpp_sdk_context_t *context,
@@ -699,7 +790,7 @@ jpp_sdk_status_t jpp_sdk_ipc_send(
     jpp_broker_result_t *result
 );
 /* On success: result field "sender" is the sending app_id.
-   Returns ACCESS_DENIED if no messages are pending (result->ok = false). */
+   Returns NO_DATA if no messages are pending (result->ok = false). */
 jpp_sdk_status_t jpp_sdk_ipc_recv(
     jpp_sdk_context_t *context,
     char *out_payload,
@@ -707,7 +798,7 @@ jpp_sdk_status_t jpp_sdk_ipc_recv(
     jpp_broker_result_t *result
 );
 
-/* Requires: device.kv */
+/* Ungated — key-value helper backed by a JSON file in scoped storage. */
 #define JPP_SDK_KV_KEY_MAX   64u
 #define JPP_SDK_KV_VALUE_MAX 256u
 jpp_sdk_status_t jpp_sdk_kv_get(
@@ -807,6 +898,18 @@ jpp_sdk_status_t jpp_sdk_confirm(
     size_t body_count,
     bool default_allow,
     bool *out_allow
+);
+
+/*
+ * Word-wrap text into up to max_lines rows of at most 21 visible characters.
+ * Words longer than a row are hard-split; text past max_lines is dropped.
+ * Returns the number of rows used. Used by jpp_sdk_dialog internally and by
+ * callers preparing body_lines for jpp_sdk_confirm.
+ */
+size_t jpp_sdk_wrap_text(
+    const char *text,
+    char lines[][JPP_SDK_FRAME_TEXT_MAX],
+    size_t max_lines
 );
 
 /*

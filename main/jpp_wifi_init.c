@@ -14,7 +14,6 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
-#include "cJSON.h"
 
 static const char *TAG = "wifi_init";
 
@@ -101,46 +100,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 }
 
-/* ---- Credential helper ---------------------------------------------------- */
-
-static void read_wifi_policy(char *ssid,     size_t ssid_size,
-                              char *password, size_t password_size)
-{
-    ssid[0]     = '\0';
-    password[0] = '\0';
-
-    FILE *f = fopen(SETTINGS_PATH, "r");
-    if (f == NULL) return;
-
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    rewind(f);
-    char *buf = malloc((size_t)size + 1u);
-    if (buf == NULL) { fclose(f); return; }
-    fread(buf, 1u, (size_t)size, f);
-    buf[size] = '\0';
-    fclose(f);
-
-    cJSON *root   = cJSON_Parse(buf);
-    free(buf);
-    if (root == NULL) return;
-
-    cJSON *policy = cJSON_GetObjectItem(root, "policy");
-    cJSON *wifi   = policy ? cJSON_GetObjectItem(policy, "wifi") : NULL;
-    cJSON *j_ssid = wifi   ? cJSON_GetObjectItem(wifi, "preferred_ssid") : NULL;
-    cJSON *j_pass = wifi   ? cJSON_GetObjectItem(wifi, "password")       : NULL;
-
-    if (cJSON_IsString(j_ssid) && j_ssid->valuestring) {
-        strncpy(ssid, j_ssid->valuestring, ssid_size - 1u);
-        ssid[ssid_size - 1u] = '\0';
-    }
-    if (cJSON_IsString(j_pass) && j_pass->valuestring) {
-        strncpy(password, j_pass->valuestring, password_size - 1u);
-        password[password_size - 1u] = '\0';
-    }
-    cJSON_Delete(root);
-}
-
 /* ---- Public API ----------------------------------------------------------- */
 
 bool wifi_ensure_started(void)
@@ -209,7 +168,7 @@ bool init_wifi(void)
 {
     char ssid[64]     = {0};
     char password[64] = {0};
-    read_wifi_policy(ssid, sizeof(ssid), password, sizeof(password));
+    jpp_settings_read_wifi(ssid, sizeof(ssid), password, sizeof(password));
 
     if (ssid[0] == '\0') {
         ESP_LOGI(TAG, "WIFI: no SSID configured, skipping");
@@ -336,7 +295,7 @@ bool wifi_get_saved_ssid(char *out, size_t out_len)
     if (!out || out_len == 0u) { return false; }
     out[0] = '\0';
     char ssid[64] = {0}, pass[2] = {0};
-    read_wifi_policy(ssid, sizeof(ssid), pass, sizeof(pass));
+    jpp_settings_read_wifi(ssid, sizeof(ssid), pass, sizeof(pass));
     if (ssid[0] == '\0') { return false; }
     strncpy(out, ssid, out_len - 1u);
     out[out_len - 1u] = '\0';

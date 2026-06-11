@@ -17,9 +17,7 @@ Apps come in two flavours:
   package it the same way (`/sd/apps/<app_id>/` + `manifest.json`, with
   `app_type: "native"`). Use this when you need direct, low-latency hardware
   work. There is no special "system" status — a native app runs under the same
-  capability/consent flow as any other app. (See the native loader note under
-  [Application model](#application-model) for how native binaries are currently
-  delivered while the dynamic SD loader is pending.)
+  capability/consent flow as any other app.
 
 Whatever the language, apps never touch the screen, files, network, or radio
 directly. Everything goes through the **App SDK**, and anything sensitive is
@@ -149,7 +147,6 @@ Every native build script now also copies `manifest.json` alongside the `.so` so
 | App | Type | Purpose |
 |---|---|---|
 | `apps/meetapp/` | native C | BLE meetup proof — full example of multi-capability native app |
-| `apps/BounceJPP/` | MicroPython | Minimal animation example (canvas + wakelock) |
 | `apps/testapp_native/` | native C | SDK test app — exercises every `jpp_sdk_*` capability via a menu |
 | `apps/testapp_mp/` | MicroPython | SDK test app — exercises every `jppsdk` Python function via a menu |
 
@@ -187,7 +184,7 @@ Schema v2 is the production app contract. Required fields include:
 - `app_type`: `"micropython"` (default) or `"native"`
 - `capabilities`: approved capability list (see below)
 - `background.enabled`: background opt-in
-- `background.mode`: must be `serialized`
+- `background.tasks`: up to 4 scheduled tasks, each `{ "name": ..., "interval_s": N }` (N ≥ 60) **or** `{ "name": ..., "cron": "min hour dom mon dow" }` (each cron field `*` or a single number); exactly one of `interval_s`/`cron` per task
 - `toolchain.runtime_version`: MicroPython version — must be `"v1.28.0"` (MicroPython apps only)
 - `toolchain.cross_version`: mpy-cross version — must be `"1.28.0"` (MicroPython apps only)
 - `toolchain.bytecode_abi`: bytecode ABI version — must be `6` (MicroPython apps only)
@@ -196,48 +193,49 @@ The capability model remains broker-enforced. Keep capability names and access c
 
 ### Capabilities and permission tiers
 
-Capabilities are declared in the manifest and enforced by `jpp_broker_core`. There are three tiers:
+Most of the SDK needs no permission at all. Rendering, key input, the dialog
+helpers, the buzzer, the wakelock, scoped and shared storage, the key-value
+helper, IPC, `device_status`, and `get_time` are **ungated**: every app can use
+them without declaring anything, and the firmware does not track their use.
+Safety comes from scoping, not consent — scoped file paths are built under
+`/sd/apps/<app_id>/`, shared paths under `/sd/shared/<app_id>/`, the KV helper
+persists to `.kv.json` inside the app's scoped directory, and IPC mailboxes
+live under `/sd/ipc/<recipient>/<sender>/`.
 
-**Tier 0 — auto-granted at load time**
-
-| Capability | What it unlocks | Storage root |
-|---|---|---|
-| `files.scoped` | Read, write, and list the app's private SD directory | `/sd/apps/<app_id>/` |
-| `files.shared` | Read, write, and list the app's subdirectory in the shared SD area | `/sd/shared/<app_id>/` |
-| `device.status` | Single call returning time, network state, battery, and SD presence | — |
+Everything else is declared in the manifest `capabilities` array and consented
+by the user **on first use** (not at launch). There are two tiers:
 
 **Tier 1 — one-time user grant, persisted in `/data/grants/<app_id>.json`**
 
 | Capability | What it unlocks |
 |---|---|
-| `ipc.send` | Post and receive small messages to/from other installed apps via file-backed mailbox |
 | `http.request` | Make broker-serialized HTTP GET and POST requests |
-| `device.kv` | Per-app persistent key-value store backed by `/data/kv/<app_id>.json` |
 | `ble.scan` | Passive BLE scan — discover nearby devices, read advertisement payloads and RSSI |
 | `ble.advertise` | Broadcast a raw BLE advertisement payload; broker serializes the radio slot |
+| `background.register` | Enroll the manifest's `background.tasks` schedule — the firmware runs the tasks headlessly while the device idles on the launcher (see "Background tasks" below) |
 
-**Tier 2 — per-session user grant, prompted at each app launch**
+**Tier 2 — per-session user grant, prompted on first use every launch**
 
 | Capability | What it unlocks |
 |---|---|
 | `files.full` | Full SD card access via user-approved path handles (`sdk_file_open`). Each path is individually approved; the handle persists for the session. |
-| `network.bind` | Create TCP servers, HTTP servers, and UDP sockets |
+| `network.bind` | Open a TCP server socket: one listener, up to 2 accepted connections (`net_bind`/`net_accept`/`net_recv`/`net_send`/`net_close`). Binding is refused while the WebDAV or LRV server runs. |
 | `ble.connect` | GATT client: connect to a BLE peripheral, read/write characteristics. Session-scoped connection handles (max `JPP_SDK_BLE_CONN_CAPACITY`). |
 | `ble.host` | GATT server: register one service and accept inbound BLE connections. One registration per app session. |
 
-Apps declaring Tier 1 or Tier 2 capabilities must also pass manifest validation; `jpp_manifest_v2_is_allowed_capability` is the authoritative whitelist.
+Declared capabilities must pass manifest validation; `jpp_manifest_v2_is_allowed_capability` is the authoritative whitelist, and it accepts only the eight capabilities above. Declaring anything else rejects the manifest with `INVALID_CAPABILITY`.
 
 #### How the user grants permissions
 
-When an app launches, the firmware asks the user to approve the capabilities it
-declares, before the app runs:
+Consent is lazy: the prompt appears the first time the app actually calls an
+SDK function that needs the capability, not at launch.
 
-- **Tier 0** is granted automatically — no prompt.
-- **Tier 1** shows an Allow/Deny screen the first time the app requests it. If
-  allowed, the grant is saved to `/data/grants/<app_id>.json` and the app is not
-  asked again on later launches. If denied, the app launches without that
-  capability.
-- **Tier 2** shows an Allow/Deny screen on every launch; nothing is persisted.
+- **Tier 1** shows an Allow/Deny screen on first use. If allowed, the grant is
+  saved to `/data/grants/<app_id>.json` and the app is not asked again on
+  later launches. If denied, the call returns `ACCESS_DENIED` and the app
+  keeps running without that capability.
+- **Tier 2** shows an Allow/Deny screen on first use in every session; nothing
+  is persisted.
 
 The prompt is written for the person holding the device: it shows a plain-language
 sentence describing what the app wants to do (e.g. "This app wants to connect to
@@ -271,14 +269,15 @@ The App SDK calls in `jpp_sdk_bridge.h` are:
 | `jpp_sdk_canvas_write`, `jpp_sdk_canvas_clear`, `jpp_sdk_canvas_draw_pixel` | — (built-in, no capability) |
 | `jpp_sdk_wakelock_acquire`, `jpp_sdk_wakelock_release` | — (prevents screen dim and deep sleep) |
 | `jpp_sdk_buzzer_play`, `jpp_sdk_buzzer_tone`, `jpp_sdk_buzzer_play_sequence`, `jpp_sdk_buzzer_stop` | — (no capability) |
-| `jpp_sdk_device_status`, `jpp_sdk_get_time` | `device.status` |
-| `jpp_sdk_file_read`, `jpp_sdk_file_write`, `jpp_sdk_file_list` | `files.scoped` |
-| `jpp_sdk_shared_read`, `jpp_sdk_shared_write`, `jpp_sdk_shared_list` | `files.shared` |
+| `jpp_sdk_device_status`, `jpp_sdk_get_time` | — (ungated) |
+| `jpp_sdk_file_read`, `jpp_sdk_file_write`, `jpp_sdk_file_list` | — (scoped to `/sd/apps/<app_id>/`) |
+| `jpp_sdk_shared_read`, `jpp_sdk_shared_write`, `jpp_sdk_shared_list` | — (scoped to `/sd/shared/<app_id>/`) |
 | `jpp_sdk_file_open`, `jpp_sdk_handle_read`, `jpp_sdk_handle_write`, `jpp_sdk_handle_list`, `jpp_sdk_handle_close` | `files.full` |
-| `jpp_sdk_add_background_task` | `background.register` (system-granted) |
+| `jpp_sdk_background_register` | `background.register` |
 | `jpp_sdk_http_request` | `http.request` |
-| `jpp_sdk_ipc_send`, `jpp_sdk_ipc_recv` | `ipc.send` |
-| `jpp_sdk_kv_get`, `jpp_sdk_kv_set`, `jpp_sdk_kv_delete` | `device.kv` |
+| `jpp_sdk_net_bind`, `jpp_sdk_net_accept`, `jpp_sdk_net_recv`, `jpp_sdk_net_send`, `jpp_sdk_net_close` | `network.bind` |
+| `jpp_sdk_ipc_send`, `jpp_sdk_ipc_recv` | — (mailboxes under `/sd/ipc/`) |
+| `jpp_sdk_kv_get`, `jpp_sdk_kv_set`, `jpp_sdk_kv_delete` | — (KV helper in scoped storage) |
 | `jpp_sdk_ble_scan` | `ble.scan` |
 | `jpp_sdk_ble_advertise_start`, `jpp_sdk_ble_advertise_stop` | `ble.advertise` |
 | `jpp_sdk_ble_connect`, `jpp_sdk_ble_read_char`, `jpp_sdk_ble_write_char`, `jpp_sdk_ble_disconnect` | `ble.connect` |
@@ -302,13 +301,13 @@ per-app GATT definitions in the firmware.
 **MicroPython apps** — the runtime calls lifecycle hooks on the object returned by `create_app`:
 
 - `on_start` — called once at launch
-- `on_foreground` — called when the app gains the screen
-- `on_background` — called when another screen is pushed on top
 - `on_stop` — called at teardown
 - `on_idle` — called approximately every 100 ms while the app is in the foreground (dispatched by the main loop via `JPP_VM_REQUEST_IDLE`)
 - `handle_action(key)` — called when a key event fires; `key` is a `jpp_sdk_key_event_t` int constant (dispatched by the keypad task via `JPP_VM_REQUEST_ACTION`)
 
-**Native C apps** — there are no separate lifecycle hooks. `jpp_app_entry(ctx)` is called once; the function owns the loop, polls keys with `jpp_sdk_poll_key` / `jpp_sdk_wait_key`, and returns when the app is done.
+For headless background runs, the runtime skips `create_app` entirely and calls the module-level `on_task(name)` function instead (see "Background tasks" below).
+
+**Native C apps** — there are no separate lifecycle hooks. `jpp_app_entry(ctx)` is called once; the function owns the loop, polls keys with `jpp_sdk_poll_key` / `jpp_sdk_wait_key`, and returns when the app is done. For headless background runs the loader calls the optional export `jpp_app_task_entry(ctx, name)` instead.
 
 The app contract is intentionally narrow: app code should work through the App SDK and not assume privileged access to storage, network, time, or hardware beyond granted capabilities.
 
@@ -318,7 +317,7 @@ The entry point differs by app type.
 
 **MicroPython entry (`main.py` compiled to `main.mpy`):**
 
-MicroPython apps expose `create_app(sdk)` — a callable that accepts the SDK context and returns an app object. The runtime calls this once at launch, then dispatches lifecycle hooks (`on_start`, `on_foreground`, `on_background`, `on_idle`, `on_stop`, `handle_action`) on the returned object.
+MicroPython apps expose `create_app(sdk)` — a callable that accepts the SDK context and returns an app object. The runtime calls this once at launch, then dispatches lifecycle hooks (`on_start`, `on_idle`, `on_stop`, `handle_action`) on the returned object.
 
 ```python
 import jppsdk
@@ -332,12 +331,6 @@ class MyApp:
 
     def on_start(self):
         self.sdk.set_frame(["Hello, world!"])
-
-    def on_foreground(self):
-        pass
-
-    def on_background(self):
-        pass
 
     def on_idle(self):
         key = self.sdk.poll_key()
@@ -462,7 +455,7 @@ if jppsdk.dialog("Erase all saved data?", title="Confirm"):
 
 | Function | Signature | Notes |
 |---|---|---|
-| `buzzer_play` | `(sound: int)` | Play a predefined sound: `SOUND_SUCCESS`, `SOUND_FAILURE`, `SOUND_NOTIFY`, `SOUND_STARTUP`, `SOUND_CLICK`. Non-blocking (returns immediately; sound stops in background). |
+| `buzzer_play` | `(sound: int)` | Play a predefined sound: `SOUND_SUCCESS`, `SOUND_FAILURE`, `SOUND_NOTIFY`, `SOUND_STARTUP`, `SOUND_CLICK`. Blocking until the sound finishes. |
 | `buzzer_tone` | `(freq_hz: int, duration_ms: int)` | Play a single tone. `freq_hz=0` is silence. Blocking for `duration_ms`. |
 | `buzzer_play_sequence` | `(notes: list[tuple])` | Play a list of `(freq_hz, duration_ms)` tuples. Blocking. |
 | `buzzer_stop` | `()` | Stop any playing sound immediately. |
@@ -471,8 +464,8 @@ if jppsdk.dialog("Erase all saved data?", title="Confirm"):
 
 | Function | Signature | Returns | Capability |
 |---|---|---|---|
-| `device_status` | `()` | `dict` with `battery_pct` (`-1` if unknown) and `charging` | `device.status` |
-| `get_time` | `()` | `str` `"YYYY-MM-DD HH:mm"` | `device.status` |
+| `device_status` | `()` | `dict` with `battery_pct` (`-1` if unknown) and `charging` (`"-1"` = unknown) | — (ungated) |
+| `get_time` | `()` | `str` `"YYYY-MM-DD HH:mm"` | — (ungated) |
 
 **Input**
 
@@ -483,7 +476,7 @@ if jppsdk.dialog("Erase all saved data?", title="Confirm"):
 
 Key constants: `KEY_NONE`, `KEY_UP`, `KEY_DOWN`, `KEY_LEFT`, `KEY_RIGHT`, `KEY_CENTER`, `KEY_CENTER_LONG`.
 
-**Scoped file I/O** (requires `files.scoped`)
+**Scoped file I/O** (ungated — sandboxed to `/sd/apps/<app_id>/`)
 
 | Function | Signature | Returns |
 |---|---|---|
@@ -493,7 +486,7 @@ Key constants: `KEY_NONE`, `KEY_UP`, `KEY_DOWN`, `KEY_LEFT`, `KEY_RIGHT`, `KEY_C
 
 Paths are relative to `/sd/apps/<app_id>/`.
 
-**Shared file I/O** (requires `files.shared`)
+**Shared file I/O** (ungated — sandboxed to `/sd/shared/<app_id>/`)
 
 | Function | Signature | Returns |
 |---|---|---|
@@ -569,7 +562,20 @@ The canvas is a 128×48 pixel content area (display pages 2–7). Canvas pixels 
 | `canvas_clear` | `()` | Zero the entire canvas |
 | `canvas_draw_pixel` | `(x: int, y: int, on: bool)` | Set or clear a single pixel; x: 0–127, y: 0–47 |
 
-**IPC** (requires `ipc.send`)
+**Network** (requires `network.bind`)
+
+TCP server sockets: one listener, up to 2 accepted connections. All sockets
+close automatically when the app exits.
+
+| Function | Signature | Returns |
+|---|---|---|
+| `net_bind` | `(port: int)` | `None`; raises on error (including `SERVER_ACTIVE` while WebDAV/LRV runs) |
+| `net_accept` | `(timeout_ms: int)` | `int` socket id, or `None` if no connection arrived in time |
+| `net_recv` | `(sock: int, max_len: int, timeout_ms: int)` | `bytes` (`b""` on timeout or peer close; max 1024 bytes per call) |
+| `net_send` | `(sock: int, data: bytes)` | `None` |
+| `net_close` | `(sock: int)` | `None`; `sock=-1` closes the listener |
+
+**IPC** (ungated — mailboxes under `/sd/ipc/<recipient>/<sender>/`)
 
 | Function | Signature | Returns |
 |---|---|---|
@@ -578,15 +584,25 @@ The canvas is a 128×48 pixel content area (display pages 2–7). Canvas pixels 
 
 Messages are file-backed; `ipc_recv` consumes and deletes the oldest message.
 
-**Background tasks** (requires `background.register`, system-granted)
+**Background tasks** (requires `background.register`, Tier 1)
 
-| Function | Signature |
-|---|---|
-| `add_background_task` | `(name: str)` |
+| Function | Signature | Returns |
+|---|---|---|
+| `background_register` | `()` | `None`; raises `SdkPermissionError` on deny |
 
-**Persistent key-value store** (requires `device.kv`)
+The schedule itself lives in the manifest (`background.enabled` + `background.tasks`); `background_register()` only triggers the consent prompt. Once the grant is persisted, the firmware syncs the app's tasks into `/data/bg_schedule.json` every time the app exits — adding them while the grant holds, removing them if the manifest stops declaring them.
 
-Per-app store backed by `/data/kv/<app_id>.json`; survives app restarts.
+A due task is run **headlessly**: the firmware launches the app without UI while the device idles on the launcher (no foreground app, no WebDAV/LRV server, no serial session) and calls the module-level `on_task(name)` function (MicroPython) or the `jpp_app_task_entry(ctx, name)` export (native C). Rules for task code:
+
+- No UI: there is no screen, no keys, and consent prompts are auto-denied — only launch-time persisted Tier-1 grants are usable. Do the work, write results to scoped storage, return.
+- Wall-clock quota: a run is killed after `JPP_RESOURCE_BG_TASK_RUN_QUOTA_MS` (30 s) by a device restart, so finish well within it.
+- Interval tasks (`interval_s`, minimum 60) fire when `now >= last_run + interval`; cron tasks fire once in the matching minute. The scheduler only ticks while the device is awake — deep sleep pauses it, and missed cron minutes are not replayed.
+- A user launch preempts a running background task.
+
+**Persistent key-value helper** (ungated)
+
+Per-app store backed by `.kv.json` in the app's scoped storage
+(`/sd/apps/<app_id>/.kv.json`); survives app restarts.
 
 | Function | Signature | Returns |
 |---|---|---|
@@ -606,8 +622,8 @@ Per-app store backed by `/data/kv/<app_id>.json`; survives app restarts.
   "sdk_max": 1,
   "entry": "main.mpy",
   "app_type": "micropython",
-  "capabilities": ["device.status", "device.kv"],
-  "background": { "enabled": false, "mode": "serialized" },
+  "capabilities": ["http.request"],
+  "background": { "enabled": false },
   "toolchain": {
     "runtime_version": "v1.28.0",
     "cross_version": "1.28.0",
@@ -616,7 +632,7 @@ Per-app store backed by `/data/kv/<app_id>.json`; survives app restarts.
 }
 ```
 
-Allowed capabilities for `device.kv` and `http.request` are Tier 1 — they require a one-time user grant. Declare them in `capabilities`; the user is asked to approve them when the app launches, and the grant is then remembered for future launches.
+`http.request` is Tier 1 — it requires a one-time user grant. Declare it in `capabilities`; the user is asked to approve it the first time the app makes a request, and the grant is then remembered for future launches. Storage, IPC, the KV helper, and `device_status`/`get_time` need no declaration at all.
 
 ## Rendering and UI contract
 
@@ -643,7 +659,7 @@ App packaging should follow the manifest rules above. Keep app layout and packag
 - Do not describe `firmware/` as the active app source tree.
 - Do not bypass the broker for file, network, keypad, RTC, or storage access in any app type.
 - Do not compile `.mpy` files with a different mpy-cross version than 1.28.0 — the bytecode ABI check will reject them at load time.
-- Do not use `network.bind` until it is implemented — it is whitelisted in the manifest validator but has no runtime implementation yet.
+- Do not hold a listener open without polling `net_accept` — the connection table is two sockets; close what you are done with.
 - Do not mix `canvas_write`/`canvas_draw_pixel` with `set_frame` on the same lines — canvas pixels overlay text; use one or the other for the content area.
 
 ## Summary

@@ -15,14 +15,27 @@ __pycache__/
 venv/
 *.egg-info/
 
-# ESP-IDF
+# ESP-IDF (sdkconfig.defaults is the tracked source of truth; the full
+# sdkconfig is generated from it)
 build/
+sdkconfig
 sdkconfig.old
-sdkconfig.defaults
+sdkconfig.bak
+
+# LRV manufacturing keys and provisioning output (never commit)
+scripts/mfr_seckey.bin
+scripts/mfr_pubkey.bin
+scripts/testbackup.json
+
+# Temporary planning notes
+CLEANUP_PLAN.md
 
 # Docker / generated
 dist/
 .idf_version
+
+# Vendored component build configs (not part of this project's config)
+managed_components/**/sdkconfig.defaults
 
 # Git metadata
 .git/

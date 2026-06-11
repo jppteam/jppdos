@@ -8,21 +8,19 @@
   "sdk_max": 1,
   "entry": "testapp_native.bin",
   "background": {
-    "enabled": false,
-    "mode": "serialized"
+    "enabled": true,
+    "tasks": [
+      { "name": "heartbeat", "interval_s": 300 }
+    ]
   },
   "capabilities": [
-    "files.scoped",
-    "files.shared",
     "files.full",
-    "device.status",
-    "device.kv",
     "http.request",
-    "ipc.send",
+    "network.bind",
     "ble.scan",
     "ble.advertise",
     "ble.connect",
-    "ble.host"
-  ],
-  "modules": []
+    "ble.host",
+    "background.register"
+  ]
 }

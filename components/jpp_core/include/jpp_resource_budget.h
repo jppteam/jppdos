@@ -13,14 +13,10 @@ extern "C" {
 
 #define JPP_RESOURCE_NATIVE_FREE_HEAP_AFTER_BOOT_FLOOR_BYTES 65536u
 
-/* Content text rows an app frame may set (rows 0..N-1); the status footer is a
-   separate row drawn beneath them, so 7 content rows fills the 8-row OLED. */
+/* Text rows an app frame may set (rows 0..6 of the 8-page OLED; page 1 is
+   reserved for the signature rule when frame_title_rule is set). */
 #define JPP_RESOURCE_SDK_FRAME_LINE_TARGET 7u
 #define JPP_RESOURCE_SDK_FRAME_LINE_LIMIT 7u
-#define JPP_RESOURCE_SDK_BACKGROUND_TASK_TARGET 2u
-#define JPP_RESOURCE_SDK_BACKGROUND_TASK_LIMIT 4u
-#define JPP_RESOURCE_BACKGROUND_CALLBACK_QUOTA_MS 40u
-#define JPP_RESOURCE_BACKGROUND_WATCHDOG_STRIKES 2u
 
 #define JPP_RESOURCE_SDK_HANDLE_TARGET 2u
 #define JPP_RESOURCE_SDK_HANDLE_LIMIT 4u
@@ -28,9 +24,17 @@ extern "C" {
 #define JPP_RESOURCE_SDK_BLE_CONN_TARGET 1u
 #define JPP_RESOURCE_SDK_BLE_CONN_LIMIT 2u
 
+#define JPP_RESOURCE_SDK_NET_LISTENER_LIMIT 1u  /* concurrent listening sockets */
+#define JPP_RESOURCE_SDK_NET_SOCKET_LIMIT 2u    /* concurrent accepted connections */
+
+#define JPP_RESOURCE_BG_SCHEDULE_MAX 8u           /* scheduled tasks across all apps */
+#define JPP_RESOURCE_BG_TASK_RUN_QUOTA_MS 30000u  /* wall-clock kill limit per headless run */
+#define JPP_RESOURCE_BG_INTERVAL_MIN_S 60u        /* minimum schedule interval */
+
 #define JPP_RESOURCE_BROKER_RESULT_FIELD_TARGET 4u
 #define JPP_RESOURCE_BROKER_RESULT_FIELD_LIMIT 8u
-/* Lock slots: storage, device, vm_queue, ble_radio, ble_client, ble_host */
+/* Lock slots: storage, device, vm_queue, ble_radio, ble_client, ble_host,
+   http, network */
 #define JPP_RESOURCE_BROKER_LOCK_TARGET 4u
 #define JPP_RESOURCE_BROKER_LOCK_LIMIT 8u
 

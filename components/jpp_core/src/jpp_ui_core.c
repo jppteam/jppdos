@@ -248,8 +248,7 @@ void jpp_ui_shell_set_status(jpp_ui_shell_t *shell,
 jpp_ui_status_t jpp_ui_shell_add_app(jpp_ui_shell_t *shell,
                                        const char *app_id,
                                        const char *name,
-                                       jpp_ui_app_source_t source,
-                                       bool enabled)
+                                       jpp_ui_app_source_t source)
 {
     jpp_ui_app_entry_t *entry;
     if (shell == NULL || app_id == NULL || app_id[0] == '\0') {
@@ -262,7 +261,6 @@ jpp_ui_status_t jpp_ui_shell_add_app(jpp_ui_shell_t *shell,
     jpp_str_copy(entry->name, sizeof(entry->name),
                  name != NULL && name[0] != '\0' ? name : app_id);
     entry->source  = source;
-    entry->enabled = enabled;
     shell->app_count += 1u;
     return JPP_UI_STATUS_OK;
 }
@@ -493,25 +491,18 @@ jpp_ui_status_t jpp_ui_shell_show_dialog(jpp_ui_shell_t *shell,
 static jpp_ui_status_t jpp_ui_shell_open_selected(jpp_ui_shell_t *shell)
 {
     const jpp_ui_app_entry_t *entry;
-    const char *disabled_body[2];
 
     if (shell->app_count == 0u) { return JPP_UI_STATUS_OK; }
     entry = &shell->apps[shell->selected_app];
     jpp_str_copy(shell->last_opened_app_id, sizeof(shell->last_opened_app_id), entry->app_id);
 
-    if (!entry->enabled) {
-        disabled_body[0] = entry->app_id;
-        disabled_body[1] = "enable in Settings";
-        return jpp_ui_shell_show_dialog(shell, "App disabled", disabled_body, 2u);
-    }
     if (jpp_str_eq(entry->app_id, "settings")) {
         return jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_SETTINGS);
     }
     if (jpp_str_eq(entry->app_id, "webdav")) {
         return jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_WEBDAV);
     }
-    if (entry->source == JPP_UI_APP_SOURCE_SD ||
-        entry->source == JPP_UI_APP_SOURCE_NATIVE) {
+    if (entry->source == JPP_UI_APP_SOURCE_SD) {
         return jpp_ui_stack_push(&shell->stack, entry->app_id);
     }
     return JPP_UI_STATUS_OK;
@@ -667,4 +658,43 @@ void jpp_ui_shell_set_fileserver_state(jpp_ui_shell_t *shell,
     } else {
         shell->fileserver_password[0] = '\0';
     }
+}
+
+/* ---- Generic list-view helpers -------------------------------------------- */
+
+size_t jpp_ui_scroll_clamp(size_t cursor, size_t total, size_t visible, size_t scroll)
+{
+    if (cursor < scroll) {
+        scroll = cursor;
+    } else if (cursor >= scroll + visible) {
+        scroll = cursor - visible + 1u;
+    }
+    if (total <= visible) {
+        scroll = 0u;
+    } else if (scroll + visible > total) {
+        scroll = total - visible;
+    }
+    return scroll;
+}
+
+size_t jpp_ui_marquee_offset(uint32_t tick, size_t text_len, size_t window, size_t pause_ticks)
+{
+    if (text_len <= window) {
+        return 0u;
+    }
+    size_t max_off = text_len - window;
+    size_t cycle   = 2u * pause_ticks + max_off;
+    size_t phase   = (size_t)(tick % (uint32_t)cycle);
+    if (phase < pause_ticks) {
+        return 0u;
+    }
+    if (phase < pause_ticks + max_off) {
+        return phase - pause_ticks;
+    }
+    return max_off;
+}
+
+const char *jpp_ui_consent_selector_row(bool allow)
+{
+    return allow ? " Deny       >Allow" : ">Deny        Allow";
 }

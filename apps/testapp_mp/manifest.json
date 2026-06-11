@@ -8,21 +8,20 @@
   "sdk_max": 1,
   "entry": "main.mpy",
   "background": {
-    "enabled": false,
-    "mode": "serialized"
+    "enabled": true,
+    "tasks": [
+      { "name": "heartbeat", "interval_s": 300 }
+    ]
   },
   "capabilities": [
-    "files.scoped",
-    "files.shared",
     "files.full",
-    "device.status",
-    "device.kv",
     "http.request",
-    "ipc.send",
+    "network.bind",
     "ble.scan",
     "ble.advertise",
     "ble.connect",
-    "ble.host"
+    "ble.host",
+    "background.register"
   ],
   "toolchain": {
     "runtime_version": "v1.28.0",

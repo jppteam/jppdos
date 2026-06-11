@@ -30,6 +30,18 @@ jpp_mp_runner_result_t jpp_mp_runner_run(
     const char        *entry_mpy_path
 );
 
+/*
+ * Headless background-task run: imports the entry module and calls its
+ * module-level on_task(name) once — no create_app, no lifecycle loop.
+ * Used by the background scheduler.
+ */
+jpp_mp_runner_result_t jpp_mp_runner_run_task(
+    jpp_sdk_context_t *sdk,
+    jpp_vm_context_t  *vm,
+    const char        *entry_mpy_path,
+    const char        *task_name
+);
+
 const char *jpp_mp_runner_result_name(jpp_mp_runner_result_t result);
 
 #ifdef __cplusplus

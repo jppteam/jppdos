@@ -1,11 +1,11 @@
 # HARDWARE_SUMMARY.md — Agent Reference for the ESP32-C6-based J++Device
 
-Purpose: give a coding agent everything needed to write a ESP-IDF firmware
-for **J++Device**. This file documents the board's MCU, every
+Purpose: give a coding agent everything needed to work on ESP-IDF firmware
+for the **J++Device**. This file documents the board's MCU, every
 pin, every connected device/IC, the bus configuration each one needs, and the
-non-obvious hardware quirks that the working firmware had to handle. Pin numbers
-and electrical facts are derived from the shipping firmware (`main/jpp_hw_config.h`
-plus the per-peripheral drivers) and are authoritative for the physical board.
+non-obvious hardware quirks the firmware handles. Pin numbers
+and electrical facts match `main/jpp_hw_config.h`
+plus the per-peripheral drivers and are authoritative for the physical board.
 
 If you only read one thing: the pin map in the next section plus the
 [Hardware quirks](#hardware-quirks-must-handle) section are the parts you cannot
@@ -23,13 +23,13 @@ behavior.
 | Flash | 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`) |
 | Partition table | `partitions.csv`; factory app at offset 0x10000, plus `data_fs`, `runtime_fs`, and `coredump` |
 | ESP-IDF | v5.5.1 |
-| FreeRTOS tick | 1000 Hz (`CONFIG_FREERTOS_HZ=1000`) |
-| Console | UART0 @ 115200 **and** USB-Serial-JTAG both enabled |
-| Main task stack | 3584 bytes |
+| FreeRTOS tick | 100 Hz (`CONFIG_FREERTOS_HZ=100`) |
+| Console | UART0 @ 115200 (logs + JPPD-SMP binary protocol) |
+| Main task stack | 8192 bytes (`CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192`) |
 
-The MCU exposes two console paths simultaneously: ESP-IDF logging goes to UART0
-at 115200 baud, while the USB-Serial-JTAG peripheral is *also* driver-installed
-so the firmware can **receive** typed commands over USB (see §7).
+ESP-IDF logging goes to UART0 at 115200 baud; the same UART carries the
+JPPD-SMP binary management protocol (see §7). The USB-Serial-JTAG peripheral
+is used for flashing.
 
 ---
 
@@ -133,13 +133,15 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
 - Configured for the **868 MHz EU band** (firmware programs Frf for 868.1 MHz:
   `Frf = freq / (32e6 / 2^19)`, 32 MHz reference crystal). The board's matching
   network / antenna is therefore an 868 MHz design — do not assume 433/915.
-- DIO0 is wired and set as input-with-pullup but the eval firmware does not use
-  the IRQ; a real driver would map DIO0 to RxDone/TxDone.
+- DIO0 is wired (input-with-pullup); a driver that services the radio maps
+  DIO0 to RxDone/TxDone. JPPDOS reserves the LoRa CS (GPIO6) on the shared SPI
+  bus but does not drive the SX1276.
 
 ### 4.4 SD card (SPI mode, FATFS)
 - SPI mode, CS=GPIO7, up to 20 MHz, shares the SX1276 SPI bus (SPI2_HOST).
-- Mounted via `esp_vfs_fat_sdspi_mount` at `/sdcard`, FAT32 only
-  (exFAT/NTFS not supported), `max_files=4`, alloc unit 16 KB, no auto-format.
+- Mounted via `esp_vfs_fat_sdspi_mount` at `/sd`, FAT32 only
+  (exFAT/NTFS not supported), no auto-format; mounted at boot and held
+  mounted (`mount_sd()` in `main/jpp_hw_init.c`).
 - **CRITICAL QUIRK — patched sdmmc component:** the repo ships
   `components/sdmmc/` which overrides ESP-IDF's stock `sdmmc` component. The only
   changed file is `sdmmc_sd.c`, patched to make **CMD59 (CRC_ON_OFF) failure
@@ -148,7 +150,7 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
   those cards mount (same approach Flipper Zero / Arduino SD take). **A new
   firmware must carry this same override or those cards won't mount.** All other
   sdmmc sources are pulled straight from `$IDF_PATH/components/sdmmc`.
-- Hardware note from bring-up: some cards need a 10 µF cap on the 3.3 V rail to
+- Hardware note: some cards need a 10 µF cap on the 3.3 V rail to
   mount reliably.
 
 ### 4.5 Battery sense (ADC1 ch1 / GPIO1)
@@ -156,13 +158,13 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
   `Vbat = Vpin × 2` (`BATT_DIV_FACTOR = 2`).
 - 12-bit ADC, 12 dB atten, firmware averages **8 samples**.
 - SoC mapping: 4200 mV = 100 %, 3000 mV = 0 %, linear between.
-- "Healthy" window the eval uses: 3000–4400 mV.
+- Healthy window: 3000–4400 mV.
 
 ### 4.6 Keypad — 5-key resistor ladder (ADC1 ch2 / GPIO2)
 - Five buttons share GPIO2 through a resistor ladder. The **ESP32-C6 internal
   ~45 kΩ pull-up is the top of the divider** — firmware enables it
   (`gpio_pullup_en`) and without it the pin floats and ghost-presses.
-- 12-bit ADC, 12 dB atten. Calibrated raw bands (2025-05-27):
+- 12-bit ADC, 12 dB atten. Calibrated raw bands (reference unit):
 
   | Key | Raw centre | Threshold (raw <) |
   |---|---|---|
@@ -203,7 +205,8 @@ These are the board/silicon specifics that are easy to get wrong:
    (observed: `00:00:00 01/01/00` with sec unchanging after 1.1 s). Do not
    rely on all-zeros detection to decide whether to restart the oscillator;
    always clear the CH bit explicitly with a read-modify-write on register 0
-   before the ticking check. See `ds1307_clear_halt()` in `main/ds1307.c`.
+   before the ticking check. Handled in `jpp_rtc_hw_read()`
+   (`components/jpp_core/src/jpp_rtc_core.c`).
 3. **SD card CMD59 override** (see §4.4) — ship the patched `components/sdmmc/`.
 4. **OLED charge pump** (`8D 14`) and **segment/COM remap** (`A1`,`C8`) are
    mandatory for this panel; omitting them gives a blank or mirrored screen.
@@ -218,42 +221,35 @@ These are the board/silicon specifics that are easy to get wrong:
 
 ---
 
-## 6. Initialization order (from working firmware)
+## 6. Initialization order (`app_main` in `main/app_main.c`)
 
 ```
-buzzer_init()        // LEDC timer+channel, drive-strength boost on GPIO3
-init_i2c()           // new master bus @100kHz + add OLED(0x3C) & RTC(0x68)
-init_spi()           // SPI2 bus + add LoRa device @8MHz (SD added later)
-init_adc()           // ADC1 oneshot unit + calibration scheme
-battery_init()       // configure ADC1 ch1, 12dB
-keypad_init()        // configure ADC1 ch2, 12dB, enable GPIO2 pull-up
-sx1276_init()        // configure RST(out)/DIO0(in-pullup), pulse reset
-init_console()       // install USB-Serial-JTAG driver (for RX)
-ssd1306_init()       // run OLED init sequence, clear framebuffer
+jpp_heap_monitor_init()   // failed-alloc logging + low-heap sampler, first thing
+jpp_buzzer_init()         // LEDC timer+channel, drive-strength boost on GPIO3
+init_i2c()                // master bus @100kHz + OLED(0x3C) & RTC(0x68)
+ssd1306 splash            // boot display with progress steps
+mount_flash_storage()     // /data + /lib SPIFFS mounts
+settings load             // /data/settings.json probe / defaults
+mount_sd()                // SPI2 bus + SD card at /sd, held mounted
+init_wifi()               // NVS + esp_wifi STA mode
+jpp_serial_mgr_init()     // UART0 RX driver + TX log mutex (JPPD-SMP)
+app discovery             // /sd/apps scan, launcher handoff
 ```
-
-SD card is mounted on demand (per test) and unmounted after, never held open.
 
 ---
 
-## 7. Serial / console behavior
-- Logs on UART0 @115200; commands read over USB-Serial-JTAG.
-- A background task reads typed lines and supports:
-  - `cal` → 60 s keypad ADC stream for threshold calibration.
-  - `scan` → I2C bus scan over 0x08–0x77.
+## 7. Serial behavior
+- ESP-IDF logs on UART0 @115200.
+- The same UART carries **JPPD-SMP**, the binary management protocol
+  (`main/jpp_serial_mgr.c`): a host PC can manage SD files, query device
+  info, and retrieve LRV data after the user approves the session on-device.
+  A TX mutex keeps log lines and binary frames from interleaving.
 
 ---
 
 ## 8. Required ESP-IDF components
-From `main/CMakeLists.txt`: `driver`, `esp_adc`, `fatfs`, `sdmmc` (overridden,
-see §4.4), `esp_timer`, `nvs_flash`, `log`, and `spi_flash` (private). Plus
-`driver/usb_serial_jtag.h` for the console RX path.
-
----
-
-## 9. What the original firmware is (context)
-It's an interactive **hardware bring-up / evaluation** tool: an OLED menu driven
-by the keypad runs per-peripheral self-tests (battery, OLED, RTC, LoRa, SD,
-keypad, buzzer) with buzzer feedback and UART logging. A new firmware for the
-same board does not need that menu — but it must drive the same ICs on the same
-pins with the same quirks documented above.
+From `main/CMakeLists.txt`: `jpp_core`, `jpp_native_loader_core`,
+`jpp_crypto_core`, `spiffs`, `fatfs`, `sdmmc` (overridden, see §4.4),
+`driver`, `esp_adc`, `json`, `esp_wifi`, `esp_netif`, `lwip`, `nvs_flash`,
+`bt`, `esp_http_client`, `esp_http_server`, `esp_timer`, `esp_rom`,
+`espressif__libsodium`, and `mbedtls`.

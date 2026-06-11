@@ -1,0 +1,10 @@
+{
+  "schema_version": 2,
+  "app_type": "micropython",
+  "name": "Bad Background",
+  "version": "1.0.0",
+  "entry": "main.mpy",
+  "background": { "enabled": true, "tasks": [ { "name": "fast", "interval_s": 30 } ] },
+  "capabilities": ["background.register"],
+  "toolchain": { "runtime_version": "v1.28.0", "cross_version": "1.28.0", "bytecode_abi": 6 }
+}

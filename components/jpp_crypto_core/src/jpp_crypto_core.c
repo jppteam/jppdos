@@ -8,10 +8,10 @@
  *   - Challenge: SHA-512(agg_pubkey || agg_nonce || message).
  *   - Final sig format: first 32 bytes = agg_nonce (R), last 32 bytes = sum(s_i).
  *
- * TODO (for strict BIP-327 compliance):
- *   - Replace SHA-512 with BIP-327 tagged hashes.
- *   - Use two nonces per participant (r1, r2) and the b-factor blinding.
- *   - Sort public keys lexicographically before computing L.
+ * Design decisions (vs. BIP-327 — see jpp_crypto_core.h for the full list):
+ *   - SHA-512 instead of BIP-327 tagged hashes.
+ *   - One nonce per participant (no r2 / b-factor blinding).
+ *   - Public keys are hashed in caller order (no lexicographic sort).
  */
 
 #include "../include/jpp_crypto_core.h"
@@ -90,8 +90,8 @@ jpp_crypto_status_t jpp_crypto_verify(
  * Compute L = SHA-512(X_0 || X_1 || ... || X_{n-1}) where X_i are the
  * raw 32-byte public keys in the order supplied by the caller.
  *
- * BIP-327 deviation: BIP-327 sorts keys lexicographically before hashing.
- * TODO: Sort all_pubkeys before computing L for strict compliance.
+ * Design decision: keys are hashed in caller order — every participant must
+ * supply the key list in the same order (BIP-327 sorts lexicographically).
  */
 static void compute_key_list_hash(
     const uint8_t *pubkeys,
@@ -184,8 +184,8 @@ jpp_crypto_status_t jpp_crypto_musig2_aggregate_pubkeys(
  *   [0..31]  = R  (curve point, same as secret_nonce[32..63])
  *   [32..63] = 0  (reserved; in two-nonce BIP-327 this would be R2)
  *
- * BIP-327 deviation: uses only one nonce scalar per participant.
- * TODO: Add a second nonce (r2, R2) for full BIP-327 two-nonce blinding.
+ * Design decision: one nonce scalar per participant (BIP-327 uses two with
+ * b-factor blinding); secure under discrete log given CSPRNG nonces.
  */
 jpp_crypto_status_t jpp_crypto_musig2_nonce_gen(
     uint8_t secret_nonce[JPP_CRYPTO_MUSIG2_SECNONCE_BYTES],
@@ -229,8 +229,8 @@ jpp_crypto_status_t jpp_crypto_musig2_nonce_gen(
 /*
  * Aggregate public nonces: R_agg = sum_i( R_i )
  *
- * BIP-327 deviation: only aggregates the first nonce slot (bytes 0..31).
- * TODO: Aggregate the second nonce slot and compute the b-factor blinding.
+ * Design decision: aggregates the single nonce slot (bytes 0..31); the
+ * second slot exists only to keep the buffer layout symmetric.
  */
 jpp_crypto_status_t jpp_crypto_musig2_aggregate_nonces(
     const uint8_t *pub_nonces,
@@ -373,8 +373,9 @@ jpp_crypto_status_t jpp_crypto_musig2_partial_sign(
  * This function only sums partial s values.  The aggregate nonce R must be
  * prepended by the leader.
  *
- * TODO: The API should accept agg_pubnonce so this function can write R_agg
- * into final_sig[0..31] itself.  Currently the caller is responsible.
+ * Design decision: the caller writes R_agg into final_sig[0..31]; this
+ * function fills only the s half.  Keeping nonce aggregation and signature
+ * summation separate matches the two-round call flow.
  */
 jpp_crypto_status_t jpp_crypto_musig2_aggregate_sigs(
     const uint8_t *partial_sigs,

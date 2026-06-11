@@ -1,5 +1,6 @@
 #include "jpp_settings_screen.h"
 #include "jpp_buzzer_core.h"
+#include "jpp_draw_util.h"
 #include "ssd1306.h"
 
 #include <stdio.h>
@@ -40,11 +41,6 @@ static void draw_right(uint8_t page, const char *str)
 }
 
 /* A thin horizontal rule at the given page (single pixel row). */
-static void draw_divider(uint8_t page)
-{
-    ssd1306_fill_page(page, 0x08u);  /* bit 3: middle of 8-px page */
-}
-
 static void draw_list_item(uint8_t page, bool selected, const char *label)
 {
     char buf[22];
@@ -69,8 +65,7 @@ static void draw_section_heading(const char *section_name)
 {
     char heading[32];
     snprintf(heading, sizeof(heading), "Settings>%s", section_name);
-    ssd1306_draw_string(0, 0, heading, false);
-    draw_divider(1u);
+    jpp_draw_title(heading);
 }
 
 static void draw_pagination(size_t current, size_t total)
@@ -178,9 +173,8 @@ static void render_top_level(jpp_settings_state_t *state)
     size_t cur  = section_to_visible_index(state->selected_section, state);
     if (cur == (size_t)-1u) { cur = 0u; }
 
-    ssd1306_draw_string(0, 0, "Settings", false);
+    jpp_draw_title("Settings");
     draw_pagination(cur, n);
-    draw_divider(1u);
 
     size_t start = cur > 2u ? cur - 2u : 0u;
     if (start + 5u > n) { start = (n >= 5u) ? n - 5u : 0u; }
@@ -227,20 +221,11 @@ static void render_wifi(const jpp_settings_state_t *state)
         if (state->wifi_scan_count == 0u) {
             ssd1306_draw_string(3, 0, "  (none found)", false);
         } else {
-            /* Scrolling: show 4 items centred on cursor. */
             size_t visible = 4u;
-            size_t scroll  = state->wifi_list_scroll;
-            /* Clamp scroll so cursor is always visible. */
-            if (state->wifi_list_cursor < scroll) {
-                scroll = state->wifi_list_cursor;
-            }
-            if (state->wifi_list_cursor >= scroll + visible) {
-                scroll = state->wifi_list_cursor - visible + 1u;
-            }
-            /* Clamp to valid range. */
-            size_t max_scroll = (state->wifi_scan_count > visible)
-                                ? state->wifi_scan_count - visible : 0u;
-            if (scroll > max_scroll) { scroll = max_scroll; }
+            size_t scroll  = jpp_ui_scroll_clamp(state->wifi_list_cursor,
+                                                 state->wifi_scan_count,
+                                                 visible,
+                                                 state->wifi_list_scroll);
             /* Store updated scroll (const cast: render needs to update scroll). */
             ((jpp_settings_state_t *)state)->wifi_list_scroll = scroll;
 
@@ -275,7 +260,13 @@ static void render_wifi(const jpp_settings_state_t *state)
         break;
     case JPP_WIFI_SS_KNOWN_NETWORKS:
         ssd1306_draw_string(2, 0, "Known networks:", false);
-        ssd1306_draw_string(3, 0, "  (none saved)", false);
+        if (state->wifi_saved_ssid[0] != '\0') {
+            char known[22];
+            snprintf(known, sizeof(known), " %.19s", state->wifi_saved_ssid);
+            ssd1306_draw_string(3, 0, known, false);
+        } else {
+            ssd1306_draw_string(3, 0, " (none saved)", false);
+        }
         break;
     default: break;
     }
@@ -704,7 +695,7 @@ static void render_about(void)
     char ver[12];
     snprintf(ver, sizeof(ver), "v" JPPDOS_VERSION);
     draw_centred(2, ver);
-    draw_divider(3u);
+    jpp_draw_rule(3u);
     ssd1306_draw_string(4, 0, "ESP32-C6 firmware", false);
     ssd1306_draw_string(5, 0, "Open & hackable OS", false);
     ssd1306_draw_string(6, 0, "jppdevice.com", false);
@@ -777,7 +768,6 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
         state->wifi_ss = JPP_WIFI_SS_NETWORK_LIST;
         /* Re-render immediately so the user sees results without a tick delay. */
         cls();
-        draw_section_heading("Wi-Fi");
         render_wifi(state);
         ssd1306_flush();
     }
@@ -797,7 +787,6 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
         /* do_wifi_connect updates wifi_status_msg; go back to main view. */
         state->wifi_ss = JPP_WIFI_SS_MAIN;
         cls();
-        draw_section_heading("Wi-Fi");
         render_wifi(state);
         ssd1306_flush();
     }

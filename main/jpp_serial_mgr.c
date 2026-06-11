@@ -14,8 +14,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_rom_crc.h"
-#include "nvs.h"
 
+#include "jpp_draw_util.h"
+#include "jpp_file_util.h"
 #include "ssd1306.h"
 #include "jpp_resource_budget.h"
 #include "jpp_settings_screen.h"   /* JPPDOS_VERSION */
@@ -69,6 +70,7 @@ typedef struct {
     uint32_t file_size;
     uint32_t crc32;        /* upload: running accumulator; download: pre-computed */
     uint16_t chunk_count;
+    uint16_t next_chunk;   /* upload: next expected chunk_idx (stop-and-wait) */
     uint8_t  id;
     bool     is_upload;
     bool     active;
@@ -197,12 +199,19 @@ static void close_session(void)
 
 /* ---- Path validation ----------------------------------------------------- */
 
+/* True for "/sd" itself or any path below it ("/sd/..."); rejects other
+   mounts that merely share the prefix characters (e.g. "/sdx"). */
+static bool sd_prefix_ok(const char *p)
+{
+    return strncmp(p, "/sd", 3) == 0 && (p[3] == '\0' || p[3] == '/');
+}
+
 static bool path_valid_sd(const uint8_t *body, uint16_t body_len,
                            const char **out)
 {
     if (body_len == 0u || body[body_len - 1u] != '\0') { return false; }
     const char *p = (const char *)body;
-    if (strncmp(p, "/sd", 3) != 0) { return false; }
+    if (!sd_prefix_ok(p)) { return false; }
     *out = p;
     return true;
 }
@@ -269,7 +278,7 @@ static uint8_t s_lrv_resp_buf[512u];
 static void handle_get_lrv_data(uint8_t seq)
 {
     if (!jpp_lrv_is_unlocked()) {
-        send_err(seq, SMP_ST_ERR_NOT_FOUND);
+        send_err(seq, SMP_ST_ERR_DENIED);
         return;
     }
 
@@ -279,27 +288,9 @@ static void handle_get_lrv_data(uint8_t seq)
         return;
     }
 
-    /* Read username from NVS. */
-    char username[64] = {0};
-    nvs_handle_t unh;
-    if (nvs_open("jpp_user", NVS_READONLY, &unh) == ESP_OK) {
-        size_t ulen = sizeof(username);
-        nvs_get_str(unh, "username", username, &ulen);
-        nvs_close(unh);
-    }
-
-    /* Build challenge: {username}|{iso8601}. */
-    char iso[32] = "1970-01-01T00:00:00Z";
-    if (s_smp_rtc != NULL) {
-        jpp_rtc_datetime_t now;
-        if (jpp_rtc_get_current(s_smp_rtc, &now) == JPP_RTC_STATUS_OK) {
-            snprintf(iso, sizeof(iso), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                     now.year, now.month, now.day,
-                     now.hour, now.minute, now.second);
-        }
-    }
-    char challenge[128];
-    snprintf(challenge, sizeof(challenge), "%s|%s", username, iso);
+    char challenge[JPP_LRV_CHALLENGE_MAX];
+    jpp_lrv_build_challenge(s_smp_rtc, challenge, sizeof(challenge),
+                            NULL, 0u, NULL, NULL);
 
     /* Sign the challenge. */
     uint8_t resp_sig[64] = {0};
@@ -365,12 +356,7 @@ static void handle_fs_mkdir(uint8_t seq, const uint8_t *body, uint16_t body_len)
     }
 
     /* Create parent directories first. */
-    char tmp[256];
-    strncpy(tmp, path, sizeof(tmp) - 1u);
-    tmp[sizeof(tmp) - 1u] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') { *p = '\0'; mkdir(tmp, 0755); *p = '/'; }
-    }
+    jpp_make_parent_dirs(path);
 
     if (mkdir(path, 0755) == 0) {
         send_err(seq, SMP_ST_OK);
@@ -409,7 +395,7 @@ static void handle_fs_rename(uint8_t seq, const uint8_t *body, uint16_t body_len
     if (strnlen(dst, dst_avail) >= dst_avail) {
         send_err(seq, SMP_ST_ERR_INVALID); return;
     }
-    if (strncmp(src, "/sd", 3) != 0 || strncmp(dst, "/sd", 3) != 0) {
+    if (!sd_prefix_ok(src) || !sd_prefix_ok(dst)) {
         send_err(seq, SMP_ST_ERR_INVALID); return;
     }
 
@@ -437,16 +423,11 @@ static void handle_fs_upload_begin(uint8_t seq, const uint8_t *body,
 
     const char *path = (const char *)body + 4u;
     uint16_t path_area = body_len - 4u;
-    if (strnlen(path, path_area) >= path_area || strncmp(path, "/sd", 3) != 0) {
+    if (strnlen(path, path_area) >= path_area || !sd_prefix_ok(path)) {
         send_err(seq, SMP_ST_ERR_INVALID); return;
     }
 
-    char tmp[256];
-    strncpy(tmp, path, sizeof(tmp) - 1u);
-    tmp[sizeof(tmp) - 1u] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') { *p = '\0'; mkdir(tmp, 0755); *p = '/'; }
-    }
+    jpp_make_parent_dirs(path);
 
     FILE *fp = fopen(path, "wb");
     if (fp == NULL) { send_err(seq, SMP_ST_ERR_IO); return; }
@@ -456,6 +437,7 @@ static void handle_fs_upload_begin(uint8_t seq, const uint8_t *body,
         .file_size   = file_size,
         .crc32       = ~0u,  /* CRC-32 running accumulator, init 0xFFFFFFFF */
         .chunk_count = (uint16_t)((file_size + SMP_CHUNK_SIZE - 1u) / SMP_CHUNK_SIZE),
+        .next_chunk  = 0u,
         .id          = 0x00u,
         .is_upload   = true,
         .active      = true,
@@ -475,6 +457,23 @@ static void handle_fs_upload_chunk(uint8_t seq, const uint8_t *body,
     if (body_len < 4u) { send_err(seq, SMP_ST_ERR_INVALID); return; }
     if (body[0] != s_xfer.id) { send_err(seq, SMP_ST_ERR_TRANSFER); return; }
 
+    /* Stop-and-wait ordering: accept only the expected chunk.  A retransmit of
+       the chunk just written (ACK lost on the wire) is re-acknowledged without
+       writing it twice; anything else aborts the transfer. */
+    uint16_t chunk_idx = (uint16_t)body[1] | ((uint16_t)body[2] << 8);
+    if (chunk_idx != s_xfer.next_chunk) {
+        if (s_xfer.next_chunk > 0u && chunk_idx == (uint16_t)(s_xfer.next_chunk - 1u)) {
+            uint8_t dup_resp[2] = {body[1], body[2]};
+            send_response(seq, SMP_ST_OK, dup_resp, 2u);
+            return;
+        }
+        fclose(s_xfer.fp);
+        s_xfer.fp     = NULL;
+        s_xfer.active = false;
+        send_err(seq, SMP_ST_ERR_TRANSFER);
+        return;
+    }
+
     const uint8_t *data    = body + 3u;
     uint16_t       data_len = body_len - 3u;
 
@@ -487,6 +486,7 @@ static void handle_fs_upload_chunk(uint8_t seq, const uint8_t *body,
     }
     /* Accumulate CRC-32 over data bytes as they arrive. */
     s_xfer.crc32 = esp_rom_crc32_le(s_xfer.crc32, data, data_len);
+    s_xfer.next_chunk++;
 
     /* Echo chunk_index for stop-and-wait acknowledgement. */
     uint8_t resp[2] = {body[1], body[2]};
@@ -642,7 +642,7 @@ static void dispatch_command(const uint8_t *payload, uint16_t plen)
 
     uint8_t        seq      = payload[0];
     uint8_t        cmd      = payload[1];
-    /* payload[2] is FLAGS — reserved, ignored for now */
+    /* payload[2] is FLAGS — reserved (always 0x00 in v1), ignored */
     const uint8_t *body     = payload + 3u;
     uint16_t       body_len = plen - 3u;
 
@@ -795,21 +795,16 @@ void jpp_serial_mgr_render(void)
     ssd1306_clear();
 
     if (s_consent_state == SMP_CONSENT_PENDING) {
-        ssd1306_draw_string(0u, 0u, "Serial manager", false);
-        ssd1306_fill_page(1u, 0x08u);                   /* signature rule */
+        jpp_draw_title("Serial manager");
         ssd1306_draw_string(2u, 0u, "Allow PC access", false);
         ssd1306_draw_string(3u, 0u, "to files and", false);
         ssd1306_draw_string(4u, 0u, "device info?", false);
 
-        /* Cursor indicator: ">" prefix on the selected option. */
-        if (s_consent_cursor == 0) {
-            ssd1306_draw_string(6u, 0u, ">Deny    Allow", false);
-        } else {
-            ssd1306_draw_string(6u, 0u, " Deny   >Allow", false);
-        }
+        ssd1306_draw_string(6u, 0u,
+                            jpp_ui_consent_selector_row(s_consent_cursor != 0),
+                            false);
     } else if (s_session_active) {
-        ssd1306_draw_string(0u, 0u, "Serial manager", false);
-        ssd1306_fill_page(1u, 0x08u);
+        jpp_draw_title("Serial manager");
         ssd1306_draw_string(2u, 0u, "Session active", false);
         ssd1306_draw_string(5u, 0u, "Hold CTR: end", false);
     }

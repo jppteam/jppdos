@@ -6,7 +6,6 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
-#include "nvs.h"
 
 #include "mbedtls/base64.h"
 
@@ -32,14 +31,6 @@ static void get_local_ip(char ip[16])
     if (esp_netif_get_ip_info(netif, &info) == ESP_OK && info.ip.addr != 0u) {
         snprintf(ip, 16u, IPSTR, IP2STR(&info.ip));
     }
-}
-
-/* Format an ISO-8601 UTC timestamp from an RTC datetime. */
-static void fmt_iso8601(const jpp_rtc_datetime_t *dt, char *buf, size_t bufsz)
-{
-    snprintf(buf, bufsz, "%04d-%02d-%02dT%02d:%02d:%02dZ",
-             dt->year, dt->month, dt->day,
-             dt->hour, dt->minute, dt->second);
 }
 
 /* Approximate seconds since Unix epoch (no leap-second correction). */
@@ -97,36 +88,6 @@ static void url_encode(const char *src, char *dst, size_t dstmax)
     if (j < dstmax) { dst[j] = '\0'; } else { dst[dstmax - 1u] = '\0'; }
 }
 
-/* Write a hex dump (8 bytes per row, space-separated) into buf. */
-static void hex_dump_rows(const uint8_t *data, size_t len,
-                           char *buf, size_t bufsz)
-{
-    size_t pos = 0u;
-    for (size_t i = 0u; i < len; i++) {
-        if (i > 0u && i % 8u == 0u) {
-            if (pos + 1u < bufsz) { buf[pos++] = '\n'; }
-        } else if (i > 0u) {
-            if (pos + 1u < bufsz) { buf[pos++] = ' '; }
-        }
-        if (pos + 2u < bufsz) {
-            pos += (size_t)snprintf(buf + pos, bufsz - pos, "%02X", data[i]);
-        }
-    }
-    if (pos < bufsz) { buf[pos] = '\0'; }
-}
-
-/* Read the stored username from NVS; returns empty string if not set. */
-static void get_username(char *buf, size_t bufsz)
-{
-    buf[0] = '\0';
-    nvs_handle_t h;
-    if (nvs_open("jpp_user", NVS_READONLY, &h) != ESP_OK) { return; }
-    size_t len = bufsz;
-    nvs_get_str(h, "username", buf, &len);
-    nvs_close(h);
-}
-
-
 /* Stream the verification HTML page in chunks. */
 static void send_verification_page(httpd_req_t *req)
 {
@@ -136,22 +97,15 @@ static void send_verification_page(httpd_req_t *req)
         return;
     }
 
-    /* Read username and build challenge from a single RTC read for consistency. */
+    /* Username, timestamp, and challenge all come from one builder call (one
+       RTC read) so the page, the URL, and the signed bytes stay consistent. */
     char username[64] = {0};
-    get_username(username, sizeof(username));
-
     jpp_rtc_datetime_t now = {0};
-    bool has_time = (s_rtc != NULL) &&
-                    (jpp_rtc_get_current(s_rtc, &now) == JPP_RTC_STATUS_OK);
-    char iso[32] = "1970-01-01T00:00:00Z";
-    uint32_t ts = 0u;
-    if (has_time) {
-        fmt_iso8601(&now, iso, sizeof(iso));
-        ts = datetime_to_unix(&now);
-    }
-
-    char challenge[128];
-    snprintf(challenge, sizeof(challenge), "%s|%s", username, iso);
+    bool has_time = false;
+    char challenge[JPP_LRV_CHALLENGE_MAX];
+    jpp_lrv_build_challenge(s_rtc, challenge, sizeof(challenge),
+                            username, sizeof(username), &now, &has_time);
+    uint32_t ts = has_time ? datetime_to_unix(&now) : 0u;
 
     uint8_t resp_sig[64] = {0};
     jpp_lrv_sign_challenge(challenge, resp_sig);
@@ -161,11 +115,12 @@ static void send_verification_page(httpd_req_t *req)
     char certsig_hex[64u * 3u + 32u];
     char pubkey_hex[32u * 3u + 16u];
     char respsig_hex[64u * 3u + 32u];
-    hex_dump_rows((const uint8_t *)d.cert, strnlen(d.cert, sizeof(d.cert)-1u),
-                  cert_hex, sizeof(cert_hex));
-    hex_dump_rows(d.cert_sig,      64u, certsig_hex, sizeof(certsig_hex));
-    hex_dump_rows(d.device_pubkey, 32u, pubkey_hex,  sizeof(pubkey_hex));
-    hex_dump_rows(resp_sig,        64u, respsig_hex, sizeof(respsig_hex));
+    jpp_lrv_hex_format((const uint8_t *)d.cert,
+                       strnlen(d.cert, sizeof(d.cert) - 1u),
+                       8u, cert_hex, sizeof(cert_hex));
+    jpp_lrv_hex_format(d.cert_sig,      64u, 8u, certsig_hex, sizeof(certsig_hex));
+    jpp_lrv_hex_format(d.device_pubkey, 32u, 8u, pubkey_hex,  sizeof(pubkey_hex));
+    jpp_lrv_hex_format(resp_sig,        64u, 8u, respsig_hex, sizeof(respsig_hex));
 
     /* Build the jppdevice.com certificate page URL. */
     char respsig_b64[128] = {0};

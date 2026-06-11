@@ -15,7 +15,6 @@ typedef enum {
 typedef enum {
     JPP_SETTINGS_PAYLOAD_MISSING = 0,
     JPP_SETTINGS_PAYLOAD_VALID,
-    JPP_SETTINGS_PAYLOAD_MIGRATION_REQUIRED,
     JPP_SETTINGS_PAYLOAD_CORRUPT,
 } jpp_settings_payload_status_t;
 
@@ -35,7 +34,6 @@ typedef struct {
     jpp_settings_source_t source;
     bool used_defaults_marker;
     bool used_stored_marker;
-    bool migrated_marker;
     bool recovered_marker;
     bool corrupt_reset_marker;
 } jpp_settings_load_result_t;

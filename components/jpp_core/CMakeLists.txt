@@ -1,17 +1,15 @@
 idf_component_register(
     SRCS
-        "src/jpp_core.c"
         "src/jpp_boot_core.c"
         "src/jpp_settings_core.c"
         "src/jpp_keypad_core.c"
-        "src/jpp_network_core.c"
         "src/jpp_rtc_core.c"
         "src/jpp_sd_core.c"
         "src/jpp_vm_core.c"
         "src/jpp_broker_core.c"
         "src/jpp_sdk_bridge.c"
         "src/jpp_ui_core.c"
-        "src/jpp_app_session_core.c"
+        "src/jpp_file_browser_core.c"
         "src/jpp_oled_core.c"
         "src/jpp_manifest_core.c"
         "src/jpp_app_loader_core.c"

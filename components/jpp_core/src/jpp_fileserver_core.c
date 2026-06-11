@@ -730,10 +730,8 @@ const char *jpp_fileserver_result_name(jpp_fileserver_result_t result)
 {
     switch (result) {
     case JPP_FILESERVER_RESULT_OK:                  return "OK";
-    case JPP_FILESERVER_RESULT_INVALID_ARGUMENT:    return "INVALID_ARGUMENT";
     case JPP_FILESERVER_RESULT_ALREADY_INITIALIZED: return "ALREADY_INITIALIZED";
     case JPP_FILESERVER_RESULT_NOT_INITIALIZED:     return "NOT_INITIALIZED";
-    case JPP_FILESERVER_RESULT_ALREADY_RUNNING:     return "ALREADY_RUNNING";
     case JPP_FILESERVER_RESULT_START_FAILED:        return "START_FAILED";
     case JPP_FILESERVER_RESULT_STOP_FAILED:         return "STOP_FAILED";
     default:                                        return "UNKNOWN";

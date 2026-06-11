@@ -13,9 +13,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "jpp_rtc_core.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define JPP_LRV_CHALLENGE_MAX 128u  /* "{username}|{iso8601}" incl. NUL */
 
 #define JPP_LRV_CERT_MAX   192u   /* maximum certificate text length including NUL */
 #define JPP_LRV_HWID_MAX    24u   /* "AA:BB:CC:DD:EE:FF\0" = 18 chars, padded */
@@ -70,6 +74,23 @@ void jpp_lrv_get_display_info(uint16_t *serial, char pubkey_str[16]);
 jpp_lrv_result_t jpp_lrv_get_full_data(jpp_lrv_data_t *out);
 
 /*
+ * Build the canonical LRV challenge string into out:
+ *   "{username}|{YYYY-MM-DDTHH:MM:SSZ}"
+ * username comes from NVS jpp_user/username (empty when unset).  The timestamp
+ * is read from `rtc`; if rtc is NULL or unreadable the epoch placeholder
+ * "1970-01-01T00:00:00Z" is used.  Every challenge producer (settings verify,
+ * serial manager, HTTP verification server) must use this builder so the
+ * signed bytes match what the verification service reconstructs.
+ *
+ * Optional out-parameters (any may be NULL): out_username receives the raw
+ * username, out_dt/out_has_time the datetime used for the timestamp.
+ */
+void jpp_lrv_build_challenge(jpp_rtc_state_t *rtc,
+                              char *out, size_t out_len,
+                              char *out_username, size_t username_len,
+                              jpp_rtc_datetime_t *out_dt, bool *out_has_time);
+
+/*
  * Sign challenge with the device private key.
  * challenge is a NUL-terminated string (e.g. "Alice|2026-06-08T14:02:00Z").
  * sig receives 64 bytes of Ed25519 signature.
@@ -88,6 +109,14 @@ jpp_lrv_result_t jpp_lrv_get_encrypted_blob(uint8_t **buf, size_t *len);
 
 /* Write an encrypted blob to NVS, replacing any existing LRV data. */
 jpp_lrv_result_t jpp_lrv_store_encrypted_blob(const uint8_t *blob, size_t len);
+
+/*
+ * Format data as uppercase hex into buf (always NUL-terminated).
+ * bytes_per_row > 0 groups output into space-separated rows of that many
+ * bytes (newline between rows); 0 yields one contiguous string.
+ */
+void jpp_lrv_hex_format(const uint8_t *data, size_t len,
+                        size_t bytes_per_row, char *buf, size_t buf_len);
 
 #ifdef __cplusplus
 }

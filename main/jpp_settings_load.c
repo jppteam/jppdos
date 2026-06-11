@@ -1,4 +1,5 @@
 #include "jpp_settings_load.h"
+#include "jpp_file_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,36 +19,25 @@ bool file_exists(const char *path)
 
 jpp_settings_payload_status_t probe_settings_payload(const char *path)
 {
-    FILE *f = fopen(path, "r");
-    if (f == NULL) {
+    if (!file_exists(path)) {
         return JPP_SETTINGS_PAYLOAD_MISSING;
     }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    rewind(f);
-    char *buf = malloc((size_t)size + 1u);
+    char *buf = jpp_read_file(path, NULL);
     if (buf == NULL) {
-        fclose(f);
         return JPP_SETTINGS_PAYLOAD_CORRUPT;
     }
-    fread(buf, 1u, (size_t)size, f);
-    buf[size] = '\0';
-    fclose(f);
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
     if (root == NULL) {
         return JPP_SETTINGS_PAYLOAD_CORRUPT;
     }
+    /* Any schema other than the current v2 is treated as corrupt: the boot
+       path rewrites defaults and logs SETTINGS_RESET. */
     cJSON *ver = cJSON_GetObjectItem(root, "schema_version");
     jpp_settings_payload_status_t status = JPP_SETTINGS_PAYLOAD_CORRUPT;
-    if (cJSON_IsNumber(ver)) {
-        int v = (int)ver->valuedouble;
-        if (v == 2) {
-            status = JPP_SETTINGS_PAYLOAD_VALID;
-        } else if (v == 1) {
-            status = JPP_SETTINGS_PAYLOAD_MIGRATION_REQUIRED;
-        }
+    if (cJSON_IsNumber(ver) && (int)ver->valuedouble == 2) {
+        status = JPP_SETTINGS_PAYLOAD_VALID;
     }
     cJSON_Delete(root);
     return status;
@@ -69,24 +59,10 @@ void write_settings(const char *json)
 
 bool read_force_recovery(void)
 {
-    if (!file_exists(SETTINGS_PATH)) {
-        return false;
-    }
-    FILE *f = fopen(SETTINGS_PATH, "r");
-    if (f == NULL) {
-        return false;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    rewind(f);
-    char *buf = malloc((size_t)size + 1u);
+    char *buf = jpp_read_file(SETTINGS_PATH, NULL);
     if (buf == NULL) {
-        fclose(f);
         return false;
     }
-    fread(buf, 1u, (size_t)size, f);
-    buf[size] = '\0';
-    fclose(f);
 
     cJSON *root = cJSON_Parse(buf);
     free(buf);
@@ -99,4 +75,68 @@ bool read_force_recovery(void)
     bool result = cJSON_IsTrue(force);
     cJSON_Delete(root);
     return result;
+}
+
+void jpp_settings_read_wifi(char *ssid, size_t ssid_size,
+                            char *password, size_t password_size)
+{
+    ssid[0]     = '\0';
+    password[0] = '\0';
+
+    char *buf = jpp_read_file(SETTINGS_PATH, NULL);
+    if (buf == NULL) return;
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (root == NULL) return;
+
+    cJSON *policy = cJSON_GetObjectItem(root, "policy");
+    cJSON *wifi   = policy ? cJSON_GetObjectItem(policy, "wifi") : NULL;
+    cJSON *j_ssid = wifi   ? cJSON_GetObjectItem(wifi, "preferred_ssid") : NULL;
+    cJSON *j_pass = wifi   ? cJSON_GetObjectItem(wifi, "password")       : NULL;
+
+    if (cJSON_IsString(j_ssid) && j_ssid->valuestring) {
+        strncpy(ssid, j_ssid->valuestring, ssid_size - 1u);
+        ssid[ssid_size - 1u] = '\0';
+    }
+    if (cJSON_IsString(j_pass) && j_pass->valuestring) {
+        strncpy(password, j_pass->valuestring, password_size - 1u);
+        password[password_size - 1u] = '\0';
+    }
+    cJSON_Delete(root);
+}
+
+void jpp_settings_save_wifi(const char *ssid, const char *password)
+{
+    char *buf = jpp_read_file(SETTINGS_PATH, NULL);
+    if (buf == NULL) return;
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (root == NULL) return;
+
+    /* Navigate / create policy.wifi. */
+    cJSON *policy = cJSON_GetObjectItem(root, "policy");
+    if (!cJSON_IsObject(policy)) {
+        policy = cJSON_AddObjectToObject(root, "policy");
+    }
+    cJSON *wifi = cJSON_GetObjectItem(policy, "wifi");
+    if (!cJSON_IsObject(wifi)) {
+        wifi = cJSON_AddObjectToObject(policy, "wifi");
+    }
+
+    cJSON_DeleteItemFromObject(wifi, "preferred_ssid");
+    cJSON_DeleteItemFromObject(wifi, "password");
+    cJSON_AddStringToObject(wifi, "preferred_ssid", ssid ? ssid : "");
+    cJSON_AddStringToObject(wifi, "password",       password ? password : "");
+
+    char *out_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (out_str == NULL) return;
+
+    /* The remove + rename in write_settings works on every filesystem and
+       leaves a recoverable temp file on failure. */
+    write_settings(out_str);
+    free(out_str);
+    ESP_LOGI(TAG, "WIFI: credentials saved (ssid=\"%s\")", ssid ? ssid : "");
 }

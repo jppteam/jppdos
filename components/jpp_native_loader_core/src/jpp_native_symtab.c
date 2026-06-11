@@ -124,6 +124,14 @@ static const jpp_native_sym_t s_symtab[] = {
 
     /* HTTP */
     { "jpp_sdk_http_request",          (void *)jpp_sdk_http_request          },
+    { "jpp_sdk_net_bind",              (void *)jpp_sdk_net_bind              },
+    { "jpp_sdk_net_accept",            (void *)jpp_sdk_net_accept            },
+    { "jpp_sdk_net_recv",              (void *)jpp_sdk_net_recv              },
+    { "jpp_sdk_net_send",              (void *)jpp_sdk_net_send              },
+    { "jpp_sdk_net_close",             (void *)jpp_sdk_net_close             },
+
+    /* Background tasks */
+    { "jpp_sdk_background_register",   (void *)jpp_sdk_background_register   },
 
     /* IPC */
     { "jpp_sdk_ipc_send",              (void *)jpp_sdk_ipc_send              },

@@ -2,7 +2,12 @@
 testapp_mp — exercises every App SDK capability from MicroPython.
 
 Menu layout mirrors testapp_native (C version):
-  UI | Device | Files | KV | IPC | HTTP | BLE | Buzzer | System | Exit
+  UI | Device | Files | KV | IPC | HTTP | Network | BLE | Buzzer | System | Exit
+
+Background: the manifest declares a "heartbeat" task (every 300 s). The
+System menu's "Background register" item triggers the background.register
+consent prompt; once granted, the firmware runs on_task("heartbeat")
+headlessly while the device idles on the launcher.
 
 The app runs as a blocking sequence from on_idle() so the flow is identical
 to the C version: each test calls blocking SDK helpers (dialog, list, input)
@@ -359,6 +364,37 @@ def menu_http(sdk):
 
 
 # --------------------------------------------------------------------------- #
+# Network tests                                                                #
+# --------------------------------------------------------------------------- #
+
+def test_net_echo(sdk):
+    """Bind port 8266, echo one message back, then close everything."""
+    try:
+        sdk.net_bind(8266)
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "net_bind", False, str(e))
+        return
+    _show(sdk, "net echo :8266", "Waiting 15s for a connection...")
+    try:
+        sock = sdk.net_accept(15000)
+        if sock is None:
+            _show_result(sdk, "net_accept", True, "no connection (timeout)")
+            return
+        data = sdk.net_recv(sock, 256, 5000)
+        if data:
+            sdk.net_send(sock, b"echo: " + data)
+        _show_result(sdk, "net echo", True, f"echoed {len(data)} byte(s)")
+        sdk.net_close(sock)
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "net echo", False, str(e))
+    finally:
+        try:
+            sdk.net_close(-1)   # close the listener
+        except jppsdk.SdkError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
 # BLE tests                                                                    #
 # --------------------------------------------------------------------------- #
 
@@ -543,21 +579,39 @@ def test_log(sdk):
         _show_result(sdk, "sdk_log", False, str(e))
 
 
+def test_background_register(sdk):
+    try:
+        sdk.background_register()
+        _show_result(sdk, "background_register", True,
+                     "granted; schedule syncs at exit")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "background_register", False, str(e))
+
+
 def menu_system(sdk):
-    items = ["Wakelock acq/rel", "Log event"]
+    items = ["Wakelock acq/rel", "Log event", "Background register"]
     while True:
         sel = _pick(sdk, "System Tests", items)
         if sel is None:
             return
         if sel == 0:
             test_wakelock(sdk)
-        else:
+        elif sel == 1:
             test_log(sdk)
+        else:
+            test_background_register(sdk)
 
 
 # --------------------------------------------------------------------------- #
 # App entry                                                                    #
 # --------------------------------------------------------------------------- #
+
+def on_task(name):
+    """Headless background entry point — the firmware imports this module and
+    calls on_task(name) when a scheduled task is due (no UI available)."""
+    jppsdk.log("on_task: " + name)
+    jppsdk.file_write("bg_" + name + ".txt", jppsdk.get_time())
+
 
 def create_app(sdk):
     return TestAppMP(sdk)
@@ -595,6 +649,7 @@ class TestAppMP:
             "KV Store",
             "IPC",
             "HTTP",
+            "Network",
             "BLE",
             "Buzzer",
             "System",
@@ -602,7 +657,7 @@ class TestAppMP:
         ]
         while True:
             sel = _pick(sdk, "SDK Test (MP)", top_items)
-            if sel is None or sel == 9:
+            if sel is None or sel == 10:
                 break
             if sel == 0:
                 menu_ui(sdk)
@@ -617,8 +672,10 @@ class TestAppMP:
             elif sel == 5:
                 menu_http(sdk)
             elif sel == 6:
-                menu_ble(sdk)
+                test_net_echo(sdk)
             elif sel == 7:
-                test_buzzer(sdk)
+                menu_ble(sdk)
             elif sel == 8:
+                test_buzzer(sdk)
+            elif sel == 9:
                 menu_system(sdk)

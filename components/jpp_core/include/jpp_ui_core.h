@@ -54,14 +54,12 @@ typedef struct {
 typedef enum {
     JPP_UI_APP_SOURCE_BUILTIN = 0,
     JPP_UI_APP_SOURCE_SD,
-    JPP_UI_APP_SOURCE_NATIVE,
 } jpp_ui_app_source_t;
 
 typedef struct {
     char     app_id[JPP_UI_TEXT_LIMIT];
     char     name[JPP_UI_TEXT_LIMIT];
     jpp_ui_app_source_t source;
-    bool     enabled;
 } jpp_ui_app_entry_t;
 
 typedef struct {
@@ -146,8 +144,7 @@ jpp_ui_status_t jpp_ui_shell_add_app(
     jpp_ui_shell_t *shell,
     const char *app_id,
     const char *name,
-    jpp_ui_app_source_t source,
-    bool enabled
+    jpp_ui_app_source_t source
 );
 void jpp_ui_shell_set_status(
     jpp_ui_shell_t *shell,
@@ -184,6 +181,22 @@ void jpp_ui_shell_set_fileserver_state(
 );
 const char *jpp_ui_shell_screen(const jpp_ui_shell_t *shell);
 const char *jpp_ui_shell_selected_app_id(const jpp_ui_shell_t *shell);
+
+/* ---- Generic list-view helpers -------------------------------------------- */
+
+/* Clamp a list scroll offset so the cursor row stays visible and the window
+   never extends past the last row. Returns the updated scroll offset. */
+size_t jpp_ui_scroll_clamp(size_t cursor, size_t total, size_t visible, size_t scroll);
+
+/* Horizontal marquee for text wider than its window: hold for pause_ticks at
+   each end, scroll one character per tick in between. Returns the index of
+   the first visible character for the given animation tick. */
+size_t jpp_ui_marquee_offset(uint32_t tick, size_t text_len, size_t window, size_t pause_ticks);
+
+/* The Deny/Allow selector row shared by every consent surface (capability
+   prompts, file-access prompts, the serial-manager session dialog): ">" marks
+   the highlighted side. */
+const char *jpp_ui_consent_selector_row(bool allow);
 
 #ifdef __cplusplus
 }

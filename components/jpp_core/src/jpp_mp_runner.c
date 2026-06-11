@@ -49,9 +49,9 @@ extern const mp_obj_module_t jpp_mp_sdk_module;
 
 /* The GC heap uses the shared jpp_app_pool (see jpp_app_pool.h) — a single
  * static `.bss` buffer also used by the native loader for executable code.
- * Native and MicroPython apps are mutually exclusive, so one pool serves both;
- * merging the two pools returned ~32 KB to the general heap, which is the same
- * heap WiFi management-frame buffers and lwIP pbufs are drawn from. */
+ * Native and MicroPython apps are mutually exclusive, so one pool serves both,
+ * keeping the static footprint out of the general heap that WiFi
+ * management-frame buffers and lwIP pbufs are drawn from. */
 
 /* -------------------------------------------------------------------------- */
 /* Import hook                                                                 */
@@ -224,10 +224,13 @@ static bool call_hook_with_int(jpp_sdk_context_t *sdk,
 /* Runner entry point                                                          */
 /* -------------------------------------------------------------------------- */
 
-jpp_mp_runner_result_t jpp_mp_runner_run(
+/* Shared body for the foreground lifecycle run (bg_task_name == NULL) and a
+   headless background-task run (bg_task_name set: call on_task(name) once). */
+static jpp_mp_runner_result_t runner_run_internal(
     jpp_sdk_context_t *sdk,
     jpp_vm_context_t  *vm,
-    const char        *entry_mpy_path)
+    const char        *entry_mpy_path,
+    const char        *bg_task_name)
 {
     volatile jpp_mp_runner_result_t outcome = JPP_MP_RUNNER_OK;
 
@@ -264,7 +267,6 @@ jpp_mp_runner_result_t jpp_mp_runner_run(
         MP_OBJ_FROM_PTR(&jpp_mp_sdk_module));
 
     jpp_mp_sdk_module_set_context(sdk);
-    jpp_mp_sdk_module_set_vm_context(vm);
 
     s_import_vm_ctx = vm;
     mp_store_name(MP_QSTR___import__, MP_OBJ_FROM_PTR(&mp_jpp_import_obj));
@@ -297,6 +299,12 @@ jpp_mp_runner_result_t jpp_mp_runner_run(
 
         if (module == MP_OBJ_NULL || module == mp_const_none) {
             outcome = JPP_MP_RUNNER_LOAD_FAILED;
+        } else if (bg_task_name != NULL) {
+            /* Headless: call module-level on_task(name) once. mp_load_attr
+               raises (caught below) when the module exports no on_task. */
+            mp_obj_t hook = mp_load_attr(module, MP_QSTR_on_task);
+            mp_call_function_1(hook,
+                mp_obj_new_str(bg_task_name, strlen(bg_task_name)));
         } else {
             /* Resolve create_app from the module. */
             mp_obj_t factory = mp_load_attr(module, MP_QSTR_create_app);
@@ -356,6 +364,8 @@ jpp_mp_runner_result_t jpp_mp_runner_run(
         outcome = JPP_MP_RUNNER_LOAD_FAILED;
     }
 
+    /* Headless runs are done after on_task; the lifecycle loop is for the
+       foreground path only. */
     if (outcome != JPP_MP_RUNNER_OK || app_obj == MP_OBJ_NULL) {
         goto cleanup;
     }
@@ -365,9 +375,6 @@ jpp_mp_runner_result_t jpp_mp_runner_run(
         outcome = JPP_MP_RUNNER_HOOK_ERROR;
         goto stop_hook;
     }
-
-    /* Signal foreground immediately after start. */
-    call_hook(sdk, app_obj, "on_foreground");
 
     /* Main lifecycle loop — drain the VM request queue. */
     const char *owner_task = pcTaskGetName(NULL);
@@ -384,12 +391,6 @@ jpp_mp_runner_result_t jpp_mp_runner_run(
 
         bool hook_ok = true;
         switch (req.kind) {
-        case JPP_VM_REQUEST_FOREGROUND:
-            hook_ok = call_hook(sdk, app_obj, "on_foreground");
-            break;
-        case JPP_VM_REQUEST_BACKGROUND:
-            hook_ok = call_hook(sdk, app_obj, "on_background");
-            break;
         case JPP_VM_REQUEST_IDLE:
             hook_ok = call_hook(sdk, app_obj, "on_idle");
             break;
@@ -413,12 +414,28 @@ stop_hook:
 cleanup:
     s_import_vm_ctx = NULL;
     jpp_mp_sdk_module_set_context(NULL);
-    jpp_mp_sdk_module_set_vm_context(NULL);
     mp_deinit();
     gc_sweep_all();
     jpp_app_pool_release();
 
     return outcome;
+}
+
+jpp_mp_runner_result_t jpp_mp_runner_run(
+    jpp_sdk_context_t *sdk,
+    jpp_vm_context_t  *vm,
+    const char        *entry_mpy_path)
+{
+    return runner_run_internal(sdk, vm, entry_mpy_path, NULL);
+}
+
+jpp_mp_runner_result_t jpp_mp_runner_run_task(
+    jpp_sdk_context_t *sdk,
+    jpp_vm_context_t  *vm,
+    const char        *entry_mpy_path,
+    const char        *task_name)
+{
+    return runner_run_internal(sdk, vm, entry_mpy_path, task_name);
 }
 
 const char *jpp_mp_runner_result_name(jpp_mp_runner_result_t result)

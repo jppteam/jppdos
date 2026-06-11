@@ -1,4 +1,5 @@
 #include "../include/jpp_manifest_core.h"
+#include "../include/jpp_resource_budget.h"
 #include "../include/jpp_string_util.h"
 
 #include <string.h>
@@ -10,42 +11,34 @@ static int has_suffix(const char *str, const char *suffix)
     return str_len >= suf_len && strcmp(str + str_len - suf_len, suffix) == 0;
 }
 
-static int has_parent_segment(const char *path)
+int jpp_manifest_v2_is_reserved_app_id(const char *app_id)
 {
-    const char *cursor;
-
-    if (jpp_str_eq(path, "..")) {
-        return 1;
-    }
-    cursor = path;
-    while (cursor != NULL && cursor[0] != '\0') {
-        if (cursor[0] == '.' && cursor[1] == '.' &&
-            (cursor[2] == '/' || cursor[2] == '\0')) {
+    /* Must match every screen name the launcher/main loop routes by id. */
+    static const char *const reserved[] = {
+        "launcher", "settings", "webdav", "webdav_passconfig",
+        "shell", "dialog", "app_crash", "sd_ejected",
+    };
+    for (size_t i = 0u; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+        if (jpp_str_eq(app_id, reserved[i])) {
             return 1;
         }
-        cursor = strchr(cursor, '/');
-        if (cursor == NULL) {
-            return 0;
-        }
-        cursor++;
     }
     return 0;
 }
 
 int jpp_manifest_v2_is_allowed_capability(const char *capability)
 {
-    /* Tier 0 — auto-granted */
-    if (jpp_str_eq(capability, "files.scoped") ||
-        jpp_str_eq(capability, "files.shared") ||
-        jpp_str_eq(capability, "device.status")) {
-        return 1;
-    }
-    /* Tier 1 — one-time user grant */
-    if (jpp_str_eq(capability, "ipc.send") ||
-        jpp_str_eq(capability, "http.request") ||
-        jpp_str_eq(capability, "device.kv") ||
+    /*
+     * Only capabilities that require a user prompt are declarable.  Everything
+     * else (scoped/shared storage, device status, IPC, the key-value helper,
+     * frame/canvas/keys/buzzer/wakelock) is available to every app without
+     * declaration or tracking — the firmware enforces scoping, not permission.
+     */
+    /* Tier 1 — one-time user grant, persisted */
+    if (jpp_str_eq(capability, "http.request") ||
         jpp_str_eq(capability, "ble.scan") ||
-        jpp_str_eq(capability, "ble.advertise")) {
+        jpp_str_eq(capability, "ble.advertise") ||
+        jpp_str_eq(capability, "background.register")) {
         return 1;
     }
     /* Tier 2 — per-session user grant */
@@ -66,7 +59,7 @@ int jpp_manifest_v2_is_valid_entry_path(const char *path)
     if (path[0] == '/') {
         return 0;
     }
-    if (has_parent_segment(path)) {
+    if (jpp_str_has_parent_segment(path)) {
         return 0;
     }
     return 1;
@@ -87,13 +80,77 @@ static jpp_manifest_result_t validate_capabilities(const jpp_manifest_v2_t *mani
     return JPP_MANIFEST_OK;
 }
 
+/* One cron field: "*" or a single number within [min_v, max_v]. Advances
+   *cursor past the field and any trailing spaces; returns 0 on bad input. */
+static int cron_field_ok(const char **cursor, int min_v, int max_v)
+{
+    const char *p = *cursor;
+    if (*p == '*') {
+        p++;
+    } else {
+        if (*p < '0' || *p > '9') {
+            return 0;
+        }
+        int v = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0');
+            p++;
+        }
+        if (v < min_v || v > max_v) {
+            return 0;
+        }
+    }
+    if (*p != ' ' && *p != '\0') {
+        return 0;
+    }
+    while (*p == ' ') {
+        p++;
+    }
+    *cursor = p;
+    return 1;
+}
+
+int jpp_manifest_v2_is_valid_cron(const char *cron)
+{
+    if (!jpp_str_nonempty(cron)) {
+        return 0;
+    }
+    const char *p = cron;
+    if (!cron_field_ok(&p, 0, 59)) { return 0; }   /* minute */
+    if (!cron_field_ok(&p, 0, 23)) { return 0; }   /* hour */
+    if (!cron_field_ok(&p, 1, 31)) { return 0; }   /* day of month */
+    if (!cron_field_ok(&p, 1, 12)) { return 0; }   /* month */
+    if (!cron_field_ok(&p, 0, 6))  { return 0; }   /* day of week (0 = Sunday) */
+    return *p == '\0';
+}
+
 static jpp_manifest_result_t validate_background(const jpp_manifest_v2_t *manifest)
 {
     if (manifest->background.enabled != 0 && manifest->background.enabled != 1) {
         return JPP_MANIFEST_INVALID_BACKGROUND;
     }
-    if (!jpp_str_eq(manifest->background.mode, "serialized")) {
+    if (manifest->background.task_count > JPP_MANIFEST_V2_BG_TASK_MAX) {
         return JPP_MANIFEST_INVALID_BACKGROUND;
+    }
+    if (manifest->background.task_count > 0 && manifest->background.tasks == NULL) {
+        return JPP_MANIFEST_INVALID_BACKGROUND;
+    }
+    for (size_t i = 0; i < manifest->background.task_count; i++) {
+        const jpp_manifest_bg_task_t *task = &manifest->background.tasks[i];
+        if (!jpp_str_name_valid(task->name)) {
+            return JPP_MANIFEST_INVALID_BACKGROUND;
+        }
+        int has_interval = task->interval_s > 0u;
+        int has_cron     = jpp_str_nonempty(task->cron);
+        if (has_interval == has_cron) {   /* exactly one source */
+            return JPP_MANIFEST_INVALID_BACKGROUND;
+        }
+        if (has_interval && task->interval_s < JPP_RESOURCE_BG_INTERVAL_MIN_S) {
+            return JPP_MANIFEST_INVALID_BACKGROUND;
+        }
+        if (has_cron && !jpp_manifest_v2_is_valid_cron(task->cron)) {
+            return JPP_MANIFEST_INVALID_BACKGROUND;
+        }
     }
     return JPP_MANIFEST_OK;
 }
@@ -146,7 +203,7 @@ jpp_manifest_result_t jpp_manifest_v2_validate(const jpp_manifest_v2_t *manifest
         !jpp_str_nonempty(manifest->version) || !jpp_str_nonempty(manifest->entry)) {
         return JPP_MANIFEST_INVALID_MANIFEST;
     }
-    if (jpp_str_eq(manifest->app_id, "settings")) {
+    if (jpp_manifest_v2_is_reserved_app_id(manifest->app_id)) {
         return JPP_MANIFEST_RESERVED_APP_ID;
     }
     if (manifest->sdk_min > manifest->sdk_max) {
