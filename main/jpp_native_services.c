@@ -22,6 +22,7 @@
 #include "jpp_sdk_bridge.h"
 #include "jpp_broker_core.h"
 #include "jpp_battery_core.h"
+#include "jpp_native_loader_core.h"
 
 static const char *TAG = "native_svc";
 
@@ -35,6 +36,38 @@ static jpp_battery_state_t *s_battery_state_ptr = NULL;
 void jpp_native_services_set_battery_state(jpp_battery_state_t *state)
 {
     s_battery_state_ptr = state;
+}
+
+/* ---- Dynamic code module callbacks ---------------------------------------- */
+/* Thin wrappers over jpp_native_loader_core. Only meaningful for native apps —
+   the loader returns BAD_STATE when no native host app is resident (e.g. a
+   MicroPython app somehow reached these). */
+
+static bool module_load_cb(void *context, const char *abs_path, void **out_handle)
+{
+    (void)context;
+    jpp_native_loaded_module_t *module = NULL;
+    jpp_native_loader_result_t r = jpp_native_loader_load_module(abs_path, &module);
+    if (r != JPP_NATIVE_LOADER_OK) {
+        ESP_LOGE(TAG, "MODULE_LOAD_FAILED %s: %s",
+                 abs_path, jpp_native_loader_result_name(r));
+        return false;
+    }
+    *out_handle = module;
+    return true;
+}
+
+static void module_run_cb(void *context, void *handle, void *sdk_ctx, void *api)
+{
+    (void)context;
+    jpp_native_loader_module_run((jpp_native_loaded_module_t *)handle,
+                                 (jpp_sdk_context_t *)sdk_ctx, api);
+}
+
+static void module_unload_cb(void *context, void *handle)
+{
+    (void)context;
+    jpp_native_loader_module_free((jpp_native_loaded_module_t *)handle);
 }
 
 /* ---- Consent-prompt callback --------------------------------------------- */
@@ -800,6 +833,11 @@ void jpp_native_services_init(jpp_rtc_state_t *rtc_state)
 
     s_native_services.dir_list         = sd_dir_list_cb;
     s_native_services.dir_list_context = NULL;
+
+    s_native_services.module_load    = module_load_cb;
+    s_native_services.module_run     = module_run_cb;
+    s_native_services.module_unload  = module_unload_cb;
+    s_native_services.module_context = NULL;
 
     ESP_LOGI(TAG, "BLE_NATIVE_READY");
 }

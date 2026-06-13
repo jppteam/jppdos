@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "app_id": "games",
+  "app_type": "native",
+  "name": "Games",
+  "version": "1.0.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "games.bin",
+  "capabilities": [
+    "ble.scan",
+    "ble.advertise",
+    "ble.connect",
+    "ble.host"
+  ]
+}

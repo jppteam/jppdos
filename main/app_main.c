@@ -126,7 +126,8 @@ static const char *BIG_DIM_CLOCK_LINES[] = {
     "j++device, 2026",
     "okak",
     "bazinga",
-    "chewsday innit"
+    "chewsday innit",
+    "eto puhosos"
 };
 static const int BIG_DIM_CLOCK_LINE_COUNT = sizeof(BIG_DIM_CLOCK_LINES) / sizeof(BIG_DIM_CLOCK_LINES[0]);
 
@@ -1587,18 +1588,23 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
         if (active_ctx != NULL) {
             ssd1306_clear();
-            for (size_t row = 0u; row < active_ctx->frame_line_count &&
-                                  row < JPP_SDK_FRAME_LINE_CAPACITY; row++) {
-                ssd1306_draw_string((uint8_t)row, 0,
-                                    active_ctx->frame_lines[row], false);
+            /* Fullscreen canvas owns all 8 pages; windowed mode draws the
+               frame text rows + title rule with the canvas on pages 2–7. */
+            size_t  canvas_pages = active_ctx->canvas_fullscreen ? 8u : 6u;
+            uint8_t page_base    = active_ctx->canvas_fullscreen ? 0u : 2u;
+            if (!active_ctx->canvas_fullscreen) {
+                for (size_t row = 0u; row < active_ctx->frame_line_count &&
+                                      row < JPP_SDK_FRAME_LINE_CAPACITY; row++) {
+                    ssd1306_draw_string((uint8_t)row, 0,
+                                        active_ctx->frame_lines[row], false);
+                }
+                /* Signature line under the title — matches the launcher/settings/
+                   WebDAV header style (title on row 0, 1-px rule on page 1). */
+                if (active_ctx->frame_title_rule) {
+                    jpp_draw_rule(1u);
+                }
             }
-            /* Signature line under the title — matches the launcher/settings/
-               WebDAV header style (title on row 0, 1-px rule on page 1). */
-            if (active_ctx->frame_title_rule) {
-                jpp_draw_rule(1u);
-            }
-            /* Canvas (pages 2–7) */
-            for (size_t p = 0u; p < 6u; p++) {
+            for (size_t p = 0u; p < canvas_pages; p++) {
                 for (size_t c = 0u; c < 16u; c++) {
                     uint8_t block[8];
                     bool has_pixels = false;
@@ -1608,7 +1614,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                     }
                     if (has_pixels) {
                         ssd1306_draw_bitmap_8x8(
-                            (uint8_t)(p + 2u), (uint8_t)(c * 8u), block, false);
+                            (uint8_t)(p + page_base), (uint8_t)(c * 8u), block, false);
                     }
                 }
             }

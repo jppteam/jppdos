@@ -24,9 +24,12 @@ extern "C" {
 #define JPP_SDK_HANDLE_CAPACITY JPP_RESOURCE_SDK_HANDLE_LIMIT
 #define JPP_SDK_HANDLE_INVALID 0xFFu
 
-/* Canvas constants — 128px wide × 48px content area (pages 2–7) */
+/* Canvas constants — 128px wide × 48px content area (pages 2–7) by default.
+   With jpp_sdk_canvas_fullscreen(true) the canvas covers all 64 rows
+   (pages 0–7) and the frame text rows / title rule are not rendered. */
 #define JPP_SDK_CANVAS_ROW_BYTES  16u   /* 128 pixels / 8 = 16 bytes per row */
-#define JPP_SDK_CANVAS_ROWS       48u   /* 48 pixel rows in content area */
+#define JPP_SDK_CANVAS_ROWS       48u   /* pixel rows in the windowed content area */
+#define JPP_SDK_CANVAS_ROWS_FULL  64u   /* pixel rows in fullscreen mode */
 
 /* BLE constants */
 #define JPP_SDK_BLE_CONN_CAPACITY JPP_RESOURCE_SDK_BLE_CONN_LIMIT
@@ -285,6 +288,30 @@ typedef jpp_broker_status_t (*jpp_sdk_file_deleter_t)(
 );
 
 /*
+ * Dynamic code modules — load/run/unload a second ELF image (a "plugin" the
+ * app ships in its own scoped storage) into the unused tail of the app pool.
+ * Implemented by main/ over jpp_native_loader_core; only native apps have
+ * these callbacks (the pool tail does not exist under the MicroPython GC
+ * heap). sdk_ctx is the calling app's jpp_sdk_context_t; api is an opaque
+ * app-defined function table handed to the module entry verbatim.
+ */
+typedef bool (*jpp_sdk_module_load_fn_t)(
+    void *context,
+    const char *abs_path,
+    void **out_handle
+);
+typedef void (*jpp_sdk_module_run_fn_t)(
+    void *context,
+    void *handle,
+    void *sdk_ctx,
+    void *api
+);
+typedef void (*jpp_sdk_module_unload_fn_t)(
+    void *context,
+    void *handle
+);
+
+/*
  * List entries in a directory at abs_path (absolute /sd/... path).
  * Writes NUL-terminated newline-separated entries into buf; directories are
  * suffixed with "/". Returns the number of entries written (truncated if buf
@@ -372,6 +399,11 @@ typedef struct {
     /* IPC — delete file after consuming a received message */
     jpp_sdk_file_deleter_t delete_file;
     void *delete_file_context;
+    /* dynamic code modules — native apps only; NULL for MicroPython */
+    jpp_sdk_module_load_fn_t   module_load;
+    jpp_sdk_module_run_fn_t    module_run;
+    jpp_sdk_module_unload_fn_t module_unload;
+    void *module_context;
     /* key-value helper — JSON file in the app's scoped storage */
     jpp_sdk_kv_read_fn_t   kv_read;
     jpp_sdk_kv_write_fn_t  kv_write;
@@ -444,6 +476,11 @@ typedef struct {
        separating the title on row 0 from the body on rows 2+. Set by the modal
        UI helpers (dialog/list/confirm); cleared on every jpp_sdk_set_frame. */
     bool frame_title_rule;
+    /* When true, the canvas covers the whole 128×64 display (pages 0–7) and the
+       renderer skips frame_lines and the title rule. Set/cleared with
+       jpp_sdk_canvas_fullscreen(); jpp_sdk_set_frame() clears it (the modal UI
+       helpers therefore drop fullscreen — re-enable it after they return). */
+    bool canvas_fullscreen;
     jpp_sdk_handle_entry_t handles[JPP_SDK_HANDLE_CAPACITY];
     jpp_sdk_ble_conn_entry_t ble_conns[JPP_SDK_BLE_CONN_CAPACITY];
     bool ble_host_registered;
@@ -451,8 +488,9 @@ typedef struct {
     bool bound;
     bool wakelock_held;  /* prevents screen dim / deep sleep when true */
     QueueHandle_t key_queue;  /* FreeRTOS queue, capacity 8, element jpp_sdk_key_event_t */
-    /* Pixel canvas for 128×48 content area — row-major, MSB = leftmost pixel */
-    uint8_t canvas[JPP_SDK_CANVAS_ROWS][JPP_SDK_CANVAS_ROW_BYTES];
+    /* Pixel canvas — row-major, MSB = leftmost pixel. Rows 0–47 in windowed
+       mode (pages 2–7); all 64 rows when canvas_fullscreen is set. */
+    uint8_t canvas[JPP_SDK_CANVAS_ROWS_FULL][JPP_SDK_CANVAS_ROW_BYTES];
     /* Mutable backing store for caller.capabilities — holds pre-granted cap pointers
        and is extended in-place as pending caps are lazily granted. */
     const char *granted_cap_ptrs[JPP_SDK_PENDING_CAP_MAX];
@@ -724,15 +762,52 @@ jpp_sdk_status_t jpp_sdk_http_request(
 /* Canvas pixel drawing — no capability required, always available */
 jpp_sdk_status_t jpp_sdk_canvas_write(
     jpp_sdk_context_t *context,
-    uint8_t row,              /* 0–47 */
+    uint8_t row,              /* 0–47 (0–63 in fullscreen mode) */
     const uint8_t *pixels     /* JPP_SDK_CANVAS_ROW_BYTES bytes, MSB = leftmost */
 );
 jpp_sdk_status_t jpp_sdk_canvas_clear(jpp_sdk_context_t *context);
 jpp_sdk_status_t jpp_sdk_canvas_draw_pixel(
     jpp_sdk_context_t *context,
     uint8_t x,  /* 0–127 */
-    uint8_t y,  /* 0–47 */
+    uint8_t y,  /* 0–47 (0–63 in fullscreen mode) */
     bool on
+);
+/*
+ * Toggle fullscreen canvas mode. When on, the canvas covers the entire
+ * 128×64 display (rows 0–63, pages 0–7) and the renderer skips the frame
+ * text rows and title rule. The canvas is cleared on every mode change.
+ * jpp_sdk_set_frame() (and therefore every modal UI helper) switches back
+ * to windowed mode; call this again after a dialog/list/input returns.
+ */
+jpp_sdk_status_t jpp_sdk_canvas_fullscreen(jpp_sdk_context_t *context, bool on);
+
+/* ---- Dynamic code modules (native apps only, ungated) --------------------- */
+/*
+ * Load a second ELF binary from the app's own scoped storage
+ * (/sd/apps/<app_id>/<relative_path>) into the unused tail of the app pool.
+ * The module is built like an app binary but exports
+ *     void jpp_module_entry(jpp_sdk_context_t *ctx, void *api);
+ * One module may be loaded at a time; unload before loading the next. The
+ * module runs in the app's own task with the app's own capabilities — it is
+ * the app's code, just paged in on demand, so no capability gate applies.
+ * Returns INVALID_STATE for MicroPython apps (no module service) and
+ * BROKER_ERROR when loading fails (bad ELF, no room in the pool tail —
+ * the app keeps running either way).
+ */
+jpp_sdk_status_t jpp_sdk_module_load(
+    jpp_sdk_context_t *context,
+    const char *relative_path,
+    void **out_module
+);
+/* Call the module's jpp_module_entry(context, api); blocks until it returns. */
+jpp_sdk_status_t jpp_sdk_module_run(
+    jpp_sdk_context_t *context,
+    void *module,
+    void *api
+);
+jpp_sdk_status_t jpp_sdk_module_unload(
+    jpp_sdk_context_t *context,
+    void *module
 );
 
 /*
@@ -950,6 +1025,13 @@ jpp_sdk_status_t jpp_sdk_buzzer_tone(jpp_sdk_context_t *context,
 jpp_sdk_status_t jpp_sdk_buzzer_play_sequence(jpp_sdk_context_t *context,
                                                const jpp_buzzer_note_t *notes,
                                                size_t count);
+
+/* Play a caller-supplied note sequence asynchronously (returns immediately;
+   the sequence is copied, so the caller's buffer need not stay valid).
+   A new async sequence — or jpp_sdk_buzzer_stop() — preempts the current one. */
+jpp_sdk_status_t jpp_sdk_buzzer_play_sequence_async(jpp_sdk_context_t *context,
+                                                     const jpp_buzzer_note_t *notes,
+                                                     size_t count);
 
 /* Stop any playing sound immediately. */
 jpp_sdk_status_t jpp_sdk_buzzer_stop(jpp_sdk_context_t *context);

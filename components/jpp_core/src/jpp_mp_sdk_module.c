@@ -692,6 +692,18 @@ STATIC mp_obj_t mp_sdk_canvas_draw_pixel(mp_obj_t x_obj, mp_obj_t y_obj, mp_obj_
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_canvas_draw_pixel_obj, mp_sdk_canvas_draw_pixel);
 
+/* canvas_fullscreen(on) — toggle the 128×64 fullscreen canvas mode */
+STATIC mp_obj_t mp_sdk_canvas_fullscreen(mp_obj_t on_obj)
+{
+    bool on = mp_obj_is_true(on_obj);
+    jpp_sdk_status_t st = jpp_sdk_canvas_fullscreen(get_ctx(), on);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_canvas_fullscreen_obj, mp_sdk_canvas_fullscreen);
+
 /* -------------------------------------------------------------------------- */
 /* IPC  (ungated — mailbox files live in the recipient's scoped storage)     */
 /* -------------------------------------------------------------------------- */
@@ -927,16 +939,13 @@ STATIC mp_obj_t mp_sdk_buzzer_tone(mp_obj_t freq_obj, mp_obj_t dur_obj)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_2(mp_sdk_buzzer_tone_obj, mp_sdk_buzzer_tone);
 
-/* buzzer_play_sequence(list_of_(freq,dur)) */
-STATIC mp_obj_t mp_sdk_buzzer_play_sequence(mp_obj_t seq_obj)
+/* Parse a list of (freq_hz, duration_ms) pairs into notes[]; returns count. */
+STATIC size_t mp_sdk_parse_notes(mp_obj_t seq_obj, jpp_buzzer_note_t *notes, size_t max)
 {
     size_t n;
     mp_obj_t *items;
     mp_obj_get_array(seq_obj, &n, &items);
-    if (n == 0u) { return mp_const_none; }
-    if (n > 64u) { n = 64u; }
-
-    jpp_buzzer_note_t notes[64];
+    if (n > max) { n = max; }
     for (size_t i = 0u; i < n; i++) {
         size_t pair_len;
         mp_obj_t *pair;
@@ -947,11 +956,32 @@ STATIC mp_obj_t mp_sdk_buzzer_play_sequence(mp_obj_t seq_obj)
         notes[i].freq_hz     = (uint32_t)mp_obj_get_int(pair[0]);
         notes[i].duration_ms = (uint32_t)mp_obj_get_int(pair[1]);
     }
+    return n;
+}
+
+/* buzzer_play_sequence(list_of_(freq,dur)) */
+STATIC mp_obj_t mp_sdk_buzzer_play_sequence(mp_obj_t seq_obj)
+{
+    jpp_buzzer_note_t notes[64];
+    size_t n = mp_sdk_parse_notes(seq_obj, notes, 64u);
+    if (n == 0u) { return mp_const_none; }
     jpp_sdk_status_t st = jpp_sdk_buzzer_play_sequence(get_ctx(), notes, n);
     if (st != JPP_SDK_STATUS_OK) { raise_sdk_error(st, NULL); }
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_buzzer_play_sequence_obj, mp_sdk_buzzer_play_sequence);
+
+/* buzzer_play_sequence_async(list_of_(freq,dur)) — returns immediately */
+STATIC mp_obj_t mp_sdk_buzzer_play_sequence_async(mp_obj_t seq_obj)
+{
+    jpp_buzzer_note_t notes[64];
+    size_t n = mp_sdk_parse_notes(seq_obj, notes, 64u);
+    if (n == 0u) { return mp_const_none; }
+    jpp_sdk_status_t st = jpp_sdk_buzzer_play_sequence_async(get_ctx(), notes, n);
+    if (st != JPP_SDK_STATUS_OK) { raise_sdk_error(st, NULL); }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_buzzer_play_sequence_async_obj, mp_sdk_buzzer_play_sequence_async);
 
 /* buzzer_stop() */
 STATIC mp_obj_t mp_sdk_buzzer_stop(void)
@@ -1050,6 +1080,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_buzzer_play),          MP_ROM_PTR(&mp_sdk_buzzer_play_obj) },
     { MP_ROM_QSTR(MP_QSTR_buzzer_tone),          MP_ROM_PTR(&mp_sdk_buzzer_tone_obj) },
     { MP_ROM_QSTR(MP_QSTR_buzzer_play_sequence), MP_ROM_PTR(&mp_sdk_buzzer_play_sequence_obj) },
+    { MP_ROM_QSTR(MP_QSTR_buzzer_play_sequence_async), MP_ROM_PTR(&mp_sdk_buzzer_play_sequence_async_obj) },
     { MP_ROM_QSTR(MP_QSTR_buzzer_stop),          MP_ROM_PTR(&mp_sdk_buzzer_stop_obj) },
     { MP_ROM_QSTR(MP_QSTR_SOUND_SUCCESS), MP_ROM_INT(JPP_BUZZER_SOUND_SUCCESS) },
     { MP_ROM_QSTR(MP_QSTR_SOUND_FAILURE), MP_ROM_INT(JPP_BUZZER_SOUND_FAILURE) },
@@ -1072,6 +1103,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_canvas_write),        MP_ROM_PTR(&mp_sdk_canvas_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_canvas_clear),        MP_ROM_PTR(&mp_sdk_canvas_clear_obj) },
     { MP_ROM_QSTR(MP_QSTR_canvas_draw_pixel),   MP_ROM_PTR(&mp_sdk_canvas_draw_pixel_obj) },
+    { MP_ROM_QSTR(MP_QSTR_canvas_fullscreen),   MP_ROM_PTR(&mp_sdk_canvas_fullscreen_obj) },
 
     /* IPC */
     { MP_ROM_QSTR(MP_QSTR_ipc_send),            MP_ROM_PTR(&mp_sdk_ipc_send_obj) },

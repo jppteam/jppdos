@@ -35,13 +35,31 @@ typedef enum {
     JPP_NATIVE_LOADER_READ_FAILED,      /* fopen/fread error                  */
     JPP_NATIVE_LOADER_INVALID_ELF,      /* not a valid ELF32/RISC-V shared obj */
     JPP_NATIVE_LOADER_UNSUPPORTED,      /* relocation type or ABI not handled  */
-    JPP_NATIVE_LOADER_NO_MEMORY,        /* heap allocation failed              */
+    JPP_NATIVE_LOADER_NO_MEMORY,        /* pool unavailable or image too large */
     JPP_NATIVE_LOADER_UNRESOLVED_SYM,   /* symbol not in firmware export table */
-    JPP_NATIVE_LOADER_NO_ENTRY,         /* jpp_app_entry not found in binary   */
+    JPP_NATIVE_LOADER_NO_ENTRY,         /* entry symbol not found in binary    */
+    JPP_NATIVE_LOADER_BAD_STATE,        /* module op without a loaded host app,
+                                           or a module is already loaded       */
 } jpp_native_loader_result_t;
 
 /* Opaque handle to a loaded (but not yet run) native app. */
 typedef struct jpp_native_loaded_app jpp_native_loaded_app_t;
+
+/*
+ * Opaque handle to a dynamically loaded code module.
+ *
+ * A module is a second ELF32/RISC-V shared object that a *running native app*
+ * loads into the unused tail of the shared app pool (after its own image).
+ * It is built exactly like an app binary but exports
+ *     void jpp_module_entry(jpp_sdk_context_t *ctx, void *api);
+ * instead of jpp_app_entry. `api` is an app-defined function table the host
+ * passes through verbatim — modules resolve firmware symbols via the loader
+ * like any app, but host-app-private helpers must come through `api`.
+ * One module may be loaded at a time; freeing it lets the next load reuse the
+ * same tail region. Any module still loaded when the host app is freed is
+ * reclaimed automatically.
+ */
+typedef struct jpp_native_loaded_module jpp_native_loaded_module_t;
 
 /*
  * Optional boot-time call that logs the executable app-pool capacity.
@@ -79,10 +97,31 @@ bool jpp_native_loader_run_task(jpp_native_loaded_app_t *app,
                                 const char              *task_name);
 
 /*
- * Release all memory owned by the loaded app handle.
- * Safe to call with app == NULL.
+ * Release all memory owned by the loaded app handle (including any module
+ * still loaded into the pool tail). Safe to call with app == NULL.
  */
 void jpp_native_loader_free(jpp_native_loaded_app_t *app);
+
+/*
+ * Load a code module from `path` (absolute path to a .bin ELF) into the unused
+ * tail of the app pool. Requires a native app loaded via jpp_native_loader_load
+ * to be resident (BAD_STATE otherwise) and at most one module at a time
+ * (BAD_STATE if one is already loaded). NO_MEMORY when the tail cannot fit the
+ * image; the host app keeps running in every failure case.
+ */
+jpp_native_loader_result_t jpp_native_loader_load_module(
+    const char                   *path,
+    jpp_native_loaded_module_t  **out_module
+);
+
+/* Call the module's jpp_module_entry(ctx, api) and block until it returns. */
+void jpp_native_loader_module_run(jpp_native_loaded_module_t *module,
+                                  jpp_sdk_context_t          *ctx,
+                                  void                       *api);
+
+/* Release the module handle and make the pool tail reusable.
+   Safe to call with module == NULL. */
+void jpp_native_loader_module_free(jpp_native_loaded_module_t *module);
 
 const char *jpp_native_loader_result_name(jpp_native_loader_result_t r);
 

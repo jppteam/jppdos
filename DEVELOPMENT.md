@@ -133,6 +133,18 @@ into `build/apps/meetapp/` ready to copy to the SD card.
 The `testapp_native_bin` custom target in `apps/testapp_native/CMakeLists.txt`
 works identically, producing `build/apps/testapp_native/testapp_native.bin`.
 
+The `games_bin` custom target in `apps/games/CMakeLists.txt` works the same way
+but builds **multiple** binaries from one app: the resident hub
+`build/apps/games/games.bin` (exports `jpp_app_entry`) plus one
+`build/apps/games/<name>.mod.bin` per game (each exports `jpp_module_entry`).
+The hub loads one game module at a time into the app-pool tail with
+`jpp_sdk_module_load`, so only the hub (~13 KB loaded) plus one game (≤4 KB)
+is ever resident — the whole 9-game catalog never has to fit the 64 KB pool
+at once. Copy the **entire** `build/apps/games/` directory to `/sd/apps/games/`.
+Adding a brand-new app component dir under `apps/` requires `idf.py reconfigure`
+(or a clean build) before `idf.py build` sees it — ESP-IDF caches the component
+list.
+
 The `testapp_mp_bin` custom target in `apps/testapp_mp/CMakeLists.txt` compiles
 `main.py` to `main.mpy` with mpy-cross and stages both `main.mpy` and
 `manifest.json` to `build/apps/testapp_mp/`. Requires `mpy-cross` 1.28.0 on
@@ -149,6 +161,7 @@ Every native build script now also copies `manifest.json` alongside the `.so` so
 | `apps/meetapp/` | native C | BLE meetup proof — full example of multi-capability native app |
 | `apps/testapp_native/` | native C | SDK test app — exercises every `jpp_sdk_*` capability via a menu |
 | `apps/testapp_mp/` | MicroPython | SDK test app — exercises every `jppsdk` Python function via a menu |
+| `apps/games/` | native C | Games hub + 9 chain-loaded modules (Tetris/Pong/Snake/Breakout/2048/Flappy/Racer + BLE Connect-4/Battleship) — reference for `jpp_sdk_module_load`, fullscreen canvas, and BLE device-to-device multiplayer with host-side anti-cheat |
 
 ### Required app layout
 
@@ -266,9 +279,10 @@ The App SDK calls in `jpp_sdk_bridge.h` are:
 | `jpp_sdk_set_frame`, `jpp_sdk_request_close`, `jpp_sdk_log` | — (always available) |
 | `jpp_sdk_dialog`, `jpp_sdk_list`, `jpp_sdk_confirm`, `jpp_sdk_input` | — (high-level UI helpers) |
 | `jpp_sdk_poll_key`, `jpp_sdk_wait_key` | — (always available) |
-| `jpp_sdk_canvas_write`, `jpp_sdk_canvas_clear`, `jpp_sdk_canvas_draw_pixel` | — (built-in, no capability) |
+| `jpp_sdk_canvas_write`, `jpp_sdk_canvas_clear`, `jpp_sdk_canvas_draw_pixel`, `jpp_sdk_canvas_fullscreen` | — (built-in, no capability) |
+| `jpp_sdk_module_load`, `jpp_sdk_module_run`, `jpp_sdk_module_unload` | — (native apps only; page a second ELF from `/sd/apps/<app_id>/` into the pool tail) |
 | `jpp_sdk_wakelock_acquire`, `jpp_sdk_wakelock_release` | — (prevents screen dim and deep sleep) |
-| `jpp_sdk_buzzer_play`, `jpp_sdk_buzzer_tone`, `jpp_sdk_buzzer_play_sequence`, `jpp_sdk_buzzer_stop` | — (no capability) |
+| `jpp_sdk_buzzer_play`, `jpp_sdk_buzzer_tone`, `jpp_sdk_buzzer_play_sequence`, `jpp_sdk_buzzer_play_sequence_async`, `jpp_sdk_buzzer_stop` | — (no capability) |
 | `jpp_sdk_device_status`, `jpp_sdk_get_time` | — (ungated) |
 | `jpp_sdk_file_read`, `jpp_sdk_file_write`, `jpp_sdk_file_list` | — (scoped to `/sd/apps/<app_id>/`) |
 | `jpp_sdk_shared_read`, `jpp_sdk_shared_write`, `jpp_sdk_shared_list` | — (scoped to `/sd/shared/<app_id>/`) |
@@ -458,6 +472,7 @@ if jppsdk.dialog("Erase all saved data?", title="Confirm"):
 | `buzzer_play` | `(sound: int)` | Play a predefined sound: `SOUND_SUCCESS`, `SOUND_FAILURE`, `SOUND_NOTIFY`, `SOUND_STARTUP`, `SOUND_CLICK`. Blocking until the sound finishes. |
 | `buzzer_tone` | `(freq_hz: int, duration_ms: int)` | Play a single tone. `freq_hz=0` is silence. Blocking for `duration_ms`. |
 | `buzzer_play_sequence` | `(notes: list[tuple])` | Play a list of `(freq_hz, duration_ms)` tuples. Blocking. |
+| `buzzer_play_sequence_async` | `(notes: list[tuple])` | Same, but returns immediately (the sequence is copied); a new async sequence or `buzzer_stop` preempts the current one. |
 | `buzzer_stop` | `()` | Stop any playing sound immediately. |
 
 **Device**
@@ -554,13 +569,19 @@ the call reports `TEXT_TRUNCATED`.
 
 **Canvas pixel drawing** (no capability required)
 
-The canvas is a 128×48 pixel content area (display pages 2–7). Canvas pixels are rendered on top of text frame lines.
+The canvas is a 128×48 pixel content area (display pages 2–7) by default, with
+text frame lines rendered above it. Calling `canvas_fullscreen(True)` extends
+the canvas to the whole 128×64 display (rows 0–63, pages 0–7) and hides the
+frame text/title rule — full-screen games (e.g. `apps/games/`) use this. The
+canvas is cleared on every mode change, and `set_frame` switches back to
+windowed mode (so re-enable fullscreen after any `dialog`/`list`/`input`).
 
 | Function | Signature | Notes |
 |---|---|---|
-| `canvas_write` | `(row: int, pixels: bytes)` | Write 16-byte row (0–47); each byte is 8 pixels, MSB = leftmost |
+| `canvas_write` | `(row: int, pixels: bytes)` | Write 16-byte row (0–47, or 0–63 in fullscreen); each byte is 8 pixels, MSB = leftmost |
 | `canvas_clear` | `()` | Zero the entire canvas |
-| `canvas_draw_pixel` | `(x: int, y: int, on: bool)` | Set or clear a single pixel; x: 0–127, y: 0–47 |
+| `canvas_draw_pixel` | `(x: int, y: int, on: bool)` | Set or clear a single pixel; x: 0–127, y: 0–47 (0–63 in fullscreen) |
+| `canvas_fullscreen` | `(on: bool)` | Toggle the 128×64 fullscreen canvas; clears the canvas |
 
 **Network** (requires `network.bind`)
 

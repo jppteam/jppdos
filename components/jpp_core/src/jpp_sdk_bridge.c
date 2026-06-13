@@ -416,6 +416,12 @@ jpp_sdk_status_t jpp_sdk_set_frame(
     }
     /* A plain frame has no signature rule; modal helpers re-enable it after. */
     context->frame_title_rule = false;
+    /* Text frames render in the windowed layout — leave fullscreen mode and
+       wipe any prior pixel content so leftover canvas drawings (e.g. from a
+       fullscreen game) don't bleed through behind the frame text. Helpers that
+       draw into the canvas (keyboard input) do so after their set_frame call. */
+    context->canvas_fullscreen = false;
+    memset(context->canvas, 0, sizeof(context->canvas));
     stored_count = line_count < JPP_SDK_FRAME_LINE_CAPACITY ? line_count : JPP_SDK_FRAME_LINE_CAPACITY;
     memset(context->frame_lines, 0, sizeof(context->frame_lines));
     for (index = 0u; index < stored_count; ++index) {
@@ -1816,6 +1822,13 @@ void jpp_sdk_net_close_all(jpp_sdk_context_t *context)
 
 /* ---- canvas ---- */
 
+/* Valid row count for the current canvas mode. */
+static uint8_t jpp_sdk_canvas_row_limit(const jpp_sdk_context_t *context)
+{
+    return context->canvas_fullscreen ? (uint8_t)JPP_SDK_CANVAS_ROWS_FULL
+                                      : (uint8_t)JPP_SDK_CANVAS_ROWS;
+}
+
 jpp_sdk_status_t jpp_sdk_canvas_write(
     jpp_sdk_context_t *context,
     uint8_t row,
@@ -1826,7 +1839,7 @@ jpp_sdk_status_t jpp_sdk_canvas_write(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    if (pixels == NULL || row >= JPP_SDK_CANVAS_ROWS) {
+    if (pixels == NULL || row >= jpp_sdk_canvas_row_limit(context)) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
     memcpy(context->canvas[row], pixels, JPP_SDK_CANVAS_ROW_BYTES);
@@ -1854,7 +1867,7 @@ jpp_sdk_status_t jpp_sdk_canvas_draw_pixel(
     if (status != JPP_SDK_STATUS_OK) {
         return status;
     }
-    if (x >= 128u || y >= JPP_SDK_CANVAS_ROWS) {
+    if (x >= 128u || y >= jpp_sdk_canvas_row_limit(context)) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
     uint8_t *byte = &context->canvas[y][x / 8u];
@@ -1864,6 +1877,101 @@ jpp_sdk_status_t jpp_sdk_canvas_draw_pixel(
     } else {
         *byte &= (uint8_t)~bit;
     }
+    return JPP_SDK_STATUS_OK;
+}
+
+jpp_sdk_status_t jpp_sdk_canvas_fullscreen(jpp_sdk_context_t *context, bool on)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (context->canvas_fullscreen == on) {
+        return JPP_SDK_STATUS_OK;
+    }
+    context->canvas_fullscreen = on;
+    /* A mode switch changes which rows are visible — start from a clean slate
+       so stale pixels never bleed into the newly exposed/hidden region. */
+    memset(context->canvas, 0, sizeof(context->canvas));
+    if (on) {
+        /* Hide any leftover frame text — fullscreen owns the whole display. */
+        memset(context->frame_lines, 0, sizeof(context->frame_lines));
+        context->frame_line_count = 0u;
+        context->frame_title_rule = false;
+    }
+    return JPP_SDK_STATUS_OK;
+}
+
+/* ---- dynamic code modules ---- */
+
+jpp_sdk_status_t jpp_sdk_module_load(
+    jpp_sdk_context_t *context,
+    const char *relative_path,
+    void **out_module
+)
+{
+    jpp_sdk_status_t status;
+    char path[JPP_SDK_PATH_MAX];
+
+    status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (out_module == NULL) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    *out_module = NULL;
+    if (context->services.module_load == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    status = jpp_sdk_build_scoped_path(context, relative_path, path, sizeof(path));
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (!context->services.module_load(context->services.module_context,
+                                       path, out_module)) {
+        return JPP_SDK_STATUS_BROKER_ERROR;
+    }
+    return JPP_SDK_STATUS_OK;
+}
+
+jpp_sdk_status_t jpp_sdk_module_run(
+    jpp_sdk_context_t *context,
+    void *module,
+    void *api
+)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (module == NULL) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    if (context->services.module_run == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    context->services.module_run(context->services.module_context,
+                                 module, context, api);
+    return JPP_SDK_STATUS_OK;
+}
+
+jpp_sdk_status_t jpp_sdk_module_unload(
+    jpp_sdk_context_t *context,
+    void *module
+)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (module == NULL) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    if (context->services.module_unload == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    context->services.module_unload(context->services.module_context, module);
     return JPP_SDK_STATUS_OK;
 }
 
@@ -3018,6 +3126,17 @@ jpp_sdk_status_t jpp_sdk_buzzer_play_sequence(jpp_sdk_context_t *context,
     if (status != JPP_SDK_STATUS_OK) { return status; }
     if (notes == NULL && count > 0u) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
     jpp_buzzer_status_t bs = jpp_buzzer_play_sequence(notes, count);
+    return (bs == JPP_BUZZER_STATUS_OK) ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_INVALID_STATE;
+}
+
+jpp_sdk_status_t jpp_sdk_buzzer_play_sequence_async(jpp_sdk_context_t *context,
+                                                     const jpp_buzzer_note_t *notes,
+                                                     size_t count)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if (notes == NULL && count > 0u) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
+    jpp_buzzer_status_t bs = jpp_buzzer_play_sequence_async(notes, count);
     return (bs == JPP_BUZZER_STATUS_OK) ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_INVALID_STATE;
 }
 

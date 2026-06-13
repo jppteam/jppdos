@@ -24,7 +24,8 @@ extern "C" {
 
 /* 128 × 48 pixel buffer — row-major, MSB = leftmost pixel.
  * Rows 0-47 correspond to SSD1306 pages 2-7 when flushed to hardware.
- * Identical in layout to jpp_sdk_context_t.canvas. */
+ * Identical in layout to the first 48 rows of jpp_sdk_context_t.canvas
+ * (the windowed region — the keyboard never renders in fullscreen mode). */
 #define JPP_KBD_PX_ROWS  48u
 #define JPP_KBD_PX_COLS  16u   /* 128 pixels / 8 bits = 16 bytes per row */
 typedef uint8_t jpp_kbd_pixbuf_t[JPP_KBD_PX_ROWS][JPP_KBD_PX_COLS];

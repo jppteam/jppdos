@@ -29,6 +29,9 @@ extern long long __divdi3(long long, long long);
 extern long long __umoddi3(long long, long long);
 extern long long __moddi3(long long, long long);
 extern long long __muldi3(long long, long long);
+extern long long __ashldi3(long long, int);
+extern long long __ashrdi3(long long, int);
+extern unsigned long long __lshrdi3(unsigned long long, int);
 extern int __clzsi2(unsigned int);
 extern int __clzdi2(unsigned long long);
 extern int __ctzsi2(unsigned int);
@@ -71,6 +74,12 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_canvas_clear",          (void *)jpp_sdk_canvas_clear          },
     { "jpp_sdk_canvas_draw_pixel",     (void *)jpp_sdk_canvas_draw_pixel     },
     { "jpp_sdk_canvas_write",          (void *)jpp_sdk_canvas_write          },
+    { "jpp_sdk_canvas_fullscreen",     (void *)jpp_sdk_canvas_fullscreen     },
+
+    /* Dynamic code modules */
+    { "jpp_sdk_module_load",           (void *)jpp_sdk_module_load           },
+    { "jpp_sdk_module_run",            (void *)jpp_sdk_module_run            },
+    { "jpp_sdk_module_unload",         (void *)jpp_sdk_module_unload         },
 
     /* Device / RTC */
     { "jpp_sdk_device_status",         (void *)jpp_sdk_device_status         },
@@ -120,6 +129,7 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_buzzer_play",           (void *)jpp_sdk_buzzer_play           },
     { "jpp_sdk_buzzer_tone",           (void *)jpp_sdk_buzzer_tone           },
     { "jpp_sdk_buzzer_play_sequence",  (void *)jpp_sdk_buzzer_play_sequence  },
+    { "jpp_sdk_buzzer_play_sequence_async", (void *)jpp_sdk_buzzer_play_sequence_async },
     { "jpp_sdk_buzzer_stop",           (void *)jpp_sdk_buzzer_stop           },
 
     /* HTTP */
@@ -174,6 +184,9 @@ static const jpp_native_sym_t s_symtab[] = {
     { "__umoddi3",   (void *)__umoddi3   },
     { "__moddi3",    (void *)__moddi3    },
     { "__muldi3",    (void *)__muldi3    },
+    { "__ashldi3",   (void *)__ashldi3   },
+    { "__ashrdi3",   (void *)__ashrdi3   },
+    { "__lshrdi3",   (void *)__lshrdi3   },
     { "__clzsi2",    (void *)__clzsi2    },
     { "__clzdi2",    (void *)__clzdi2    },
     { "__ctzsi2",    (void *)__ctzsi2    },
@@ -207,6 +220,7 @@ static const jpp_native_sym_t s_symtab[] = {
     { "snprintf",  (void *)snprintf  },
     { "sprintf",   (void *)sprintf   },
     { "sscanf",    (void *)sscanf    },
+    { "atoi",      (void *)atoi      },
     { "malloc",    (void *)malloc    },
     { "calloc",    (void *)calloc    },
     { "realloc",   (void *)realloc   },

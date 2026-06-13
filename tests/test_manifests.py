@@ -34,7 +34,7 @@ def test_repo_app_manifests_are_valid():
     # manifest rules are checked for the source tree.
     valid, rejected = validate_apps_root(APPS_ROOT, check_entry_file=False)
     assert rejected == []
-    assert {app_id for app_id, _ in valid} == {"meetapp", "testapp_mp", "testapp_native"}
+    assert {app_id for app_id, _ in valid} == {"games", "meetapp", "testapp_mp", "testapp_native"}
 
 
 def test_sdcard_fixture_corpus_is_valid():

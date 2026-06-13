@@ -6,7 +6,6 @@
 #include <stdlib.h>
 
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 
 #include "jpp_app_pool.h"
 
@@ -24,6 +23,9 @@ static const char *TAG = "native_loader";
  * The pool is shared with the MicroPython GC heap (see jpp_app_pool.h): native
  * and MicroPython apps are mutually exclusive, so one pool serves both and the
  * second pool's worth of SRAM stays in the general heap for WiFi/lwIP.
+ *
+ * The host app image sits at the pool base; the remaining tail can hold one
+ * dynamically loaded code module (jpp_native_loader_load_module) at a time.
  */
 void jpp_native_loader_preinit(void)
 {
@@ -41,17 +43,31 @@ typedef struct {
 extern const jpp_native_sym_t *const jpp_native_symtab;
 extern const size_t                  jpp_native_symtab_count;
 
-/* ---- Loaded app handle --------------------------------------------------- */
+/* ---- Loaded image handles ------------------------------------------------ */
 
 struct jpp_native_loaded_app {
     void    *mem;               /* executable block for all PT_LOAD segments   */
     size_t   mem_size;
-    bool     mem_from_pool;     /* true → mem is the pre-alloc pool, don't free */
     uintptr_t load_base;        /* = (uintptr_t)mem                            */
     uintptr_t vaddr_base;       /* min PT_LOAD p_vaddr (load bias denominator) */
     void   (*entry)(void *);    /* jpp_app_entry, resolved during load         */
     void   (*task_entry)(void *, const char *);  /* jpp_app_task_entry, optional */
 };
+
+struct jpp_native_loaded_module {
+    void    *mem;               /* tail region inside the pool (not released
+                                   separately — owned by the pool/host app)    */
+    size_t   mem_size;
+    void   (*entry)(void *, void *);  /* jpp_module_entry(ctx, api)            */
+};
+
+/* Pool watermark: set while a native host app is resident, so module loads
+   know where the unused tail begins. One module at a time. */
+static void                        *s_pool_base;
+static size_t                       s_pool_used;
+static jpp_native_loaded_module_t  *s_active_module;
+
+#define JPP_LOADER_ALIGN(sz) (((sz) + 15u) & ~(size_t)15u)
 
 /* ---- Symbol lookup -------------------------------------------------------- */
 
@@ -76,17 +92,31 @@ static bool pread_exact(FILE *f, size_t off, void *dst, size_t n)
     return fread(dst, 1u, n, f) == n;
 }
 
-/* ---- ELF loader ---------------------------------------------------------- */
+/* ---- ELF image loader ----------------------------------------------------- */
 
-jpp_native_loader_result_t jpp_native_loader_load(
-    const char               *path,
-    jpp_native_loaded_app_t **out_app)
+typedef struct {
+    void     *mem;
+    size_t    mem_size;
+    uintptr_t load_base;
+    uintptr_t vaddr_base;
+    void     *entry;       /* entry_name symbol (required)        */
+    void     *entry2;      /* entry2_name symbol (optional, NULL) */
+} jpp_loaded_image_t;
+
+/*
+ * Load one ELF32/RISC-V ET_DYN image. Shared by app loading (image at the pool
+ * base, acquired here) and module loading (image in the tail after the host
+ * app; as_module = true). On any failure the pool state is exactly what it was
+ * before the call: app loads release the pool, module loads never touch the
+ * host app's region.
+ */
+static jpp_native_loader_result_t load_image(
+    const char         *path,
+    bool                as_module,
+    const char         *entry_name,
+    const char         *entry2_name,
+    jpp_loaded_image_t *out)
 {
-    if (path == NULL || out_app == NULL) {
-        return JPP_NATIVE_LOADER_INVALID_ELF;
-    }
-    *out_app = NULL;
-
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
         ESP_LOGE(TAG, "LOAD_FAILED open: %s", path);
@@ -162,36 +192,45 @@ jpp_native_loader_result_t jpp_native_loader_load(
     }
     size_t total_size = (size_t)(vaddr_max - vaddr_min);
 
-    /* --- 4. Allocate executable memory ------------------------------------ */
-    /*
-     * MALLOC_CAP_EXEC allocates from the IRAM heap.  On ESP32-C6, PMP marks
-     * DRAM as non-executable even though it is physically the same HP SRAM, so
-     * there is no safe fallback: if IRAM is exhausted the load must fail rather
-     * than crash on first instruction fetch.  Free IRAM by disabling WiFi IRAM
-     * optimisations (CONFIG_ESP_WIFI_IRAM_OPT etc.) in sdkconfig.defaults.
-     */
-    ESP_LOGI(TAG, "LOAD %s: %zu bytes (pool=%u bytes, used=%s)",
-             path, total_size, (unsigned)jpp_app_pool_size(),
-             jpp_app_pool_in_use() ? "yes" : "no");
-
-    void *mem = jpp_app_pool_acquire(total_size, NULL);
-    if (mem == NULL) {
-        fclose(f);
-        ESP_LOGE(TAG, "LOAD_FAILED %s: app pool unavailable (busy or binary "
-                 "%zu bytes exceeds pool %u bytes)",
-                 path, total_size, (unsigned)jpp_app_pool_size());
-        return JPP_NATIVE_LOADER_NO_MEMORY;
+    /* --- 4. Place the image in executable memory --------------------------- */
+    void *mem;
+    if (!as_module) {
+        ESP_LOGI(TAG, "LOAD %s: %zu bytes (pool=%u bytes, used=%s)",
+                 path, total_size, (unsigned)jpp_app_pool_size(),
+                 jpp_app_pool_in_use() ? "yes" : "no");
+        mem = jpp_app_pool_acquire(total_size, NULL);
+        if (mem == NULL) {
+            fclose(f);
+            ESP_LOGE(TAG, "LOAD_FAILED %s: app pool unavailable (busy or binary "
+                     "%zu bytes exceeds pool %u bytes)",
+                     path, total_size, (unsigned)jpp_app_pool_size());
+            return JPP_NATIVE_LOADER_NO_MEMORY;
+        }
+    } else {
+        size_t tail_off = JPP_LOADER_ALIGN(s_pool_used);
+        ESP_LOGI(TAG, "LOAD MODULE %s: %zu bytes (tail %zu of %u free)",
+                 path, total_size,
+                 (size_t)(jpp_app_pool_size() - tail_off),
+                 (unsigned)jpp_app_pool_size());
+        if (tail_off + total_size > jpp_app_pool_size()) {
+            fclose(f);
+            ESP_LOGE(TAG, "LOAD_FAILED module %s: %zu bytes exceeds free pool "
+                     "tail (%zu bytes)",
+                     path, total_size, (size_t)(jpp_app_pool_size() - tail_off));
+            return JPP_NATIVE_LOADER_NO_MEMORY;
+        }
+        mem = (uint8_t *)s_pool_base + tail_off;
     }
-    bool mem_from_pool = true;
     memset(mem, 0, total_size);
 
     uintptr_t load_base = (uintptr_t)mem;
     /* delta: add to any ELF vaddr to get the runtime memory address */
     uintptr_t delta = load_base - (uintptr_t)vaddr_min;
 
+/* App loads own the pool acquisition; module loads borrow the tail and must
+   leave the host app's region untouched on failure. */
 #define FREE_MEM() do { \
-    if (mem_from_pool) { jpp_app_pool_release(); } \
-    else               { heap_caps_free(mem); } \
+    if (!as_module) { jpp_app_pool_release(); } \
 } while (0)
 
     /* --- 5. Load PT_LOAD segments ----------------------------------------- */
@@ -393,10 +432,9 @@ dyn_done:;
 
 #undef SYM_AT
 
-    /* --- 9. Find jpp_app_entry (required) and jpp_app_task_entry (optional,
-       the headless background-task entry) in .dynsym ------------------------ */
-    void (*entry_fn)(void *) = NULL;
-    void (*task_entry_fn)(void *, const char *) = NULL;
+    /* --- 9. Find the entry symbol(s) in .dynsym ---------------------------- */
+    void *entry_fn  = NULL;
+    void *entry2_fn = NULL;
     if (sym_count > 0u) {
         for (size_t i = 1u; i < sym_count; i++) {
             const Elf32_Sym *s = (const Elf32_Sym *)
@@ -408,22 +446,23 @@ dyn_done:;
                 continue;
             }
             const char *sname = strtab + s->st_name;
-            if (strcmp(sname, "jpp_app_entry") == 0) {
-                entry_fn = (void (*)(void *))(delta + s->st_value);
-            } else if (strcmp(sname, "jpp_app_task_entry") == 0) {
-                task_entry_fn =
-                    (void (*)(void *, const char *))(delta + s->st_value);
+            if (strcmp(sname, entry_name) == 0) {
+                entry_fn = (void *)(delta + s->st_value);
+            } else if (entry2_name != NULL && strcmp(sname, entry2_name) == 0) {
+                entry2_fn = (void *)(delta + s->st_value);
             }
-            if (entry_fn != NULL && task_entry_fn != NULL) {
+            if (entry_fn != NULL && (entry2_name == NULL || entry2_fn != NULL)) {
                 break;
             }
         }
     }
     if (entry_fn == NULL) {
         FREE_MEM();
-        ESP_LOGE(TAG, "LOAD_FAILED jpp_app_entry not found");
+        ESP_LOGE(TAG, "LOAD_FAILED %s not found", entry_name);
         return JPP_NATIVE_LOADER_NO_ENTRY;
     }
+
+#undef FREE_MEM
 
     /* --- 10. Flush instruction cache -------------------------------------- */
     /*
@@ -433,29 +472,55 @@ dyn_done:;
      */
     __builtin___clear_cache((char *)mem, (char *)mem + total_size);
 
-    /* --- 11. Build handle ------------------------------------------------- */
-    jpp_native_loaded_app_t *app =
-        (jpp_native_loaded_app_t *)malloc(sizeof(jpp_native_loaded_app_t));
-    if (app == NULL) {
-        FREE_MEM();
-        return JPP_NATIVE_LOADER_NO_MEMORY;
-    }
-    app->mem           = mem;
-    app->mem_size      = total_size;
-    app->mem_from_pool = mem_from_pool;
-    app->load_base     = load_base;
-    app->vaddr_base = (uintptr_t)vaddr_min;
-    app->entry      = entry_fn;
-    app->task_entry = task_entry_fn;
-
-    ESP_LOGI(TAG, "LOADED %s base=0x%08x size=%zu entry=0x%08x",
-             path, (unsigned)load_base, total_size,
-             (unsigned)(uintptr_t)entry_fn);
-    *out_app = app;
+    out->mem        = mem;
+    out->mem_size   = total_size;
+    out->load_base  = load_base;
+    out->vaddr_base = (uintptr_t)vaddr_min;
+    out->entry      = entry_fn;
+    out->entry2     = entry2_fn;
     return JPP_NATIVE_LOADER_OK;
 }
 
-/* ---- Run / free ---------------------------------------------------------- */
+/* ---- App load / run / free ------------------------------------------------ */
+
+jpp_native_loader_result_t jpp_native_loader_load(
+    const char               *path,
+    jpp_native_loaded_app_t **out_app)
+{
+    if (path == NULL || out_app == NULL) {
+        return JPP_NATIVE_LOADER_INVALID_ELF;
+    }
+    *out_app = NULL;
+
+    jpp_loaded_image_t img;
+    jpp_native_loader_result_t r = load_image(
+        path, false, "jpp_app_entry", "jpp_app_task_entry", &img);
+    if (r != JPP_NATIVE_LOADER_OK) {
+        return r;
+    }
+
+    jpp_native_loaded_app_t *app =
+        (jpp_native_loaded_app_t *)malloc(sizeof(jpp_native_loaded_app_t));
+    if (app == NULL) {
+        jpp_app_pool_release();
+        return JPP_NATIVE_LOADER_NO_MEMORY;
+    }
+    app->mem        = img.mem;
+    app->mem_size   = img.mem_size;
+    app->load_base  = img.load_base;
+    app->vaddr_base = img.vaddr_base;
+    app->entry      = (void (*)(void *))img.entry;
+    app->task_entry = (void (*)(void *, const char *))img.entry2;
+
+    s_pool_base = img.mem;
+    s_pool_used = img.mem_size;
+
+    ESP_LOGI(TAG, "LOADED %s base=0x%08x size=%zu entry=0x%08x",
+             path, (unsigned)img.load_base, img.mem_size,
+             (unsigned)(uintptr_t)img.entry);
+    *out_app = app;
+    return JPP_NATIVE_LOADER_OK;
+}
 
 void jpp_native_loader_run(jpp_native_loaded_app_t *app,
                             jpp_sdk_context_t       *ctx)
@@ -483,15 +548,84 @@ void jpp_native_loader_free(jpp_native_loaded_app_t *app)
     if (app == NULL) {
         return;
     }
+    /* Reclaim any module the app left loaded — its memory is inside the pool,
+       but the handle is heap-allocated. */
+    if (s_active_module != NULL) {
+        ESP_LOGW(TAG, "app exited with a module still loaded — reclaiming");
+        jpp_native_loader_module_free(s_active_module);
+    }
     if (app->mem != NULL) {
-        if (app->mem_from_pool) {
-            jpp_app_pool_release();  /* return pool to available state */
-        } else {
-            heap_caps_free(app->mem);
-        }
+        jpp_app_pool_release();  /* return pool to available state */
         app->mem = NULL;
     }
+    s_pool_base = NULL;
+    s_pool_used = 0u;
     free(app);
+}
+
+/* ---- Module load / run / free --------------------------------------------- */
+
+jpp_native_loader_result_t jpp_native_loader_load_module(
+    const char                  *path,
+    jpp_native_loaded_module_t **out_module)
+{
+    if (path == NULL || out_module == NULL) {
+        return JPP_NATIVE_LOADER_INVALID_ELF;
+    }
+    *out_module = NULL;
+
+    if (s_pool_base == NULL) {
+        ESP_LOGE(TAG, "MODULE_FAILED no native host app loaded");
+        return JPP_NATIVE_LOADER_BAD_STATE;
+    }
+    if (s_active_module != NULL) {
+        ESP_LOGE(TAG, "MODULE_FAILED a module is already loaded");
+        return JPP_NATIVE_LOADER_BAD_STATE;
+    }
+
+    jpp_loaded_image_t img;
+    jpp_native_loader_result_t r = load_image(
+        path, true, "jpp_module_entry", NULL, &img);
+    if (r != JPP_NATIVE_LOADER_OK) {
+        return r;
+    }
+
+    jpp_native_loaded_module_t *module = (jpp_native_loaded_module_t *)
+        malloc(sizeof(jpp_native_loaded_module_t));
+    if (module == NULL) {
+        return JPP_NATIVE_LOADER_NO_MEMORY;
+    }
+    module->mem      = img.mem;
+    module->mem_size = img.mem_size;
+    module->entry    = (void (*)(void *, void *))img.entry;
+
+    s_active_module = module;
+    ESP_LOGI(TAG, "LOADED MODULE %s base=0x%08x size=%zu entry=0x%08x",
+             path, (unsigned)img.load_base, img.mem_size,
+             (unsigned)(uintptr_t)img.entry);
+    *out_module = module;
+    return JPP_NATIVE_LOADER_OK;
+}
+
+void jpp_native_loader_module_run(jpp_native_loaded_module_t *module,
+                                  jpp_sdk_context_t          *ctx,
+                                  void                       *api)
+{
+    if (module == NULL || module->entry == NULL || ctx == NULL) {
+        return;
+    }
+    module->entry(ctx, api);
+}
+
+void jpp_native_loader_module_free(jpp_native_loaded_module_t *module)
+{
+    if (module == NULL) {
+        return;
+    }
+    if (module == s_active_module) {
+        s_active_module = NULL;
+    }
+    free(module);
 }
 
 const char *jpp_native_loader_result_name(jpp_native_loader_result_t r)
@@ -504,6 +638,7 @@ const char *jpp_native_loader_result_name(jpp_native_loader_result_t r)
     case JPP_NATIVE_LOADER_NO_MEMORY:      return "NO_MEMORY";
     case JPP_NATIVE_LOADER_UNRESOLVED_SYM: return "UNRESOLVED_SYM";
     case JPP_NATIVE_LOADER_NO_ENTRY:       return "NO_ENTRY";
+    case JPP_NATIVE_LOADER_BAD_STATE:      return "BAD_STATE";
     }
     return "UNKNOWN";
 }
