@@ -27,4 +27,4 @@ This component tree is the production native ESP-IDF surface for JPPDOS. It owns
 - Updating this map when code or behaviour changes is **mandatory and
   non-deferrable**: any change to a core surface, the App SDK, broker policy, or
   capability handling must update this file (and the root `README.md` /
-  `DEVELOPMENT.md` / `AGENTS.md`) in the same change.
+  `docs/` / `AGENTS.md`) in the same change.

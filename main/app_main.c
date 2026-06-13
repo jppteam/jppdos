@@ -131,6 +131,51 @@ static const char *BIG_DIM_CLOCK_LINES[] = {
 };
 static const int BIG_DIM_CLOCK_LINE_COUNT = sizeof(BIG_DIM_CLOCK_LINES) / sizeof(BIG_DIM_CLOCK_LINES[0]);
 
+/* ---- Custom clock lines from /sd/clocklines.txt -------------------------- */
+
+#define CLOCKLINES_PATH      "/sd/clocklines.txt"
+#define CLOCKLINES_MAX        64
+#define CLOCKLINES_BUF_SIZE 2048
+
+static char   s_clocklines_buf[CLOCKLINES_BUF_SIZE];
+static const char *s_clocklines[CLOCKLINES_MAX];
+static int    s_clocklines_count  = 0;
+static bool   s_clocklines_replace = false;
+
+static void load_clocklines(void)
+{
+    s_clocklines_count   = 0;
+    s_clocklines_replace = false;
+
+    long n = jpp_read_file_into(CLOCKLINES_PATH, s_clocklines_buf,
+                                sizeof(s_clocklines_buf));
+    if (n <= 0) { return; }
+
+    int   count = 0;
+    char *p     = s_clocklines_buf;
+
+    while (*p && count < CLOCKLINES_MAX) {
+        while (*p == '\r' || *p == '\n') { p++; }
+        if (*p == '\0') { break; }
+
+        char *line = p;
+        while (*p && *p != '\r' && *p != '\n') { p++; }
+        if (*p) { *p++ = '\0'; }
+
+        if (count == 0 && strcmp(line, "!r") == 0) {
+            s_clocklines_replace = true;
+            continue;
+        }
+
+        if (line[0] == '\0') { continue; }
+        s_clocklines[count++] = line;
+    }
+
+    s_clocklines_count = count;
+    ESP_LOGI("dim_screen", "loaded %d custom clocklines (replace=%d)",
+             s_clocklines_count, (int)s_clocklines_replace);
+}
+
 /* ---- Keypad task --------------------------------------------------------- */
 
 #define JPP_KEYPAD_POLL_MS      20u
@@ -224,8 +269,24 @@ static void keypad_task(void *arg)
 const char *random_text_line;
 static void pick_random_line(void)
 {
-    uint32_t index = esp_random() % BIG_DIM_CLOCK_LINE_COUNT;
-    random_text_line = BIG_DIM_CLOCK_LINES[index];
+    int total;
+    if (s_clocklines_replace && s_clocklines_count > 0) {
+        total = s_clocklines_count;
+    } else {
+        total = BIG_DIM_CLOCK_LINE_COUNT + s_clocklines_count;
+    }
+    if (total == 0) { total = BIG_DIM_CLOCK_LINE_COUNT; }
+
+    uint32_t index = esp_random() % (uint32_t)total;
+
+    if (s_clocklines_replace && s_clocklines_count > 0) {
+        random_text_line = s_clocklines[index];
+    } else if ((int)index < BIG_DIM_CLOCK_LINE_COUNT) {
+        random_text_line = BIG_DIM_CLOCK_LINES[index];
+    } else {
+        random_text_line = s_clocklines[index - BIG_DIM_CLOCK_LINE_COUNT];
+    }
+
     ESP_LOGI("dim_screen", "picked random line i=%lu, val=%s",
              (unsigned long)index, random_text_line);
 }
@@ -1510,6 +1571,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             strcmp(prev_top_screen, "launcher") != 0 &&
             top_screen != NULL && strcmp(top_screen, "launcher") == 0) {
             discover_apps_background_start(boot->boot_mode == JPP_BOOT_MODE_NORMAL);
+            load_clocklines();
         }
         if (discover_apps_background_ready()) {
             discover_apps_apply_to_shell(shell);
@@ -1834,6 +1896,7 @@ void app_main(void)
     bool normal_mode = boot.boot_mode == JPP_BOOT_MODE_NORMAL;
     jpp_boot_discovery_summary_t disc;
     discover_apps(normal_mode, &disc, &shell);
+    load_clocklines();
 
     jpp_boot_note_discovery_ready(&boot, &disc);
     ESP_LOGI(TAG,

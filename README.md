@@ -7,7 +7,7 @@ launcher, runs sandboxed apps from the SD card, and manages storage, settings,
 Wi-Fi, Bluetooth, and power on their behalf.
 
 This README gets you from a fresh checkout to a flashed device. If you want to
-**write apps** for the J++Device, read the [App development guide](DEVELOPMENT.md)
+**write apps** for the J++Device, start with the [App developer docs](docs/index.md)
 instead — you don't need anything in this file to do that.
 
 ---
@@ -145,9 +145,7 @@ d-pad, store data, and use Bluetooth/Wi-Fi through the **App SDK**, which also
 gives you ready-made `dialog`, `list`, and `input` prompts so you don't have to
 build menus from scratch.
 
-➡️ **Start here: [App development guide](DEVELOPMENT.md)** — it covers the app
-layout, the manifest, the capability/permission model, and the full App SDK
-reference for both MicroPython and C.
+➡️ **Start here: [App developer docs](docs/index.md)** — platform overview, MicroPython and native C guides, manifest reference, and a full SDK reference for every call.
 
 ---
 

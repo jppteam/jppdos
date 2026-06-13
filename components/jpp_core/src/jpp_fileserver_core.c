@@ -612,9 +612,9 @@ static jpp_fileserver_result_t start_server_impl(void)
     cfg.server_port         = s_fs.port;
     cfg.uri_match_fn        = httpd_uri_match_wildcard;
     cfg.max_uri_handlers    = 8u;
-    cfg.max_open_sockets    = 2u;
+    cfg.max_open_sockets    = 1u;   /* one active TCP conn keeps lwIP pbufs free for WiFi TX */
     cfg.stack_size          = 8192u;
-    cfg.lru_purge_enable    = true;
+    cfg.lru_purge_enable    = false; /* refuse new conn rather than evicting an active upload */
     cfg.recv_wait_timeout   = 30u;
     cfg.send_wait_timeout   = 10u;
 
