@@ -131,6 +131,7 @@ jppdos/
 | `testapp_native` | SDK Test (C) | Native C test app; exercises every SDK capability via a menu; `apps/testapp_native/` |
 | `testapp_mp` | SDK Test (MP) | MicroPython test app; exercises every SDK capability exposed by `jppsdk`; `apps/testapp_mp/` |
 | `games` | Games | Native hub app + 9 dynamically loaded game modules (`<name>.mod.bin`, loaded one at a time via `jpp_sdk_module_load`): Tetris (90°-rotated UI by default, toggle in Settings), Pong (single-player vs CPU + BLE two-device multiplayer with host-authoritative physics + paddle anti-cheat), Snake, Breakout, 2048, Flappy, Racer, Connect-4 (BLE), Battleship (BLE, SHA-512 board commit/reveal). Fullscreen 128×64 canvas; per-game high scores in the hub's KV (`/sd/apps/games/.kv.json`, keys `tetris_hs`/`pong_sp_hs`/`pong_mp_hs`/`snake_hs`/`breakout_hs`/`g2048_hs`/`g2048_tile`/`flappy_hs`/`racer_hs`/`c4_mp_wins`/`bship_mp_wins`/`tetris_rot`/`sound_on`); discovery via manufacturer AD (company 0x4A50, magic 'G', game id). Caps: `ble.scan`/`ble.advertise`/`ble.connect`/`ble.host` (only prompted when entering a multiplayer game). `apps/games/` |
+| `demoscene` | DemoScene | Native oldskool megademo: 8 auto-cycling scenes (title card, 3D starfield, plasma, rotozoomer, tunnel, wireframe cube, doom fire, credits with raster bars) on the fullscreen 128×64 canvas, plus a sine-wave scrolltext overlay and a looping square-wave chiptune (async buzzer, one bar re-armed at a time). All integer math — 256-step sine LUT + 4×4 Bayer ordered dithering; plasma/tunnel/fire render half-res 2×2 blocks. No capabilities (canvas/buzzer/keys/wakelock are ungated). LEFT/RIGHT change scene, UP toggles music, DOWN toggles auto-advance, long CENTER exits. `apps/demoscene/` |
 
 ## UNIQUE STYLES
 - Native code should stay organized around ESP-IDF components and app/main entrypoints.
@@ -154,6 +155,7 @@ scripts/jpp_deploy.sh <port> --all                      # flash firmware, then u
 
 App artefacts after `idf.py build` — copy directory contents to `/sd/apps/<id>/`:
 ```
+build/apps/demoscene/        demoscene.bin + manifest.json
 build/apps/meetapp/          meetapp.bin + manifest.json
 build/apps/testapp_native/   testapp_native.bin + manifest.json
 build/apps/testapp_mp/       main.mpy + manifest.json

@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "app_id": "demoscene",
+  "app_type": "native",
+  "name": "DemoScene",
+  "version": "1.0.0",
+  "sdk_min": 1,
+  "sdk_max": 1,
+  "entry": "demoscene.bin",
+  "capabilities": []
+}
