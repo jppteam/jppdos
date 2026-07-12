@@ -41,6 +41,7 @@ extern "C" {
 /* J++Device Serial Management Protocol (JPPD-SMP) */
 #define SMP_TASK_STACK_BYTES   6144u
 #define SMP_RX_BUF_BYTES        512u
+#define SMP_TX_BUF_BYTES       1536u
 #define SMP_CHUNK_SIZE         1024u
 #define SMP_SESSION_TIMEOUT_MS 30000u
 #define SMP_MAX_PAYLOAD_BYTES  1280u

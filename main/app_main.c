@@ -58,6 +58,7 @@
 #include "jpp_icons.h"
 #include "jpp_native_loader_core.h"
 #include "jpp_serial_mgr.h"
+#include "jpp_backup_restore.h"
 #include "jpp_lrv.h"
 #include "jpp_lrv_server.h"
 #include "mbedtls/base64.h"
@@ -326,6 +327,7 @@ static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 #define JPP_NVS_SOUND_NS  "jpp_sound"
 #define JPP_NVS_LRV_NS    "jpp_lrv"
 #define JPP_NVS_USER_NS   "jpp_user"
+#define JPP_NVS_DUMMY_NS  "jpp_dummy"
 
 typedef struct {
     bool enabled;
@@ -672,120 +674,10 @@ static void settings_do_restore(jpp_settings_state_t *state)
         return;
     }
 
-    cJSON *root = cJSON_Parse(s_backup_file_buf);
-    if (root == NULL) {
-        snprintf(state->backup_result_msg, sizeof(state->backup_result_msg),
-                 "Error: invalid JSON");
+    if (!jpp_backup_apply_json(s_backup_file_buf, state->backup_result_msg,
+                               sizeof(state->backup_result_msg))) {
         return;
     }
-
-    /* Validate backup signature. */
-    cJSON *sig = cJSON_GetObjectItem(root, "jppdos_backup");
-    if (!cJSON_IsNumber(sig) || (int)sig->valuedouble != 1) {
-        cJSON_Delete(root);
-        snprintf(state->backup_result_msg, sizeof(state->backup_result_msg),
-                 "Error: not a backup file");
-        return;
-    }
-
-    /* Restore settings.json. */
-    cJSON *settings_obj = cJSON_GetObjectItem(root, "settings");
-    if (cJSON_IsObject(settings_obj)) {
-        char *settings_str = cJSON_PrintUnformatted(settings_obj);
-        if (settings_str != NULL) {
-            write_settings(settings_str);
-            free(settings_str);
-        }
-    }
-
-    /* Restore NVS: jpp_time */
-    nvs_handle_t h;
-    cJSON *nvs_time = cJSON_GetObjectItem(root, "nvs_time");
-    if (cJSON_IsObject(nvs_time) &&
-        nvs_open(JPP_NVS_TIME_NS, NVS_READWRITE, &h) == ESP_OK) {
-        cJSON *v;
-        v = cJSON_GetObjectItem(nvs_time, "ntp_en");
-        if (cJSON_IsNumber(v)) { nvs_set_u8(h, "ntp_en", (uint8_t)(int)v->valuedouble); }
-        v = cJSON_GetObjectItem(nvs_time, "ntp_host");
-        if (cJSON_IsString(v) && v->valuestring) { nvs_set_str(h, "ntp_host", v->valuestring); }
-        v = cJSON_GetObjectItem(nvs_time, "tz_h");
-        if (cJSON_IsNumber(v)) { nvs_set_i8(h, "tz_h", (int8_t)(int)v->valuedouble); }
-        nvs_commit(h);
-        nvs_close(h);
-    }
-
-    /* Restore NVS: jpp_power */
-    cJSON *nvs_power = cJSON_GetObjectItem(root, "nvs_power");
-    if (cJSON_IsObject(nvs_power) &&
-        nvs_open(JPP_NVS_POWER_NS, NVS_READWRITE, &h) == ESP_OK) {
-        cJSON *v;
-        v = cJSON_GetObjectItem(nvs_power, "dim_s");
-        if (cJSON_IsNumber(v)) { nvs_set_i32(h, "dim_s", (int32_t)v->valuedouble); }
-        v = cJSON_GetObjectItem(nvs_power, "poweroff_s");
-        if (cJSON_IsNumber(v)) { nvs_set_i32(h, "poweroff_s", (int32_t)v->valuedouble); }
-        nvs_commit(h);
-        nvs_close(h);
-    }
-
-    /* Restore NVS: jpp_webdav */
-    cJSON *nvs_webdav = cJSON_GetObjectItem(root, "nvs_webdav");
-    if (cJSON_IsObject(nvs_webdav) &&
-        nvs_open(JPP_NVS_WEBDAV_NS, NVS_READWRITE, &h) == ESP_OK) {
-        cJSON *v;
-        v = cJSON_GetObjectItem(nvs_webdav, "pass_static");
-        if (cJSON_IsNumber(v)) { nvs_set_u8(h, "pass_static", (uint8_t)(int)v->valuedouble); }
-        v = cJSON_GetObjectItem(nvs_webdav, "static_pass");
-        if (cJSON_IsString(v) && v->valuestring) { nvs_set_str(h, "static_pass", v->valuestring); }
-        nvs_commit(h);
-        nvs_close(h);
-    }
-
-    /* Restore NVS: jpp_sound */
-    cJSON *nvs_sound = cJSON_GetObjectItem(root, "nvs_sound");
-    if (cJSON_IsObject(nvs_sound) &&
-        nvs_open(JPP_NVS_SOUND_NS, NVS_READWRITE, &h) == ESP_OK) {
-        cJSON *v = cJSON_GetObjectItem(nvs_sound, "buzzer_vol");
-        if (cJSON_IsNumber(v)) { nvs_set_u8(h, "buzzer_vol", (uint8_t)(int)v->valuedouble); }
-        v = cJSON_GetObjectItem(nvs_sound, "startup_jingle");
-        if (cJSON_IsNumber(v) && (int)v->valuedouble >= 0 &&
-            (int)v->valuedouble < (int)JPP_STARTUP_JINGLE_COUNT) {
-            nvs_set_u8(h, "startup_jingle", (uint8_t)(int)v->valuedouble);
-        }
-        nvs_commit(h);
-        nvs_close(h);
-    }
-
-    /* Restore NVS: jpp_user (username). */
-    cJSON *nvs_user = cJSON_GetObjectItem(root, "nvs_user");
-    if (cJSON_IsObject(nvs_user) &&
-        nvs_open(JPP_NVS_USER_NS, NVS_READWRITE, &h) == ESP_OK) {
-        cJSON *v = cJSON_GetObjectItem(nvs_user, "username");
-        if (cJSON_IsString(v) && v->valuestring) { nvs_set_str(h, "username", v->valuestring); }
-        nvs_commit(h);
-        nvs_close(h);
-    }
-
-    /* Restore NVS: jpp_lrv (LRV encrypted blob). */
-    cJSON *nvs_lrv = cJSON_GetObjectItem(root, "nvs_lrv");
-    if (cJSON_IsObject(nvs_lrv)) {
-        cJSON *enc_item = cJSON_GetObjectItem(nvs_lrv, "lrv_enc");
-        if (cJSON_IsString(enc_item) && enc_item->valuestring) {
-            const char *b64 = enc_item->valuestring;
-            size_t      b64_len = strlen(b64);
-            size_t      bin_max = (b64_len / 4u) * 3u + 4u;
-            uint8_t    *bin = malloc(bin_max);
-            if (bin != NULL) {
-                size_t olen = 0u;
-                if (mbedtls_base64_decode(bin, bin_max, &olen,
-                                           (const unsigned char *)b64, b64_len) == 0) {
-                    jpp_lrv_store_encrypted_blob(bin, olen);
-                }
-                free(bin);
-            }
-        }
-    }
-
-    cJSON_Delete(root);
 
     ESP_LOGI(TAG, "RESTORE_OK path=%s", path);
 
@@ -1072,6 +964,78 @@ static void settings_do_jingle_change(uint8_t jingle)
              jingle, jpp_startup_jingle_name((jpp_startup_jingle_t)jingle));
 }
 
+/* ---- Dummy mode (single-app lock) --------------------------------------- */
+
+static bool s_dummy_enabled        = false;
+static char s_dummy_app_id[JPP_UI_TEXT_LIMIT] = "";
+static bool s_boot_center_held     = false;
+
+/*
+ * Sample the keypad ADC to detect CENTER held at power-on.
+ * A temporary ADC unit is created and deleted; run_main_loop() creates
+ * its own unit separately so there is no double-initialisation conflict.
+ */
+static bool check_center_held_at_boot(void)
+{
+#ifdef JPP_WOKWI_SIM
+    return false;
+#else
+    adc_oneshot_unit_handle_t boot_adc;
+    adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = JPP_HW_KEYPAD_ADC_UNIT };
+    if (adc_oneshot_new_unit(&ucfg, &boot_adc) != ESP_OK) { return false; }
+    adc_oneshot_chan_cfg_t ccfg = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten    = ADC_ATTEN_DB_12,
+    };
+    adc_oneshot_config_channel(boot_adc, JPP_HW_KEYPAD_ADC_CH, &ccfg);
+    gpio_set_pull_mode((gpio_num_t)JPP_HW_KEYPAD_GPIO, GPIO_PULLUP_ONLY);
+
+    int held = 0;
+    for (int i = 0; i < 5; i++) {
+        int raw = 0;
+        adc_oneshot_read(boot_adc, JPP_HW_KEYPAD_ADC_CH, &raw);
+        int uv = (int)((int64_t)raw * JPP_HW_KEYPAD_FULL_SCALE_UV
+                       / JPP_HW_ADC_12BIT_MAX_RAW);
+        /* CENTER band: center_uv=1995531, tolerance=345000 */
+        if (uv >= (1995531 - 345000) && uv <= (1995531 + 345000)) { held++; }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    adc_oneshot_del_unit(boot_adc);
+    return held >= 3;
+#endif
+}
+
+static void load_dummy_mode(void)
+{
+    s_dummy_enabled = (bool)jpp_nvs_get_u8(JPP_NVS_DUMMY_NS, "dummy_en", 0u);
+    if (s_dummy_enabled) {
+        jpp_nvs_get_str(JPP_NVS_DUMMY_NS, "dummy_app_id",
+                        s_dummy_app_id, sizeof(s_dummy_app_id));
+        if (s_dummy_app_id[0] == '\0') {
+            s_dummy_enabled = false;
+        }
+    }
+    ESP_LOGI(TAG, "DUMMY_MODE: enabled=%d app=%s",
+             (int)s_dummy_enabled, s_dummy_app_id);
+}
+
+static void settings_do_dummy_mode_save(bool enabled, const char *app_id)
+{
+    s_dummy_enabled = enabled;
+    jpp_nvs_set_u8(JPP_NVS_DUMMY_NS, "dummy_en", (uint8_t)enabled);
+    if (enabled && app_id != NULL && app_id[0] != '\0') {
+        strncpy(s_dummy_app_id, app_id, sizeof(s_dummy_app_id) - 1u);
+        s_dummy_app_id[sizeof(s_dummy_app_id) - 1u] = '\0';
+        jpp_nvs_set_str(JPP_NVS_DUMMY_NS, "dummy_app_id", s_dummy_app_id);
+    } else {
+        s_dummy_app_id[0] = '\0';
+        jpp_nvs_erase_key(JPP_NVS_DUMMY_NS, "dummy_app_id");
+    }
+    ESP_LOGI(TAG, "DUMMY_MODE: saved enabled=%d app=%s",
+             (int)enabled, app_id ? app_id : "(none)");
+}
+
 /* ---- Username ----------------------------------------------------------- */
 
 static void settings_do_username_save(jpp_settings_state_t *state,
@@ -1188,6 +1152,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .do_lrv_verify          = settings_do_lrv_verify,
         .do_lrv_server_stop     = settings_do_lrv_server_stop,
         .do_username_save       = settings_do_username_save,
+        .do_dummy_mode_save     = settings_do_dummy_mode_save,
     };
     s_main_shell     = shell;
     s_rtc_for_backup = rtc_state;
@@ -1204,6 +1169,23 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
     /* Load persisted username. */
     load_username(&settings_state);
+
+    /* Populate dummy mode state from NVS (loaded early in app_main). */
+    settings_state.dummy_enabled = s_dummy_enabled;
+    if (s_dummy_enabled && s_dummy_app_id[0] != '\0') {
+        strncpy(settings_state.dummy_app_id, s_dummy_app_id,
+                sizeof(settings_state.dummy_app_id) - 1u);
+        settings_state.dummy_app_id[sizeof(settings_state.dummy_app_id) - 1u] = '\0';
+        /* Look up app display name from shell catalogue. */
+        for (size_t i = 0; i < shell->app_count; i++) {
+            if (strcmp(shell->apps[i].app_id, s_dummy_app_id) == 0) {
+                strncpy(settings_state.dummy_app_name, shell->apps[i].name,
+                        sizeof(settings_state.dummy_app_name) - 1u);
+                settings_state.dummy_app_name[sizeof(settings_state.dummy_app_name)-1u] = '\0';
+                break;
+            }
+        }
+    }
 
     /* Load persisted screen timings. */
     load_screen_settings(shell);
@@ -1289,6 +1271,11 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                    restored the screen; don't also act on it. */
                 if (power_state_last_tick != JPP_UI_POWER_ACTIVE) {
                     ESP_LOGI(TAG, "UI_ACTION %s (ignored on wake)", jpp_ui_action_name(action));
+                    continue;
+                }
+                /* Dummy mode: block all launcher navigation so the user
+                   cannot exit to the launcher or open other apps. */
+                if (s_dummy_enabled) {
                     continue;
                 }
                 ESP_LOGI(TAG, "UI_ACTION %s", jpp_ui_action_name(action));
@@ -1512,6 +1499,11 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                 if (!launched) {
                     jpp_ui_stack_pop(&shell->stack);
                     sd_app_open = false;
+                } else if (s_dummy_enabled) {
+                    /* Tag the SDK context so the app can query dummy mode.
+                       Set before the app task runs (task starts at low priority,
+                       main task continues until vTaskDelayUntil at loop end). */
+                    s_sd_ctx.dummy_mode = true;
                 }
             }
         }
@@ -1559,9 +1551,19 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                dispatcher already emitted APP_CRASH and wrote ui_crash.log). */
             char crash_app[32];
             char crash_reason[32];
-            if (jpp_app_crash_take(crash_app, sizeof(crash_app),
-                                   crash_reason, sizeof(crash_reason))) {
+            bool app_crashed = jpp_app_crash_take(crash_app, sizeof(crash_app),
+                                                   crash_reason, sizeof(crash_reason));
+            if (app_crashed) {
                 jpp_ui_shell_record_crash(shell, crash_app, crash_reason);
+                top_screen = jpp_ui_stack_top(&shell->stack);
+            }
+
+            /* Dummy mode: re-push the locked app immediately after teardown
+               so it re-launches on the next tick. Skip on crash so the crash
+               dialog is shown; the device must be rebooted (with CENTER held
+               to escape) to disable dummy mode anyway. */
+            if (!app_crashed && s_dummy_enabled && s_dummy_app_id[0] != '\0') {
+                jpp_ui_stack_push(&shell->stack, s_dummy_app_id);
                 top_screen = jpp_ui_stack_top(&shell->stack);
             }
         }
@@ -1595,17 +1597,17 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
         /* ---- Render ---------------------------------------------------- */
 
-        /* Settings screen: rendered directly */
-        if (top_screen != NULL && strcmp(top_screen, "settings") == 0) {
-            jpp_settings_screen_render(&settings_state, &settings_deps);
-            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(JPP_UI_REFRESH_MS));
-            continue;
-        }
-
-        /* Serial manager consent dialog / active-session screen.  When the
-           serial screen goes away (session closed by host, BACK, or timeout)
-           force a launcher redraw — otherwise the last serial frame stays on
-           the OLED because the shell's frame cache still matches. */
+        /* Serial manager consent dialog / active-session screen.  Checked
+           before every other screen (including Settings) because the action
+           loop above already routes all keypad input to the serial manager
+           the moment jpp_serial_mgr_needs_render() is true — if this render
+           check ran after the Settings screen check, a SESSION_START arriving
+           while the user is in Settings would silently steal every keypress
+           (consent Allow/Deny) while the OLED kept showing the Settings menu,
+           making the device appear frozen. When the serial screen goes away
+           (session closed by host, BACK, or timeout) force a launcher redraw
+           — otherwise the last serial frame stays on the OLED because the
+           shell's frame cache still matches. */
         {
             static bool serial_rendered_last = false;
             bool serial_now = jpp_serial_mgr_needs_render();
@@ -1618,6 +1620,13 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                 vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(JPP_UI_REFRESH_MS));
                 continue;
             }
+        }
+
+        /* Settings screen: rendered directly */
+        if (top_screen != NULL && strcmp(top_screen, "settings") == 0) {
+            jpp_settings_screen_render(&settings_state, &settings_deps);
+            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(JPP_UI_REFRESH_MS));
+            continue;
         }
 
         /* SD ejection fatal screen: render directly with flashing warning */
@@ -1760,6 +1769,15 @@ void app_main(void)
     /* Buzzer init (does drive-strength boost on GPIO3) */
     jpp_buzzer_init();
 
+    /* Check whether CENTER is held at power-on.  If held:
+       - the startup jingle is always muted (regardless of dummy mode);
+       - if dummy mode is active it is also disabled.
+       Sample before any display work so the check runs as early as possible. */
+    s_boot_center_held = check_center_held_at_boot();
+    if (s_boot_center_held) {
+        ESP_LOGI(TAG, "BOOT: CENTER held — jingle muted");
+    }
+
     /* Pre-boot: I²C + OLED for boot progress display. */
     boot_disp_t disp = { .oled_ok = false, .next_step = 0 };
 
@@ -1886,6 +1904,20 @@ void app_main(void)
     jpp_serial_mgr_init();
     jpp_serial_mgr_set_rtc(&rtc_state);
 
+    /* Load dummy mode from NVS now that NVS is initialised. */
+    load_dummy_mode();
+
+    /* If CENTER was held at boot and dummy mode is active: disable it.
+       Show a brief confirmation on the OLED (already initialised above). */
+    if (s_boot_center_held && s_dummy_enabled) {
+        settings_do_dummy_mode_save(false, NULL);
+        ssd1306_clear();
+        ssd1306_draw_string(2, 20, "Dummy Mode", false);
+        ssd1306_draw_string(4, 20, "DISABLED", false);
+        ssd1306_flush();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+    }
+
     /* Apply persisted buzzer volume before the startup chime. */
     load_buzzer_volume();
 
@@ -1905,12 +1937,22 @@ void app_main(void)
              disc.disabled_count, disc.rejected_count, disc.total_count);
     boot_disp_step(&disp, "APPS", true);
 
+    /* Dummy mode: push the locked app to the stack so the main loop
+       launches it immediately on the first tick instead of showing the launcher. */
+    if (s_dummy_enabled && s_dummy_app_id[0] != '\0') {
+        jpp_ui_stack_push(&shell.stack, s_dummy_app_id);
+        ESP_LOGI(TAG, "DUMMY_MODE: will launch %s on first tick", s_dummy_app_id);
+    }
+
     /* Step 8 */
     jpp_boot_note_system_ready(&boot);
     ESP_LOGI(TAG, "SYSTEM_READY");
 
-    /* Play startup jingle (async: the launcher comes up while it plays). */
-    jpp_buzzer_play_startup_jingle_async((jpp_startup_jingle_t)s_startup_jingle);
+    /* Play startup jingle (async: the launcher comes up while it plays).
+       Muted when CENTER was held at boot — always, regardless of dummy mode. */
+    if (!s_boot_center_held) {
+        jpp_buzzer_play_startup_jingle_async((jpp_startup_jingle_t)s_startup_jingle);
+    }
 
     vTaskDelay(pdMS_TO_TICKS(500));
 

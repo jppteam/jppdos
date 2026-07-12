@@ -36,6 +36,7 @@ typedef enum {
     JPP_SETTINGS_SECTION_FACTORY_RESET,
     JPP_SETTINGS_SECTION_DEVICE_INFO, /* hidden when no LRV data present */
     JPP_SETTINGS_SECTION_USERNAME,    /* user's display name */
+    JPP_SETTINGS_SECTION_DUMMY_MODE,  /* single-app lock; disable by holding CENTER on boot */
     JPP_SETTINGS_SECTION_ABOUT,
     JPP_SETTINGS_SECTION_COUNT,
 } jpp_settings_section_t;
@@ -135,6 +136,13 @@ typedef struct {
 
     /* User's name section */
     char               username_current[JPP_SETTINGS_USERNAME_MAX];
+
+    /* Dummy Mode section */
+    bool   dummy_enabled;
+    char   dummy_app_id[JPP_UI_TEXT_LIMIT];
+    char   dummy_app_name[JPP_UI_TEXT_LIMIT];
+    size_t dummy_cursor;
+    size_t dummy_scroll;
 } jpp_settings_state_t;
 
 typedef struct {
@@ -190,6 +198,11 @@ typedef struct {
     /* User's name: persist the new username.  Also populates
        state->username_current with the saved value. */
     void (*do_username_save)(jpp_settings_state_t *state, const char *username);
+
+    /* Dummy Mode: enable or disable single-app lock.  When enabled, app_id
+       is the SD app to lock to; when disabled, app_id is ignored.
+       The settings handler restarts the device after enabling (via do_reboot). */
+    void (*do_dummy_mode_save)(bool enabled, const char *app_id);
 } jpp_settings_deps_t;
 
 void jpp_settings_screen_init(jpp_settings_state_t *state,

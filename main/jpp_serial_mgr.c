@@ -10,16 +10,23 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_rom_crc.h"
+#include "esp_mac.h"
+#include "esp_vfs_fat.h"
+#include "esp_system.h"
+#include "ff.h"
+#include "cJSON.h"
 
 #include "jpp_draw_util.h"
 #include "jpp_file_util.h"
 #include "ssd1306.h"
 #include "jpp_resource_budget.h"
 #include "jpp_settings_screen.h"   /* JPPDOS_VERSION */
+#include "jpp_nvs_util.h"
+#include "jpp_backup_restore.h"
 #include "jpp_app_dispatch.h"      /* s_active_sdk_context */
 #include "jpp_lrv.h"
 
@@ -45,6 +52,7 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 #define SMP_CMD_FS_DL_BEGIN     0x17u
 #define SMP_CMD_FS_DL_CHUNK     0x18u
 #define SMP_CMD_FS_DL_END       0x19u
+#define SMP_CMD_APPLY_BACKUP    0x1Au
 
 #define SMP_ST_OK             0x00u
 #define SMP_ST_ERR_DENIED     0x01u
@@ -63,6 +71,7 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 typedef enum {
     SMP_CONSENT_IDLE = 0,
     SMP_CONSENT_PENDING,
+    SMP_CONSENT_BACKUP_PENDING,
 } smp_consent_state_t;
 
 typedef struct {
@@ -76,11 +85,14 @@ typedef struct {
     bool     active;
 } smp_transfer_t;
 
+#define SMP_BACKUP_FILE_MAX 8192u
+
 static volatile bool              s_session_active  = false;
 static volatile smp_consent_state_t s_consent_state = SMP_CONSENT_IDLE;
 static volatile bool              s_consent_allowed = false;
 static volatile int               s_consent_cursor  = 1; /* 0=Deny 1=Allow */
 static SemaphoreHandle_t          s_consent_sem     = NULL;
+static char                       s_backup_confirm_name[64u];
 static SemaphoreHandle_t          s_tx_mutex        = NULL;
 static esp_timer_handle_t         s_session_timer   = NULL;
 static vprintf_like_t             s_orig_vprintf    = NULL;
@@ -112,11 +124,30 @@ static uint16_t crc16_buf(uint16_t crc, const uint8_t *data, size_t len)
     return crc;
 }
 
+/* ---- CRC-32/ISO-HDLC (matches Python zlib.crc32) ------------------------- */
+
+/* poly=0xEDB88320 (reflected), init=0xFFFFFFFF, refIn=refOut=true,
+   xorOut=0xFFFFFFFF.  Used as a running accumulator over the *internal*
+   (non-inverted) state: seed with ~0u, update per buffer, finalize with ~crc.
+   NOT esp_rom_crc32_le() — the ESP32-C6 ROM's crc32_le convention does not
+   match zlib here (it produced a mismatching value for byte-identical data),
+   so we use an explicit, provably zlib-compatible implementation instead. */
+static uint32_t crc32_buf(uint32_t crc, const uint8_t *data, size_t len)
+{
+    for (size_t i = 0u; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+        }
+    }
+    return crc;
+}
+
 /* ---- TX helpers ---------------------------------------------------------- */
 
 /*
  * Log hook: grab tx_mutex before each ESP_LOG line so our binary frames do not
- * interleave with text output on the shared UART0 TX path.
+ * interleave with text output on the shared USB-Serial-JTAG TX path.
  */
 static int smp_log_hook(const char *fmt, va_list args)
 {
@@ -153,12 +184,11 @@ static void send_response(uint8_t seq, uint8_t status,
     uint8_t crc_bytes[2] = {(uint8_t)(crc & 0xFFu), (uint8_t)(crc >> 8)};
 
     xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
-    fwrite(hdr, 1u, 8u, stdout);
+    usb_serial_jtag_write_bytes(hdr, 8u, portMAX_DELAY);
     if (body_len > 0u && body != NULL) {
-        fwrite(body, 1u, body_len, stdout);
+        usb_serial_jtag_write_bytes(body, body_len, portMAX_DELAY);
     }
-    fwrite(crc_bytes, 1u, 2u, stdout);
-    fflush(stdout);
+    usb_serial_jtag_write_bytes(crc_bytes, 2u, portMAX_DELAY);
     xSemaphoreGive(s_tx_mutex);
 }
 
@@ -258,11 +288,62 @@ static void handle_session_end(uint8_t seq)
     send_err(seq, SMP_ST_OK);
 }
 
+/*
+ * GET_INFO response body:
+ *   [fw_version: NUL-terminated string]
+ *   [username: NUL-terminated string]
+ *   [hwid: NUL-terminated string, "AA:BB:CC:DD:EE:FF" from eFuse MAC]
+ *   [sd_total: 8 B LE uint64, bytes]
+ *   [sd_used:  8 B LE uint64, bytes]
+ *   [sd_free:  8 B LE uint64, bytes]
+ *   [sd_label: NUL-terminated string, empty if SD unavailable]
+ */
 static void handle_get_info(uint8_t seq)
 {
+    /* firmware version */
     const char *ver = JPPDOS_VERSION;
-    send_response(seq, SMP_ST_OK, (const uint8_t *)ver,
-                  (uint16_t)(strlen(ver) + 1u));
+    size_t ver_len = strlen(ver) + 1u;
+
+    /* stored username */
+    char username[JPP_SETTINGS_USERNAME_MAX + 1u];
+    if (!jpp_nvs_get_str("jpp_user", "username", username, sizeof(username))) {
+        username[0] = '\0';
+    }
+    size_t user_len = strlen(username) + 1u;
+
+    /* eFuse MAC as "AA:BB:CC:DD:EE:FF" */
+    uint8_t mac[6] = {0};
+    esp_efuse_mac_get_default(mac);
+    char hwid[18u + 1u];
+    snprintf(hwid, sizeof(hwid), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    size_t hwid_len = strlen(hwid) + 1u;
+
+    /* SD space */
+    uint64_t sd_total = 0u, sd_free = 0u, sd_used = 0u;
+    if (esp_vfs_fat_info("/sd", &sd_total, &sd_free) == ESP_OK) {
+        sd_used = (sd_total >= sd_free) ? (sd_total - sd_free) : 0u;
+    }
+
+    /* SD volume label */
+    char sd_label[25u] = "";
+    FRESULT fr = f_getlabel("0:", sd_label, NULL);
+    if (fr != FR_OK) {
+        sd_label[0] = '\0';
+    }
+    size_t label_len = strlen(sd_label) + 1u;
+
+    /* pack response */
+    uint8_t buf[256u];
+    size_t off = 0u;
+    memcpy(buf + off, ver,      ver_len);   off += ver_len;
+    memcpy(buf + off, username, user_len);  off += user_len;
+    memcpy(buf + off, hwid,     hwid_len);  off += hwid_len;
+    memcpy(buf + off, &sd_total, 8u);       off += 8u;
+    memcpy(buf + off, &sd_used,  8u);       off += 8u;
+    memcpy(buf + off, &sd_free,  8u);       off += 8u;
+    memcpy(buf + off, sd_label, label_len); off += label_len;
+    send_response(seq, SMP_ST_OK, buf, (uint16_t)off);
 }
 
 /*
@@ -331,12 +412,40 @@ static void handle_fs_list_dir(uint8_t seq, const uint8_t *body,
     size_t off = 2u;   /* reserve 2 bytes for entry_count */
     uint16_t count = 0u;
     struct dirent *ent;
+    char child_path[512u];
 
     while ((ent = readdir(dir)) != NULL) {
         if (ent->d_name[0] == '.') { continue; }
         size_t nlen = strlen(ent->d_name);
-        if (off + 1u + nlen + 1u > SMP_LIST_BUF_BYTES) { break; }
-        s_list_buf[off++] = (ent->d_type == DT_DIR) ? 0x01u : 0x00u;
+        /* flags(1) + size_or_count(4) + name + NUL */
+        if (off + 5u + nlen + 1u > SMP_LIST_BUF_BYTES) { break; }
+
+        bool is_dir = (ent->d_type == DT_DIR);
+        uint32_t size_or_count = 0u;
+
+        snprintf(child_path, sizeof(child_path), "%s/%s", path, ent->d_name);
+        if (is_dir) {
+            /* count first-level (non-hidden) children */
+            DIR *sub = opendir(child_path);
+            if (sub != NULL) {
+                struct dirent *se;
+                while ((se = readdir(sub)) != NULL) {
+                    if (se->d_name[0] != '.') { size_or_count++; }
+                }
+                closedir(sub);
+            }
+        } else {
+            struct stat st;
+            if (stat(child_path, &st) == 0) {
+                size_or_count = (uint32_t)st.st_size;
+            }
+        }
+
+        s_list_buf[off++] = is_dir ? 0x01u : 0x00u;
+        s_list_buf[off++] = (uint8_t)(size_or_count);
+        s_list_buf[off++] = (uint8_t)(size_or_count >> 8);
+        s_list_buf[off++] = (uint8_t)(size_or_count >> 16);
+        s_list_buf[off++] = (uint8_t)(size_or_count >> 24);
         memcpy(s_list_buf + off, ent->d_name, nlen + 1u);
         off += nlen + 1u;
         count++;
@@ -485,7 +594,7 @@ static void handle_fs_upload_chunk(uint8_t seq, const uint8_t *body,
         return;
     }
     /* Accumulate CRC-32 over data bytes as they arrive. */
-    s_xfer.crc32 = esp_rom_crc32_le(s_xfer.crc32, data, data_len);
+    s_xfer.crc32 = crc32_buf(s_xfer.crc32, data, data_len);
     s_xfer.next_chunk++;
 
     /* Echo chunk_index for stop-and-wait acknowledgement. */
@@ -553,7 +662,7 @@ static void handle_fs_dl_begin(uint8_t seq, const uint8_t *body,
     uint32_t crc = ~0u;
     size_t n;
     while ((n = fread(cbuf, 1u, sizeof(cbuf), fp)) > 0u) {
-        crc = esp_rom_crc32_le(crc, cbuf, (uint32_t)n);
+        crc = crc32_buf(crc, cbuf, n);
     }
     uint32_t final_crc = ~crc;
     rewind(fp);
@@ -633,6 +742,87 @@ static void handle_fs_dl_end(uint8_t seq, const uint8_t *body,
     send_err(seq, SMP_ST_OK);
 }
 
+/* ---- APPLY_BACKUP -------------------------------------------------------- */
+
+static void handle_apply_backup(uint8_t seq, const uint8_t *body,
+                                 uint16_t body_len)
+{
+    const char *path;
+    if (!path_valid_sd(body, body_len, &path)) {
+        send_err(seq, SMP_ST_ERR_INVALID); return;
+    }
+
+    /* Read the backup file into a temporary heap buffer. */
+    char *buf = malloc(SMP_BACKUP_FILE_MAX);
+    if (buf == NULL) {
+        send_err(seq, SMP_ST_ERR_IO); return;
+    }
+
+    long sz = jpp_read_file_into(path, buf, SMP_BACKUP_FILE_MAX);
+    if (sz == JPP_READ_ERR_OPEN) {
+        free(buf);
+        send_err(seq, SMP_ST_ERR_NOT_FOUND); return;
+    }
+    if (sz < 0) {
+        free(buf);
+        send_err(seq, SMP_ST_ERR_OVERFLOW); return;
+    }
+
+    /* Quick-validate: must be a parseable backup before we bother the user. */
+    char err_msg[64u];
+    err_msg[0] = '\0';
+    {
+        /* Minimal pre-check: try parsing and looking for jppdos_backup:1. */
+        cJSON *root = cJSON_Parse(buf);
+        if (root == NULL) {
+            free(buf);
+            send_err(seq, SMP_ST_ERR_INVALID); return;
+        }
+        cJSON *sig = cJSON_GetObjectItem(root, "jppdos_backup");
+        bool ok = cJSON_IsNumber(sig) && (int)sig->valuedouble == 1;
+        cJSON_Delete(root);
+        if (!ok) {
+            free(buf);
+            send_err(seq, SMP_ST_ERR_INVALID); return;
+        }
+    }
+
+    /* Extract filename for the confirmation dialog. */
+    const char *slash = strrchr(path, '/');
+    const char *name  = slash ? slash + 1u : path;
+    strncpy(s_backup_confirm_name, name, sizeof(s_backup_confirm_name) - 1u);
+    s_backup_confirm_name[sizeof(s_backup_confirm_name) - 1u] = '\0';
+
+    /* Show confirmation dialog on the OLED; default cursor to Deny. */
+    s_consent_cursor = 0;
+    s_consent_state  = SMP_CONSENT_BACKUP_PENDING;
+    xSemaphoreTake(s_consent_sem, portMAX_DELAY);
+
+    if (!s_consent_allowed) {
+        free(buf);
+        send_err(seq, SMP_ST_ERR_DENIED); return;
+    }
+
+    /* Apply the backup. */
+    if (!jpp_backup_apply_json(buf, err_msg, sizeof(err_msg))) {
+        free(buf);
+        ESP_LOGW(TAG, "APPLY_BACKUP failed: %s", err_msg);
+        send_err(seq, SMP_ST_ERR_IO); return;
+    }
+    free(buf);
+
+    ESP_LOGI(TAG, "APPLY_BACKUP_OK path=%s", path);
+    send_err(seq, SMP_ST_OK);
+
+    /* Brief on-screen notice before the restart. */
+    ssd1306_clear();
+    ssd1306_draw_string(3u, 0u, "Backup applied!", false);
+    ssd1306_draw_string(4u, 0u, "Restarting...",  false);
+    ssd1306_flush();
+    vTaskDelay(pdMS_TO_TICKS(1500u));
+    esp_restart();
+}
+
 /* ---- Command dispatcher -------------------------------------------------- */
 
 static void dispatch_command(const uint8_t *payload, uint16_t plen)
@@ -672,11 +862,34 @@ static void dispatch_command(const uint8_t *payload, uint16_t plen)
     case SMP_CMD_FS_DL_BEGIN:     handle_fs_dl_begin(seq, body, body_len);      break;
     case SMP_CMD_FS_DL_CHUNK:     handle_fs_dl_chunk(seq, body, body_len);      break;
     case SMP_CMD_FS_DL_END:       handle_fs_dl_end(seq, body, body_len);        break;
+    case SMP_CMD_APPLY_BACKUP:    handle_apply_backup(seq, body, body_len);     break;
     default:                      send_err(seq, SMP_ST_ERR_INVALID);             break;
     }
 }
 
 /* ---- RX task ------------------------------------------------------------- */
+
+/*
+ * usb_serial_jtag_read_bytes() returns as soon as ANY bytes are available in
+ * the RX ring — it does NOT block for the full requested count the way
+ * uart_read_bytes() does.  A frame payload larger than one USB packet (64 B
+ * at full speed) therefore arrives in several chunks, and a single read call
+ * returns only the first chunk.  Loop until the full `len` bytes are read (or
+ * the overall deadline elapses) so multi-packet frames — every upload chunk —
+ * are assembled correctly instead of being silently dropped as short.
+ */
+static int smp_read_exact(uint8_t *buf, size_t len, TickType_t ticks)
+{
+    size_t got = 0u;
+    TickType_t start = xTaskGetTickCount();
+    while (got < len) {
+        TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed >= ticks) { break; }
+        int r = usb_serial_jtag_read_bytes(buf + got, len - got, ticks - elapsed);
+        if (r > 0) { got += (size_t)r; }
+    }
+    return (int)got;
+}
 
 static void smp_rx_task(void *arg)
 {
@@ -687,7 +900,7 @@ static void smp_rx_task(void *arg)
     while (true) {
         /* Scan for SOF preamble byte-by-byte. */
         while (sof_idx < 4u) {
-            if (uart_read_bytes(UART_NUM_0, &byte, 1u, portMAX_DELAY) != 1) {
+            if (usb_serial_jtag_read_bytes(&byte, 1u, portMAX_DELAY) != 1) {
                 continue;
             }
             if (byte == SMP_SOF[sof_idx]) {
@@ -702,8 +915,7 @@ static void smp_rx_task(void *arg)
 
         /* Read 2-byte LEN field (little-endian). */
         uint8_t len_bytes[2];
-        if (uart_read_bytes(UART_NUM_0, len_bytes, 2u,
-                            pdMS_TO_TICKS(1000u)) != 2) {
+        if (smp_read_exact(len_bytes, 2u, pdMS_TO_TICKS(1000u)) != 2) {
             continue;
         }
         uint16_t plen = (uint16_t)len_bytes[0] | ((uint16_t)len_bytes[1] << 8);
@@ -712,15 +924,13 @@ static void smp_rx_task(void *arg)
             continue;  /* drop oversized or empty frame */
         }
 
-        /* Read payload. Large uploads may need several seconds at 115200. */
-        int got = uart_read_bytes(UART_NUM_0, s_rx_payload, plen,
-                                  pdMS_TO_TICKS(10000u));
+        /* Read payload. Large uploads may need several seconds. */
+        int got = smp_read_exact(s_rx_payload, plen, pdMS_TO_TICKS(10000u));
         if (got != (int)plen) { continue; }
 
         /* Read 2-byte CRC. */
         uint8_t crc_bytes[2];
-        if (uart_read_bytes(UART_NUM_0, crc_bytes, 2u,
-                            pdMS_TO_TICKS(1000u)) != 2) {
+        if (smp_read_exact(crc_bytes, 2u, pdMS_TO_TICKS(1000u)) != 2) {
             continue;
         }
         uint16_t recv_crc = (uint16_t)crc_bytes[0] | ((uint16_t)crc_bytes[1] << 8);
@@ -746,13 +956,29 @@ void jpp_serial_mgr_init(void)
     s_consent_sem = xSemaphoreCreateBinary();
     s_tx_mutex    = xSemaphoreCreateMutex();
 
-    /* Install UART driver on UART0 for interrupt-driven RX.
-       TX_buffer_size = 0: TX remains synchronous so the ROM console TX path
-       (used by fwrite/printf/ESP_LOG) is unaffected. */
-    uart_driver_install(UART_NUM_0, SMP_RX_BUF_BYTES, 0, 0, NULL, 0);
+    /* Install the USB-Serial-JTAG driver for interrupt-driven RX/TX. This
+       board's single USB-C port has no separate UART bridge chip — it is
+       wired directly to the chip's native USB-Serial-JTAG peripheral, so
+       that (not UART0) is the channel a host actually reaches. */
+    usb_serial_jtag_driver_config_t usj_cfg = {
+        .rx_buffer_size = SMP_RX_BUF_BYTES,
+        .tx_buffer_size = SMP_TX_BUF_BYTES,
+    };
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usj_cfg));
+
+    /* Route stdout/console output through the interrupt-driven driver we just
+       installed.  Without this the USB-Serial-JTAG console keeps using its
+       default direct-write VFS path, so log lines and our binary frames would
+       be two independent writers to the same peripheral FIFO — under sustained
+       traffic that collides and wedges usb_serial_jtag_write_bytes() forever
+       (which then blocks every logger on s_tx_mutex).  With one shared driver,
+       the TX mutex below fully serialises frames and log lines.
+       Requires USB-Serial-JTAG to be the primary console with no secondary
+       console (see sdkconfig.defaults) so nothing else drives the peripheral. */
+    usb_serial_jtag_vfs_use_driver();
 
     /* Wrap the ESP_LOG vprintf sink so binary frame writes and log lines
-       never interleave on the shared UART0 TX path. */
+       never interleave on the shared USB-Serial-JTAG TX path. */
     s_orig_vprintf = esp_log_set_vprintf(smp_log_hook);
 
     /* Session inactivity timer. */
@@ -772,7 +998,8 @@ void jpp_serial_mgr_init(void)
 
 void jpp_serial_mgr_handle_action(jpp_ui_action_t action)
 {
-    if (s_consent_state == SMP_CONSENT_PENDING) {
+    if (s_consent_state == SMP_CONSENT_PENDING ||
+        s_consent_state == SMP_CONSENT_BACKUP_PENDING) {
         switch (action) {
         case JPP_UI_ACTION_LEFT:  s_consent_cursor = 0; break;
         case JPP_UI_ACTION_RIGHT: s_consent_cursor = 1; break;
@@ -799,7 +1026,14 @@ void jpp_serial_mgr_render(void)
         ssd1306_draw_string(2u, 0u, "Allow PC access", false);
         ssd1306_draw_string(3u, 0u, "to files and", false);
         ssd1306_draw_string(4u, 0u, "device info?", false);
-
+        ssd1306_draw_string(6u, 0u,
+                            jpp_ui_consent_selector_row(s_consent_cursor != 0),
+                            false);
+    } else if (s_consent_state == SMP_CONSENT_BACKUP_PENDING) {
+        jpp_draw_title("Serial manager");
+        ssd1306_draw_string(2u, 0u, "Apply backup?", false);
+        ssd1306_draw_string(3u, 0u, s_backup_confirm_name, false);
+        ssd1306_draw_string(4u, 0u, "This will restart", false);
         ssd1306_draw_string(6u, 0u,
                             jpp_ui_consent_selector_row(s_consent_cursor != 0),
                             false);
@@ -814,7 +1048,7 @@ void jpp_serial_mgr_render(void)
 
 bool jpp_serial_mgr_needs_render(void)
 {
-    return s_consent_state == SMP_CONSENT_PENDING || s_session_active;
+    return s_consent_state != SMP_CONSENT_IDLE || s_session_active;
 }
 
 bool jpp_serial_mgr_session_active(void)

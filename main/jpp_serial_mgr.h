@@ -3,10 +3,12 @@
 /*
  * J++Device Serial Management Protocol (JPPD-SMP) — firmware side.
  *
- * Runs a background UART-RX task on UART_NUM_0 (same port as ESP_LOG text
- * output).  Binary frames are framed with a 4-byte SOF magic that never
- * appears in ESP_LOG output; a TX mutex prevents frame bytes from
- * interleaving with log lines.
+ * Runs a background RX task on the native USB-Serial-JTAG peripheral (same
+ * port as ESP_LOG text output — this board's single USB-C port has no
+ * separate UART bridge chip, so UART0 is not reachable from a host).
+ * Binary frames are framed with a 4-byte SOF magic that never appears in
+ * ESP_LOG output; a TX mutex prevents frame bytes from interleaving with
+ * log lines.
  *
  * Lives in main/ so it can use ssd1306.h, jpp_app_dispatch.h, and
  * jpp_settings_screen.h without creating circular component dependencies.
@@ -20,7 +22,7 @@
 extern "C" {
 #endif
 
-/* Call from app_main after UART0 is available (after nvs / BLE init, step 6). */
+/* Call from app_main after USB-Serial-JTAG is available (after nvs / BLE init, step 6). */
 void jpp_serial_mgr_init(void);
 
 /* Provide an RTC state pointer for challenge timestamp generation (may be NULL). */

@@ -3097,6 +3097,12 @@ jpp_sdk_status_t jpp_sdk_wakelock_release(jpp_sdk_context_t *context)
     return JPP_SDK_STATUS_OK;
 }
 
+bool jpp_sdk_is_dummy_mode(const jpp_sdk_context_t *ctx)
+{
+    if (ctx == NULL) { return false; }
+    return ctx->dummy_mode;
+}
+
 /* ---- Buzzer -------------------------------------------------------------- */
 
 jpp_sdk_status_t jpp_sdk_buzzer_play(jpp_sdk_context_t *context,

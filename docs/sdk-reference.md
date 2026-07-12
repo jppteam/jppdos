@@ -11,7 +11,7 @@
 | [UI helpers](#ui-helpers) | [`dialog`](#dialog) · [`list`](#list) · [`input`](#input) · [`confirm`](#confirm) · [`file_pick`](#file_pick) · [`wrap_text`](#wrap_text-c-only) |
 | [Wakelock](#wakelock) | [`wakelock_acquire`](#wakelock_acquire) · [`wakelock_release`](#wakelock_release) |
 | [Buzzer](#buzzer) | [`buzzer_play`](#buzzer_play) · [`buzzer_tone`](#buzzer_tone) · [`buzzer_play_sequence`](#buzzer_play_sequence) · [`buzzer_play_sequence_async`](#buzzer_play_sequence_async) · [`buzzer_stop`](#buzzer_stop) |
-| [Device status](#device-status) | [`device_status`](#device_status) · [`get_time`](#get_time) |
+| [Device status](#device-status) | [`device_status`](#device_status) · [`get_time`](#get_time) · [`is_dummy_mode`](#is_dummy_mode) |
 | [Scoped file I/O](#scoped-file-io) | [`file_read`](#file_read) · [`file_write`](#file_write) · [`file_list`](#file_list) |
 | [Shared file I/O](#shared-file-io) | [`shared_read`](#shared_read) · [`shared_write`](#shared_write) · [`shared_list`](#shared_list) |
 | [Full file access](#full-file-access) ⚠ `files.full` | [`file_open`](#file_open) · [`handle_read`](#handle_read) · [`handle_write`](#handle_write) · [`handle_list`](#handle_list) · [`handle_close`](#handle_close) |
@@ -177,7 +177,7 @@ jpp_sdk_status_t jpp_sdk_log(jpp_sdk_context_t *ctx,
 jppsdk.log(event_name: str) -> None
 ```
 
-**Notes:** Useful for debugging. Log lines appear on UART0 with the tag `app_log`.
+**Notes:** Useful for debugging. Log lines appear on the device console (native USB-Serial-JTAG) with the tag `app_log`.
 
 ---
 
@@ -739,6 +739,27 @@ jppsdk.get_time() -> str
 - Python: `"YYYY-MM-DD HH:mm"` as a string.
 
 **Notes:** Reads the DS1307 I²C RTC. If the RTC has not been set, it may return a nonsensical date. Time is always in the device's configured timezone.
+
+---
+
+### `is_dummy_mode`
+
+Return whether the firmware has locked the device to this app (dummy mode).
+
+**Capability:** None
+
+```c
+bool jpp_sdk_is_dummy_mode(const jpp_sdk_context_t *ctx);
+```
+```python
+jppsdk.is_dummy_mode() -> bool
+```
+
+**Returns:**
+- C: `true` if the app is the dummy-mode locked app, `false` otherwise (including if `ctx` is `NULL`).
+- Python: `True` or `False`.
+
+**Notes:** When dummy mode is active the firmware re-launches this app automatically after it exits and blocks all launcher navigation. Apps can call this to detect the condition and hide their own "Exit" option, since the firmware will re-launch them regardless. Dummy mode is enabled in **Settings → Dummy Mode** and disabled by holding CENTER on boot.
 
 ---
 

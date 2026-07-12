@@ -487,6 +487,7 @@ typedef struct {
     bool close_requested;
     bool bound;
     bool wakelock_held;  /* prevents screen dim / deep sleep when true */
+    bool dummy_mode;     /* set when the app is launched as the dummy-mode locked app */
     QueueHandle_t key_queue;  /* FreeRTOS queue, capacity 8, element jpp_sdk_key_event_t */
     /* Pixel canvas — row-major, MSB = leftmost pixel. Rows 0–47 in windowed
        mode (pages 2–7); all 64 rows when canvas_fullscreen is set. */
@@ -1008,6 +1009,11 @@ jpp_sdk_status_t jpp_sdk_file_pick(
    Each acquire must be matched by a release.  Nested pairs are supported. */
 jpp_sdk_status_t jpp_sdk_wakelock_acquire(jpp_sdk_context_t *context);
 jpp_sdk_status_t jpp_sdk_wakelock_release(jpp_sdk_context_t *context);
+
+/* Returns true when the firmware has locked the device to this app (dummy
+   mode).  Apps can use this to hide their own "Exit" option when they know
+   the firmware will re-launch them immediately after close. */
+bool jpp_sdk_is_dummy_mode(const jpp_sdk_context_t *ctx);
 
 /* ---- Buzzer -------------------------------------------------------------- */
 #include "jpp_buzzer_core.h"

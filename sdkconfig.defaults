@@ -8,7 +8,19 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_WIFI_NVS_ENABLED=y
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+
+# Optimize for size (-Os): the debug default (-Og) inflates the image well past
+# what a 2 MB flash can hold. Size optimization is required to fit this layout.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# This board (ESP32-C6 Super Mini class) has no separate UART-to-USB bridge
+# chip — its single USB-C port is wired directly to the native USB-Serial-JTAG
+# peripheral. Make that the primary console (jpp_serial_mgr's JPPD-SMP binary
+# protocol talks to the same peripheral) and drop the secondary UART mirror,
+# which also isn't reachable over that port and only costs flash.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # FAT filesystem — long filename support (heap-allocated; required for manifest.json)
 CONFIG_FATFS_LFN_HEAP=y

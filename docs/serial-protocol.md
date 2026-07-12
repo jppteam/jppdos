@@ -1,8 +1,10 @@
 # JPPD-SMP Serial Protocol Reference
 
-**J++Device Serial Management Protocol v1** — a binary protocol over USB/UART for host-side tools (PC clients, the JPPD desktop app) to manage files on the SD card, query device information, and retrieve LRV verification data.
+**J++Device Serial Management Protocol v1** — a binary protocol over the device's native USB port for host-side tools (PC clients, the JPPD desktop app) to manage files on the SD card, query device information, and retrieve LRV verification data.
 
 This document is for authors of **host-side tooling**. It is not needed to write apps.
+
+A ready-made upload script ships with the firmware: `scripts/jppd_upload.py` uploads a built app artifact directory to the device SD card using the commands described here. Run `python3 scripts/jppd_upload.py --help` for usage.
 
 ---
 
@@ -10,9 +12,8 @@ This document is for authors of **host-side tooling**. It is not needed to write
 
 | Parameter | Value |
 |-----------|-------|
-| Interface | UART0 (exposed over USB) |
-| Baud rate | 115200 |
-| Format | 8N1 |
+| Interface | Native USB-Serial-JTAG (the board's single USB-C port has no separate UART bridge chip, so this — not UART0 — is the channel a host actually reaches) |
+| Framing | USB CDC-ACM byte stream via the `usb_serial_jtag` driver; no baud rate to configure |
 | Coexistence | ESP_LOG text output shares the same channel; the device uses a TX mutex so log bytes never interleave with binary frame bytes |
 
 ---
@@ -100,12 +101,17 @@ Closes the current session.
 
 ### 0x02 — GET_INFO
 
-Returns the firmware version string.
+Returns device identification and SD card information.
 
 | Direction | Body |
 |-----------|------|
 | Host → device | — |
-| Device → host | `[fw_version: NUL-terminated string]` |
+| Device → host | `[fw_version: NUL-terminated string][username: NUL-terminated string][hwid: NUL-terminated string][sd_total: 8 B LE uint64][sd_used: 8 B LE uint64][sd_free: 8 B LE uint64][sd_label: NUL-terminated string]` |
+
+- `username` is empty (single `\0`) when no name has been set.
+- `hwid` is the eFuse base MAC address formatted as `"AA:BB:CC:DD:EE:FF"`.
+- `sd_total`, `sd_used`, `sd_free` are byte counts (little-endian uint64). All three are zero when the SD card is unavailable.
+- `sd_label` is the FAT volume label; empty (single `\0`) if the SD is unavailable or has no label.
 
 ---
 
@@ -131,9 +137,11 @@ Lists the contents of a directory on the SD card. All paths must start with `/sd
 | Direction | Body |
 |-----------|------|
 | Host → device | `[path: NUL-terminated]` |
-| Device → host | `[count: 2 B LE]` then N × `[flags: 1 B][name: NUL-terminated]` |
+| Device → host | `[count: 2 B LE]` then N × `[flags: 1 B][size_or_count: 4 B LE][name: NUL-terminated]` |
 
 **Flags byte:** bit 0 = `1` for directory, `0` for file. Bits 1–7 are reserved.
+
+**`size_or_count`:** for files, the file size in bytes; for directories, the number of non-hidden first-level children. Both are little-endian uint32.
 
 ---
 
@@ -199,7 +207,7 @@ Finalises the transfer and verifies integrity.
 | Host → device | `[xfer_id: 1 B][crc32: 4 B LE]` |
 | Device → host | — |
 
-The `crc32` field uses **CRC-32/ISO-HDLC** (`~crc32(~0, data, len)`), matching Python's `zlib.crc32` output. The device verifies the complete file against this value before committing.
+The `crc32` field uses **CRC-32/ISO-HDLC** (poly 0xEDB88320 reflected, init/xorout 0xFFFFFFFF), matching Python's `zlib.crc32` output. The device verifies the complete file against this value before committing.
 
 ---
 
@@ -233,6 +241,25 @@ Signals the host is done with the transfer.
 |-----------|------|
 | Host → device | `[xfer_id: 1 B]` |
 | Device → host | — |
+
+---
+
+### 0x1A — APPLY_BACKUP
+
+Apply a JPPDOS settings backup file that already resides on the SD card. The host uploads the file first (using the standard FS_UPLOAD commands), then sends this command with the path to it.
+
+| Direction | Body |
+|-----------|------|
+| Host → device | `[path: NUL-terminated]` |
+| Device → host | — |
+
+**Flow:**
+1. The device reads and validates the file (`jppdos_backup: 1` marker must be present).
+2. An on-screen confirmation dialog is shown (`Apply backup? / <filename> / This will restart`). The user selects **Allow** or **Deny** (default cursor on **Deny**).
+3. On **Deny**: responds `ERR_DENIED`; the session remains open and the file is untouched.
+4. On **Allow**: applies all NVS namespaces and `settings.json`, responds `OK`, then restarts the device.
+
+Returns `ERR_NOT_FOUND` if the path does not exist, `ERR_OVERFLOW` if the file exceeds 8 KB, `ERR_INVALID` if the file is not a valid backup, `ERR_IO` if applying fails.
 
 ---
 

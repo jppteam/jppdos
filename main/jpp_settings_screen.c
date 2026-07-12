@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "esp_vfs_fat.h"
 #include "ff.h"
 
@@ -70,8 +73,12 @@ static void draw_section_heading(const char *section_name)
 
 static void draw_pagination(size_t current, size_t total)
 {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
     char buf[8];
-    snprintf(buf, sizeof(buf), "%zu/%zu", current + 1u, total);
+    snprintf(buf, sizeof(buf), "%u/%u",
+             (unsigned)(current + 1u), (unsigned)total);
+#pragma GCC diagnostic pop
     draw_right(0u, buf);
 }
 
@@ -116,7 +123,7 @@ static size_t volume_step_index(uint8_t pct)
 static const char *SECTION_NAMES[JPP_SETTINGS_SECTION_COUNT] = {
     "Shutdown/Reboot", "Wi-Fi", "Time", "Sleep timers",
     "Sound", "SD card", "Backup settings", "Factory Reset",
-    "* Device Info *", "User's name", "About",
+    "* Device Info *", "User's name", "Dummy Mode", "About",
 };
 
 /* Returns false for sections that should be hidden given the current state. */
@@ -689,6 +696,134 @@ static void render_username(const jpp_settings_state_t *state)
     ssd1306_draw_string(6, 0, "OK to edit", false);
 }
 
+static void render_dummy_mode(const jpp_settings_state_t *state,
+                               const jpp_settings_deps_t *deps)
+{
+    draw_section_heading("Dummy Mode");
+
+    if (state->dummy_enabled) {
+        ssd1306_draw_string(2, 0, "ENABLED", false);
+        char app_line[22];
+        snprintf(app_line, sizeof(app_line), "App: %.16s",
+                 state->dummy_app_name[0] ? state->dummy_app_name
+                                          : state->dummy_app_id);
+        ssd1306_draw_string(3, 0, app_line, false);
+        ssd1306_draw_string(5, 0, "Hold CTR on boot", false);
+        ssd1306_draw_string(6, 0, "to disable.", false);
+        return;
+    }
+
+    ssd1306_draw_string(2, 0, "Locks to 1 app.", false);
+    ssd1306_draw_string(3, 0, "Disable:hold CTR+boot", false);
+
+    const jpp_ui_shell_t *sh = deps->shell;
+    size_t sd_count = 0;
+    for (size_t i = 0; i < sh->app_count; i++) {
+        if (sh->apps[i].source == JPP_UI_APP_SOURCE_SD) { sd_count++; }
+    }
+
+    if (sd_count == 0) {
+        ssd1306_draw_string(5, 0, "No apps on SD card.", false);
+        ssd1306_draw_string(6, 0, "BACK to close.", false);
+        return;
+    }
+
+    /* App list: 4 visible rows (pages 4-7), scrollable. */
+    const size_t visible = 4u;
+    size_t scroll = jpp_ui_scroll_clamp(state->dummy_cursor, sd_count,
+                                         visible, state->dummy_scroll);
+    ((jpp_settings_state_t *)state)->dummy_scroll = scroll;
+
+    size_t vi = 0, shown = 0;
+    for (size_t i = 0; i < sh->app_count && shown < visible; i++) {
+        if (sh->apps[i].source != JPP_UI_APP_SOURCE_SD) { continue; }
+        if (vi < scroll) { vi++; continue; }
+        char item[20];
+        snprintf(item, sizeof(item), "%.19s", sh->apps[i].name);
+        draw_list_item((uint8_t)(4u + shown), vi == state->dummy_cursor, item);
+        vi++;
+        shown++;
+    }
+
+    if (sd_count > visible) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+        char pager[8];
+        snprintf(pager, sizeof(pager), "%u/%u",
+                 (unsigned)(state->dummy_cursor + 1u),
+                 (unsigned)sd_count);
+#pragma GCC diagnostic pop
+        draw_right(3u, pager);
+    }
+}
+
+static bool handle_dummy_mode(jpp_settings_state_t *state,
+                               const jpp_settings_deps_t *deps,
+                               jpp_ui_action_t action)
+{
+    if (state->dummy_enabled) {
+        /* Already enabled: any key closes section (user reads the disable hint). */
+        return (action == JPP_UI_ACTION_BACK || action == JPP_UI_ACTION_OK);
+    }
+
+    const jpp_ui_shell_t *sh = deps->shell;
+    size_t sd_count = 0;
+    for (size_t i = 0; i < sh->app_count; i++) {
+        if (sh->apps[i].source == JPP_UI_APP_SOURCE_SD) { sd_count++; }
+    }
+
+    if (sd_count == 0) {
+        return (action == JPP_UI_ACTION_BACK);
+    }
+
+    switch (action) {
+    case JPP_UI_ACTION_UP:
+        if (state->dummy_cursor > 0) { state->dummy_cursor--; }
+        break;
+    case JPP_UI_ACTION_DOWN:
+        if (state->dummy_cursor + 1u < sd_count) { state->dummy_cursor++; }
+        break;
+    case JPP_UI_ACTION_OK: {
+        /* Find the SD app at dummy_cursor and enable dummy mode. */
+        size_t vi = 0;
+        for (size_t i = 0; i < sh->app_count; i++) {
+            if (sh->apps[i].source != JPP_UI_APP_SOURCE_SD) { continue; }
+            if (vi == state->dummy_cursor) {
+                strncpy(state->dummy_app_id, sh->apps[i].app_id,
+                        sizeof(state->dummy_app_id) - 1u);
+                state->dummy_app_id[sizeof(state->dummy_app_id) - 1u] = '\0';
+                strncpy(state->dummy_app_name, sh->apps[i].name,
+                        sizeof(state->dummy_app_name) - 1u);
+                state->dummy_app_name[sizeof(state->dummy_app_name) - 1u] = '\0';
+                break;
+            }
+            vi++;
+        }
+        state->dummy_enabled = true;
+        if (deps->do_dummy_mode_save) {
+            deps->do_dummy_mode_save(true, state->dummy_app_id);
+        }
+        /* Restart device to activate dummy mode immediately. */
+        cls();
+        draw_section_heading("Dummy Mode");
+        ssd1306_draw_string(3, 0, "ENABLED", false);
+        char app_line[22];
+        snprintf(app_line, sizeof(app_line), "%.21s", state->dummy_app_name);
+        ssd1306_draw_string(4, 0, app_line, false);
+        ssd1306_draw_string(6, 0, "Restarting...", false);
+        ssd1306_flush();
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        if (deps->do_reboot) { deps->do_reboot(); }
+        break;
+    }
+    case JPP_UI_ACTION_BACK:
+        return true;
+    default:
+        break;
+    }
+    return false;
+}
+
 static void render_about(void)
 {
     draw_centred_2x(0, "JPPDOS");
@@ -751,6 +886,7 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
         case JPP_SETTINGS_SECTION_FACTORY_RESET: render_factory_reset(state);          break;
         case JPP_SETTINGS_SECTION_DEVICE_INFO:   render_device_info(state);            break;
         case JPP_SETTINGS_SECTION_USERNAME:      render_username(state);               break;
+        case JPP_SETTINGS_SECTION_DUMMY_MODE:   render_dummy_mode(state, deps);       break;
         case JPP_SETTINGS_SECTION_ABOUT:         render_about();                       break;
         default: break;
         }
@@ -834,6 +970,26 @@ static bool handle_top_level(jpp_settings_state_t *state,
         if (state->selected_section == JPP_SETTINGS_SECTION_WIFI &&
             deps && deps->do_wifi_check_status) {
             deps->do_wifi_check_status(state);
+        }
+        /* Dummy Mode: reset cursor and look up current app name on section open. */
+        if (state->selected_section == JPP_SETTINGS_SECTION_DUMMY_MODE) {
+            state->dummy_cursor = 0;
+            state->dummy_scroll = 0;
+            if (state->dummy_enabled && state->dummy_app_id[0] != '\0' &&
+                deps && deps->shell) {
+                state->dummy_app_name[0] = '\0';
+                for (size_t i = 0; i < deps->shell->app_count; i++) {
+                    if (strcmp(deps->shell->apps[i].app_id,
+                               state->dummy_app_id) == 0) {
+                        strncpy(state->dummy_app_name,
+                                deps->shell->apps[i].name,
+                                sizeof(state->dummy_app_name) - 1u);
+                        state->dummy_app_name[sizeof(state->dummy_app_name)-1u]
+                            = '\0';
+                        break;
+                    }
+                }
+            }
         }
         break;
     case JPP_UI_ACTION_BACK:
@@ -1320,6 +1476,8 @@ bool jpp_settings_screen_handle_action(jpp_settings_state_t *state,
         close_section = handle_device_info(state, deps, action); break;
     case JPP_SETTINGS_SECTION_USERNAME:
         close_section = handle_username(state, deps, action); break;
+    case JPP_SETTINGS_SECTION_DUMMY_MODE:
+        close_section = handle_dummy_mode(state, deps, action); break;
     case JPP_SETTINGS_SECTION_ABOUT:
         close_section = (action == JPP_UI_ACTION_BACK || action == JPP_UI_ACTION_OK); break;
     default:

@@ -168,6 +168,13 @@ STATIC mp_obj_t mp_sdk_get_time(void)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_get_time_obj, mp_sdk_get_time);
 
+/* is_dummy_mode() → bool  (ungated) */
+STATIC mp_obj_t mp_sdk_is_dummy_mode(void)
+{
+    return mp_obj_new_bool(jpp_sdk_is_dummy_mode(get_ctx()));
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_is_dummy_mode_obj, mp_sdk_is_dummy_mode);
+
 /* -------------------------------------------------------------------------- */
 /* Scoped file I/O  (ungated — sandboxed to /sd/apps/<app_id>/)              */
 /* -------------------------------------------------------------------------- */
@@ -1024,6 +1031,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* Device */
     { MP_ROM_QSTR(MP_QSTR_device_status),   MP_ROM_PTR(&mp_sdk_device_status_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_time),        MP_ROM_PTR(&mp_sdk_get_time_obj) },
+    { MP_ROM_QSTR(MP_QSTR_is_dummy_mode),  MP_ROM_PTR(&mp_sdk_is_dummy_mode_obj) },
 
     /* Scoped files */
     { MP_ROM_QSTR(MP_QSTR_file_read),       MP_ROM_PTR(&mp_sdk_file_read_obj) },

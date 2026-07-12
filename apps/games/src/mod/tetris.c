@@ -314,6 +314,7 @@ static int handle_key(jpp_sdk_key_event_t key)
         default: break;
         }
     }
+    return 0;
 }
 
 /* ---- game session --------------------------------------------------------------- */
