@@ -157,6 +157,13 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
 - Li-Po pack through **two equal 220 kΩ resistors** = 1:1 divider, so
   `Vbat = Vpin × 2` (`BATT_DIV_FACTOR = 2`).
 - 12-bit ADC, 12 dB atten, firmware averages **8 samples**.
+- Pin voltage is converted from the raw ADC count via the ESP-IDF ADC
+  calibration driver (`adc_cali_create_scheme_curve_fitting` /
+  `adc_cali_raw_to_voltage`, set up once in `jpp_battery_cali_init()`), not a
+  flat `raw × 3.3 V / 4095` formula — the ESP32-C6 ADC is non-linear enough at
+  12 dB atten that the flat formula alone reads a full battery well below its
+  real voltage. If the calibration scheme can't be created (missing eFuse
+  calibration bits), `jpp_battery_read()` falls back to the flat formula.
 - SoC mapping: 4200 mV = 100 %, 3000 mV = 0 %, linear between.
 - Healthy window: 3000–4400 mV.
 

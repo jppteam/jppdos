@@ -1090,6 +1090,8 @@ static void run_main_loop(jpp_ui_shell_t *shell,
        ADC unit reads an unconfigured channel every time, which fails and
        always reports 0%.  jpp_hw_config.h is the source of truth for pins. */
     bat_cfg.adc_channel = JPP_HW_BATTERY_ADC_CH;
+    bat_cfg.adc_unit    = ucfg.unit_id;
+    jpp_battery_cali_init(&bat_cfg, ccfg.atten);
     jpp_battery_state_t bat_state = { .percent = 0, .valid = false };
 
     /* Background task scheduler: load the persisted schedule table. */
@@ -1327,7 +1329,9 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             /* Log only when the percentage changes — the 5 s poll otherwise
                floods the console with the same value. */
             if (pct != last_logged_bat_pct) {
-                ESP_LOGI(TAG, "BATTERY pct=%d valid=%d", pct, (int)bat_state.valid);
+                ESP_LOGI(TAG, "BATTERY raw=%d pin_mv=%d vbat_mv=%d pct=%d valid=%d",
+                         bat_state.raw_avg, bat_state.pin_uv / 1000,
+                         bat_state.vbat_uv / 1000, pct, (int)bat_state.valid);
                 last_logged_bat_pct = pct;
             }
             if (bat_state.valid) {
