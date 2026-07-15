@@ -21,7 +21,7 @@ You do **not** need to understand firmware internals, ESP-IDF, or embedded syste
 | Input | 5-way directional pad (up/down/left/right + center) |
 | Storage | microSD card (apps and data) + internal flash (device settings) |
 | Connectivity | Bluetooth LE, Wi-Fi |
-| Clock | DS1307 real-time clock (battery-backed) |
+| Clock | DS1307 real-time clock (battery-backed, optional — falls back to NTP / unset) |
 
 Apps live on the SD card under `/sd/apps/<app_id>/`. The launcher discovers them at boot (and when you return to it after running an app), lists them by name, and runs whichever one the user selects.
 

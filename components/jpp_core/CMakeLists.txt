@@ -4,6 +4,7 @@ idf_component_register(
         "src/jpp_settings_core.c"
         "src/jpp_keypad_core.c"
         "src/jpp_rtc_core.c"
+        "src/jpp_eeprom_core.c"
         "src/jpp_sd_core.c"
         "src/jpp_vm_core.c"
         "src/jpp_broker_core.c"

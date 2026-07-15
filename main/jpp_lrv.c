@@ -1,6 +1,9 @@
 #include "jpp_lrv.h"
 #include "jpp_crypto_core.h"
+#include "jpp_eeprom_core.h"
+#include "jpp_hw_config.h"
 
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -10,21 +13,36 @@
 #include "sodium/crypto_generichash.h"
 #include "sodium/randombytes.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 static const char *TAG = "jpp_lrv";
 
-/* ---- NVS keys (max 15 chars each) --------------------------------------- */
-#define LRV_NVS_NS       "jpp_lrv"
-#define LRV_KEY_ENC      "lrv_enc"       /* encrypted blob (locked state)   */
-#define LRV_KEY_SERIAL   "lrv_serial"    /* uint16_t                         */
-#define LRV_KEY_PUBKEY   "lrv_pubkey"    /* blob 32 B                        */
-#define LRV_KEY_SECKEY   "lrv_seckey"    /* blob 64 B                        */
-#define LRV_KEY_CERT     "lrv_cert"      /* blob ≤192 B                      */
-#define LRV_KEY_CERT_SIG "lrv_cert_sig"  /* blob 64 B                        */
-#define LRV_KEY_HWID     "lrv_hwid"      /* str ≤23 B (eFuse MAC text)       */
-#define LRV_KEY_PASSWORD "lrv_password"  /* str ≤64 B (cached after unlock)  */
+/* ---- EEPROM layout ------------------------------------------------------ */
+/*
+ * IDENTITY region (write-once) at 0x0000:
+ *   magic  4 B  "LRV1"
+ *   ver    1 B  0x01
+ *   rsvd   1 B
+ *   len    2 B LE  (encrypted blob length)
+ *   crc    2 B LE  (CRC-16/CCITT-FALSE over the blob)
+ *   blob   len B   (nonce || ciphertext)
+ *
+ * STATE region (writable, unlock cache) at 0x0800:
+ *   magic  4 B  "LRVS"
+ *   ver    1 B  0x01
+ *   rsvd   1 B
+ *   len    2 B LE  (password length)
+ *   crc    2 B LE  (CRC-16/CCITT-FALSE over the password)
+ *   pass   len B
+ */
+#define EE_HDR_SIZE       10u
+#define EE_IDENTITY_ADDR  0x0000u
+#define EE_STATE_ADDR     0x0800u
+#define EE_IDENTITY_MAGIC "LRV1"
+#define EE_STATE_MAGIC    "LRVS"
+#define EE_VERSION        0x01u
 
 /* ---- Plaintext serialisation layout (little-endian) --------------------- */
 /* Offsets:
@@ -48,35 +66,37 @@ static const char *TAG = "jpp_lrv";
 #define PT_MAX_SZ      (PT_FIXED_SZ + JPP_LRV_CERT_MAX)
 
 /* Encrypted blob = nonce || ciphertext (plaintext + MAC) */
+#define BLOB_MIN_SZ    (crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + PT_FIXED_SZ + 1u)
 #define BLOB_MAX_SZ    (crypto_secretbox_NONCEBYTES + PT_MAX_SZ + crypto_secretbox_MACBYTES)
 
+/* ---- Module state (RAM) ------------------------------------------------- */
+
+static jpp_eeprom_state_t s_eeprom;
+static bool               s_identity_present;   /* valid IDENTITY header found  */
+static uint16_t           s_blob_len;           /* cached identity blob length  */
+static jpp_lrv_data_t     s_unlocked;           /* decrypted data (RAM only)    */
+static bool               s_unlocked_ok;        /* s_unlocked populated          */
+
 /* ---- Helpers ------------------------------------------------------------ */
+
+static uint16_t crc16_ccitt(const uint8_t *data, size_t len)
+{
+    uint16_t crc = 0xFFFFu;
+    for (size_t i = 0u; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8u;
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 0x8000u) ? (uint16_t)((crc << 1u) ^ 0x1021u)
+                                  : (uint16_t)(crc << 1u);
+        }
+    }
+    return crc;
+}
 
 static void derive_key(const char *password, uint8_t key[32])
 {
     crypto_generichash(key, 32u,
                        (const uint8_t *)password, strlen(password),
                        NULL, 0u);
-}
-
-/* Serialise a jpp_lrv_data_t into buf; returns the written length. */
-static size_t serialise(const jpp_lrv_data_t *d, uint8_t *buf, size_t bufsz)
-{
-    uint16_t cert_len = (uint16_t)(strnlen(d->cert, JPP_LRV_CERT_MAX - 1u) + 1u);
-    size_t   total    = PT_FIXED_SZ + cert_len;
-    if (bufsz < total) { return 0u; }
-
-    memset(buf, 0, PT_FIXED_SZ);
-    buf[PT_OFF_SERIAL]   = (uint8_t)(d->serial & 0xFFu);
-    buf[PT_OFF_SERIAL+1] = (uint8_t)(d->serial >> 8u);
-    memcpy(buf + PT_OFF_PUBKEY,  d->device_pubkey, 32u);
-    memcpy(buf + PT_OFF_SECKEY,  d->device_seckey, 64u);
-    memcpy(buf + PT_OFF_CERTSIG, d->cert_sig,      64u);
-    strncpy((char *)(buf + PT_OFF_HWID), d->hwid, 23u);
-    buf[PT_OFF_CERTLEN]   = (uint8_t)(cert_len & 0xFFu);
-    buf[PT_OFF_CERTLEN+1] = (uint8_t)(cert_len >> 8u);
-    memcpy(buf + PT_OFF_CERT, d->cert, cert_len);
-    return total;
 }
 
 /* Deserialise buf into *d; returns false if the layout is invalid. */
@@ -97,117 +117,201 @@ static bool deserialise(const uint8_t *buf, size_t len, jpp_lrv_data_t *d)
     return true;
 }
 
-/* ---- Public API --------------------------------------------------------- */
-
-bool jpp_lrv_has_data(void)
+/* Read + validate the IDENTITY header; on success set *out_len to the blob len. */
+static bool identity_read_header(uint16_t *out_len)
 {
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) { return false; }
-    size_t  enc_sz  = 0u;
-    uint16_t serial = 0u;
-    bool has_enc    = (nvs_get_blob(h, LRV_KEY_ENC,    NULL,    &enc_sz) == ESP_OK);
-    bool has_plain  = (nvs_get_u16(h,  LRV_KEY_SERIAL, &serial) == ESP_OK);
-    nvs_close(h);
-    return has_enc || has_plain;
+    uint8_t hdr[EE_HDR_SIZE];
+    if (jpp_eeprom_read(&s_eeprom, EE_IDENTITY_ADDR, hdr, sizeof(hdr)) != JPP_EEPROM_OK) {
+        return false;
+    }
+    if (memcmp(hdr, EE_IDENTITY_MAGIC, 4u) != 0 || hdr[4] != EE_VERSION) {
+        return false;
+    }
+    uint16_t len = (uint16_t)(hdr[6] | (hdr[7] << 8));
+    if (len < BLOB_MIN_SZ || len > BLOB_MAX_SZ) { return false; }
+    if (out_len != NULL) { *out_len = len; }
+    return true;
 }
 
-bool jpp_lrv_is_unlocked(void)
+/* Read the identity blob (validated against the stored CRC) into buf. */
+static bool identity_read_blob(uint8_t *buf, size_t bufcap, size_t *out_len)
 {
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) { return false; }
-    uint16_t serial = 0u;
-    bool unlocked = (nvs_get_u16(h, LRV_KEY_SERIAL, &serial) == ESP_OK);
-    nvs_close(h);
-    return unlocked;
+    uint8_t hdr[EE_HDR_SIZE];
+    if (jpp_eeprom_read(&s_eeprom, EE_IDENTITY_ADDR, hdr, sizeof(hdr)) != JPP_EEPROM_OK) {
+        return false;
+    }
+    if (memcmp(hdr, EE_IDENTITY_MAGIC, 4u) != 0 || hdr[4] != EE_VERSION) { return false; }
+    uint16_t len = (uint16_t)(hdr[6] | (hdr[7] << 8));
+    uint16_t crc = (uint16_t)(hdr[8] | (hdr[9] << 8));
+    if (len < BLOB_MIN_SZ || len > BLOB_MAX_SZ || len > bufcap) { return false; }
+    if (jpp_eeprom_read(&s_eeprom, EE_IDENTITY_ADDR + EE_HDR_SIZE, buf, len) != JPP_EEPROM_OK) {
+        return false;
+    }
+    if (crc16_ccitt(buf, len) != crc) {
+        ESP_LOGW(TAG, "identity blob CRC mismatch");
+        return false;
+    }
+    if (out_len != NULL) { *out_len = len; }
+    return true;
 }
 
-jpp_lrv_result_t jpp_lrv_unlock(const char *password)
+/* Read the cached password from the STATE region. Returns false if absent. */
+static bool state_read_password(char *pw, size_t cap)
 {
-    if (password == NULL) { return JPP_LRV_ERR_INTERNAL; }
+    uint8_t hdr[EE_HDR_SIZE];
+    if (jpp_eeprom_read(&s_eeprom, EE_STATE_ADDR, hdr, sizeof(hdr)) != JPP_EEPROM_OK) {
+        return false;
+    }
+    if (memcmp(hdr, EE_STATE_MAGIC, 4u) != 0 || hdr[4] != EE_VERSION) { return false; }
+    uint16_t len = (uint16_t)(hdr[6] | (hdr[7] << 8));
+    uint16_t crc = (uint16_t)(hdr[8] | (hdr[9] << 8));
+    if (len == 0u || len > JPP_LRV_PASS_MAX || len >= cap) { return false; }
+    if (jpp_eeprom_read(&s_eeprom, EE_STATE_ADDR + EE_HDR_SIZE,
+                        (uint8_t *)pw, len) != JPP_EEPROM_OK) {
+        return false;
+    }
+    if (crc16_ccitt((const uint8_t *)pw, len) != crc) { return false; }
+    pw[len] = '\0';
+    return true;
+}
 
-    /* Read encrypted blob. */
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return JPP_LRV_ERR_NOT_FOUND;
-    }
-    size_t blob_sz = 0u;
-    if (nvs_get_blob(h, LRV_KEY_ENC, NULL, &blob_sz) != ESP_OK) {
-        nvs_close(h);
-        return JPP_LRV_ERR_NOT_FOUND;
-    }
-    uint8_t *blob = malloc(blob_sz);
-    if (blob == NULL) { nvs_close(h); return JPP_LRV_ERR_INTERNAL; }
-    size_t actual = blob_sz;
-    if (nvs_get_blob(h, LRV_KEY_ENC, blob, &actual) != ESP_OK) {
-        free(blob);
-        nvs_close(h);
-        return JPP_LRV_ERR_INTERNAL;
-    }
-    nvs_close(h);
+/* Write the cached password to the STATE region. */
+static bool state_write_password(const char *pw)
+{
+    size_t len = strnlen(pw, JPP_LRV_PASS_MAX);
+    uint8_t frame[EE_HDR_SIZE + JPP_LRV_PASS_MAX];
+    memset(frame, 0, sizeof(frame));
+    memcpy(frame, EE_STATE_MAGIC, 4u);
+    frame[4] = EE_VERSION;
+    frame[6] = (uint8_t)(len & 0xFFu);
+    frame[7] = (uint8_t)(len >> 8u);
+    uint16_t crc = crc16_ccitt((const uint8_t *)pw, len);
+    frame[8] = (uint8_t)(crc & 0xFFu);
+    frame[9] = (uint8_t)(crc >> 8u);
+    memcpy(frame + EE_HDR_SIZE, pw, len);
+    bool ok = jpp_eeprom_write(&s_eeprom, EE_STATE_ADDR, frame,
+                               EE_HDR_SIZE + len) == JPP_EEPROM_OK;
+    sodium_memzero(frame, sizeof(frame));
+    return ok;
+}
 
-    /* Validate minimum blob size: nonce + MAC at minimum. */
-    if (blob_sz < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + PT_FIXED_SZ + 1u) {
-        free(blob);
+/* Wipe the STATE region header so no cached password is recognised. */
+static void state_clear(void)
+{
+    uint8_t zero[EE_HDR_SIZE] = {0};
+    jpp_eeprom_write(&s_eeprom, EE_STATE_ADDR, zero, sizeof(zero));
+}
+
+/* Decrypt the identity blob with password into *out. */
+static jpp_lrv_result_t decrypt_identity(const char *password, jpp_lrv_data_t *out)
+{
+    uint8_t blob[BLOB_MAX_SZ];
+    size_t  blob_sz = 0u;
+    if (!identity_read_blob(blob, sizeof(blob), &blob_sz)) {
         return JPP_LRV_ERR_CORRUPT;
     }
 
-    /* Decrypt. */
     const uint8_t *nonce  = blob;
     const uint8_t *cipher = blob + crypto_secretbox_NONCEBYTES;
     size_t         clen   = blob_sz - crypto_secretbox_NONCEBYTES;
     size_t         ptlen  = clen - crypto_secretbox_MACBYTES;
 
     uint8_t *plaintext = malloc(ptlen);
-    if (plaintext == NULL) { free(blob); return JPP_LRV_ERR_INTERNAL; }
+    if (plaintext == NULL) { return JPP_LRV_ERR_INTERNAL; }
 
     uint8_t key[32];
     derive_key(password, key);
-
     int rc = crypto_secretbox_open_easy(plaintext, cipher, clen, nonce, key);
     sodium_memzero(key, sizeof(key));
-    free(blob);
 
     if (rc != 0) {
         free(plaintext);
         return JPP_LRV_ERR_WRONG_PASSWORD;
     }
 
-    /* Deserialise. */
-    jpp_lrv_data_t data;
-    if (!deserialise(plaintext, ptlen, &data)) {
-        sodium_memzero(plaintext, ptlen);
-        free(plaintext);
-        return JPP_LRV_ERR_CORRUPT;
-    }
+    bool ok = deserialise(plaintext, ptlen, out);
     sodium_memzero(plaintext, ptlen);
     free(plaintext);
+    return ok ? JPP_LRV_OK : JPP_LRV_ERR_CORRUPT;
+}
 
-    /* Persist decrypted fields to NVS and remove the encrypted blob. */
-    if (nvs_open(LRV_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        return JPP_LRV_ERR_INTERNAL;
+/* ---- Public API --------------------------------------------------------- */
+
+void jpp_lrv_init(i2c_master_bus_handle_t bus)
+{
+    memset(&s_eeprom, 0, sizeof(s_eeprom));
+    s_identity_present = false;
+    s_blob_len         = 0u;
+    s_unlocked_ok      = false;
+    memset(&s_unlocked, 0, sizeof(s_unlocked));
+
+    jpp_eeprom_state_init(&s_eeprom, bus,
+                          JPP_HW_EEPROM_I2C_ADDR, JPP_HW_EEPROM_SIZE_BYTES);
+    if (!jpp_eeprom_present(&s_eeprom)) {
+        ESP_LOGI(TAG, "no LRV EEPROM present");
+        return;
     }
 
-    nvs_set_u16(h, LRV_KEY_SERIAL, data.serial);
+    if (!identity_read_header(&s_blob_len)) {
+        ESP_LOGI(TAG, "EEPROM has no LRV identity");
+        return;
+    }
+    s_identity_present = true;
+    ESP_LOGI(TAG, "LRV identity present (blob %u B)", (unsigned)s_blob_len);
 
-    size_t pk_sz = 32u;
-    nvs_set_blob(h, LRV_KEY_PUBKEY,   data.device_pubkey, pk_sz);
-    size_t sk_sz = 64u;
-    nvs_set_blob(h, LRV_KEY_SECKEY,   data.device_seckey, sk_sz);
-    size_t sig_sz = 64u;
-    nvs_set_blob(h, LRV_KEY_CERT_SIG, data.cert_sig,      sig_sz);
+    /* Auto-unlock if a cached password is stored and still decrypts. */
+    char password[JPP_LRV_PASS_MAX + 1u] = {0};
+    if (state_read_password(password, sizeof(password))) {
+        jpp_lrv_data_t data;
+        if (decrypt_identity(password, &data) == JPP_LRV_OK) {
+            s_unlocked = data;
+            s_unlocked_ok = true;
+            ESP_LOGI(TAG, "LRV auto-unlocked serial=%u", (unsigned)data.serial);
+            sodium_memzero(&data, sizeof(data));
+        } else {
+            ESP_LOGW(TAG, "cached LRV password no longer valid; re-lock");
+            state_clear();
+        }
+    }
+    sodium_memzero(password, sizeof(password));
+}
 
-    size_t cert_len = strnlen(data.cert, JPP_LRV_CERT_MAX - 1u) + 1u;
-    nvs_set_blob(h, LRV_KEY_CERT, data.cert, cert_len);
+bool jpp_lrv_has_data(void)
+{
+    return s_identity_present;
+}
 
-    /* hwid must survive the unlock: jpp_lrv_get_encrypted_blob() re-serialises
-       the full record (including hwid) when a backup re-encrypts it. */
-    nvs_set_str(h, LRV_KEY_HWID, data.hwid);
+bool jpp_lrv_is_unlocked(void)
+{
+    return s_unlocked_ok;
+}
 
-    nvs_set_str(h, LRV_KEY_PASSWORD, password);
+void jpp_lrv_relock(void)
+{
+    if (jpp_eeprom_present(&s_eeprom)) {
+        state_clear();
+    }
+    sodium_memzero(&s_unlocked, sizeof(s_unlocked));
+    s_unlocked_ok = false;
+    ESP_LOGI(TAG, "LRV re-locked");
+}
 
-    nvs_erase_key(h, LRV_KEY_ENC);
-    nvs_commit(h);
-    nvs_close(h);
+jpp_lrv_result_t jpp_lrv_unlock(const char *password)
+{
+    if (password == NULL) { return JPP_LRV_ERR_INTERNAL; }
+    if (!s_identity_present) { return JPP_LRV_ERR_NOT_FOUND; }
+
+    jpp_lrv_data_t data;
+    jpp_lrv_result_t rc = decrypt_identity(password, &data);
+    if (rc != JPP_LRV_OK) { return rc; }
+
+    s_unlocked = data;
+    s_unlocked_ok = true;
+
+    /* Cache the password so the device stays unlocked across reboots. */
+    if (!state_write_password(password)) {
+        ESP_LOGW(TAG, "failed to cache LRV password (unlock is session-only)");
+    }
 
     uint16_t log_serial = data.serial;
     sodium_memzero(&data, sizeof(data));
@@ -217,56 +321,39 @@ jpp_lrv_result_t jpp_lrv_unlock(const char *password)
 
 void jpp_lrv_get_display_info(uint16_t *serial, char pubkey_str[16])
 {
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) { return; }
-
-    if (serial) {
-        uint16_t v = 0u;
-        nvs_get_u16(h, LRV_KEY_SERIAL, &v);
-        *serial = v;
+    if (serial != NULL) {
+        *serial = s_unlocked_ok ? s_unlocked.serial : 0u;
     }
-    if (pubkey_str) {
+    if (pubkey_str != NULL) {
         pubkey_str[0] = '\0';
-        uint8_t pk[32] = {0};
-        size_t  sz = sizeof(pk);
-        if (nvs_get_blob(h, LRV_KEY_PUBKEY, pk, &sz) == ESP_OK && sz == 32u) {
+        if (s_unlocked_ok) {
+            const uint8_t *pk = s_unlocked.device_pubkey;
             snprintf(pubkey_str, 16u, "%02x%02x%02x-%02x%02x%02x",
-                     pk[0],  pk[1],  pk[2],
-                     pk[29], pk[30], pk[31]);
+                     pk[0], pk[1], pk[2], pk[29], pk[30], pk[31]);
         }
     }
-    nvs_close(h);
 }
 
 jpp_lrv_result_t jpp_lrv_get_full_data(jpp_lrv_data_t *out)
 {
     if (out == NULL) { return JPP_LRV_ERR_INTERNAL; }
-    memset(out, 0, sizeof(*out));
+    if (!s_unlocked_ok) { return JPP_LRV_ERR_LOCKED; }
+    *out = s_unlocked;
+    return JPP_LRV_OK;
+}
 
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return JPP_LRV_ERR_NOT_FOUND;
-    }
+jpp_lrv_result_t jpp_lrv_get_run_size(uint16_t *out_run_size)
+{
+    if (out_run_size == NULL) { return JPP_LRV_ERR_INTERNAL; }
+    if (!s_unlocked_ok) { return JPP_LRV_ERR_LOCKED; }
 
-    if (nvs_get_u16(h, LRV_KEY_SERIAL, &out->serial) != ESP_OK) {
-        nvs_close(h);
-        return JPP_LRV_ERR_LOCKED;
-    }
-
-    size_t sz;
-    sz = 32u; nvs_get_blob(h, LRV_KEY_PUBKEY,   out->device_pubkey, &sz);
-    sz = 64u; nvs_get_blob(h, LRV_KEY_SECKEY,   out->device_seckey, &sz);
-    sz = 64u; nvs_get_blob(h, LRV_KEY_CERT_SIG, out->cert_sig,      &sz);
-
-    sz = JPP_LRV_CERT_MAX;
-    nvs_get_blob(h, LRV_KEY_CERT, out->cert, &sz);
-    out->cert[JPP_LRV_CERT_MAX - 1u] = '\0';
-
-    sz = sizeof(out->hwid);
-    nvs_get_str(h, LRV_KEY_HWID, out->hwid, &sz);
-    out->hwid[JPP_LRV_HWID_MAX - 1u] = '\0';
-
-    nvs_close(h);
+    /* run_size lives only as "run_size=N" text inside the certificate
+       (see scripts/lrv_manufacturing.py build_cert()); no separate field. */
+    const char *needle = strstr(s_unlocked.cert, "run_size=");
+    if (needle == NULL) { return JPP_LRV_ERR_CORRUPT; }
+    unsigned int value = 0u;
+    if (sscanf(needle, "run_size=%u", &value) != 1) { return JPP_LRV_ERR_CORRUPT; }
+    *out_run_size = (uint16_t)value;
     return JPP_LRV_OK;
 }
 
@@ -308,20 +395,10 @@ void jpp_lrv_build_challenge(jpp_rtc_state_t *rtc,
 jpp_lrv_result_t jpp_lrv_sign_challenge(const char *challenge, uint8_t sig[64])
 {
     if (challenge == NULL || sig == NULL) { return JPP_LRV_ERR_INTERNAL; }
+    if (!s_unlocked_ok) { return JPP_LRV_ERR_LOCKED; }
 
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return JPP_LRV_ERR_NOT_FOUND;
-    }
-    uint8_t seckey[64] = {0};
-    size_t  sz = sizeof(seckey);
-    esp_err_t rc = nvs_get_blob(h, LRV_KEY_SECKEY, seckey, &sz);
-    nvs_close(h);
-
-    if (rc != ESP_OK || sz != 64u) {
-        return JPP_LRV_ERR_LOCKED;
-    }
-
+    uint8_t seckey[64];
+    memcpy(seckey, s_unlocked.device_seckey, sizeof(seckey));
     jpp_crypto_status_t crc = jpp_crypto_sign(
         (const uint8_t *)challenge, strlen(challenge), seckey, sig);
     sodium_memzero(seckey, sizeof(seckey));
@@ -332,104 +409,56 @@ jpp_lrv_result_t jpp_lrv_sign_challenge(const char *challenge, uint8_t sig[64])
 jpp_lrv_result_t jpp_lrv_get_encrypted_blob(uint8_t **buf, size_t *len)
 {
     if (buf == NULL || len == NULL) { return JPP_LRV_ERR_INTERNAL; }
+    if (!s_identity_present) { return JPP_LRV_ERR_NOT_FOUND; }
 
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return JPP_LRV_ERR_NOT_FOUND;
-    }
-
-    /* Locked state: return existing encrypted blob. */
+    uint8_t *b = malloc(BLOB_MAX_SZ);
+    if (b == NULL) { return JPP_LRV_ERR_INTERNAL; }
     size_t blob_sz = 0u;
-    if (nvs_get_blob(h, LRV_KEY_ENC, NULL, &blob_sz) == ESP_OK) {
-        uint8_t *b = malloc(blob_sz);
-        if (b == NULL) { nvs_close(h); return JPP_LRV_ERR_INTERNAL; }
-        size_t actual = blob_sz;
-        if (nvs_get_blob(h, LRV_KEY_ENC, b, &actual) != ESP_OK) {
-            free(b);
-            nvs_close(h);
-            return JPP_LRV_ERR_INTERNAL;
-        }
-        nvs_close(h);
-        *buf = b;
-        *len = actual;
-        return JPP_LRV_OK;
+    if (!identity_read_blob(b, BLOB_MAX_SZ, &blob_sz)) {
+        free(b);
+        return JPP_LRV_ERR_CORRUPT;
     }
-
-    /* Unlocked state: re-encrypt with cached password. */
-    uint16_t serial = 0u;
-    if (nvs_get_u16(h, LRV_KEY_SERIAL, &serial) != ESP_OK) {
-        nvs_close(h);
-        return JPP_LRV_ERR_NOT_FOUND;
-    }
-
-    char password[JPP_LRV_PASS_MAX + 1u] = {0};
-    size_t pass_sz = sizeof(password);
-    if (nvs_get_str(h, LRV_KEY_PASSWORD, password, &pass_sz) != ESP_OK) {
-        nvs_close(h);
-        return JPP_LRV_ERR_INTERNAL;
-    }
-    nvs_close(h);
-
-    jpp_lrv_data_t data;
-    jpp_lrv_result_t rc = jpp_lrv_get_full_data(&data);
-    if (rc != JPP_LRV_OK) { return rc; }
-
-    uint8_t plaintext[PT_MAX_SZ];
-    size_t ptlen = serialise(&data, plaintext, sizeof(plaintext));
-    sodium_memzero(&data, sizeof(data));
-    if (ptlen == 0u) { return JPP_LRV_ERR_INTERNAL; }
-
-    size_t outlen = crypto_secretbox_NONCEBYTES + ptlen + crypto_secretbox_MACBYTES;
-    uint8_t *out = malloc(outlen);
-    if (out == NULL) { return JPP_LRV_ERR_INTERNAL; }
-
-    uint8_t *nonce      = out;
-    uint8_t *ciphertext = out + crypto_secretbox_NONCEBYTES;
-    randombytes_buf(nonce, crypto_secretbox_NONCEBYTES);
-
-    uint8_t key[32];
-    derive_key(password, key);
-    sodium_memzero(password, sizeof(password));
-
-    crypto_secretbox_easy(ciphertext, plaintext, ptlen, nonce, key);
-    sodium_memzero(key, sizeof(key));
-    sodium_memzero(plaintext, ptlen);
-
-    *buf = out;
-    *len = outlen;
+    *buf = b;
+    *len = blob_sz;
     return JPP_LRV_OK;
 }
 
+#if CONFIG_JPP_LRV_PROVISIONING
 jpp_lrv_result_t jpp_lrv_store_encrypted_blob(const uint8_t *blob, size_t len)
 {
     if (blob == NULL || len == 0u) { return JPP_LRV_ERR_INTERNAL; }
-    if (len < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + PT_FIXED_SZ + 1u) {
-        return JPP_LRV_ERR_CORRUPT;
-    }
+    if (len < BLOB_MIN_SZ || len > BLOB_MAX_SZ) { return JPP_LRV_ERR_CORRUPT; }
+    if (!jpp_eeprom_present(&s_eeprom)) { return JPP_LRV_ERR_NOT_FOUND; }
 
-    nvs_handle_t h;
-    if (nvs_open(LRV_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+    /* Write-once: refuse if an identity is already provisioned. */
+    if (identity_read_header(NULL)) { return JPP_LRV_ERR_EXISTS; }
+
+    uint8_t hdr[EE_HDR_SIZE] = {0};
+    memcpy(hdr, EE_IDENTITY_MAGIC, 4u);
+    hdr[4] = EE_VERSION;
+    hdr[6] = (uint8_t)(len & 0xFFu);
+    hdr[7] = (uint8_t)(len >> 8u);
+    uint16_t crc = crc16_ccitt(blob, len);
+    hdr[8] = (uint8_t)(crc & 0xFFu);
+    hdr[9] = (uint8_t)(crc >> 8u);
+
+    /* Blob first, then header last, so a partial write never leaves a valid
+       header pointing at absent/garbage blob bytes. */
+    if (jpp_eeprom_write(&s_eeprom, EE_IDENTITY_ADDR + EE_HDR_SIZE,
+                         blob, len) != JPP_EEPROM_OK) {
+        return JPP_LRV_ERR_INTERNAL;
+    }
+    if (jpp_eeprom_write(&s_eeprom, EE_IDENTITY_ADDR, hdr, sizeof(hdr)) != JPP_EEPROM_OK) {
         return JPP_LRV_ERR_INTERNAL;
     }
 
-    /* Remove any unlocked-state keys so the namespace holds only the blob. */
-    nvs_erase_key(h, LRV_KEY_SERIAL);
-    nvs_erase_key(h, LRV_KEY_PUBKEY);
-    nvs_erase_key(h, LRV_KEY_SECKEY);
-    nvs_erase_key(h, LRV_KEY_CERT);
-    nvs_erase_key(h, LRV_KEY_CERT_SIG);
-    nvs_erase_key(h, LRV_KEY_HWID);
-    nvs_erase_key(h, LRV_KEY_PASSWORD);
-
-    if (nvs_set_blob(h, LRV_KEY_ENC, blob, len) != ESP_OK) {
-        nvs_close(h);
-        return JPP_LRV_ERR_INTERNAL;
-    }
-    nvs_commit(h);
-    nvs_close(h);
-    ESP_LOGI(TAG, "LRV encrypted blob stored (%zu bytes)", len);
+    /* Verify read-back. */
+    if (!identity_read_header(&s_blob_len)) { return JPP_LRV_ERR_INTERNAL; }
+    s_identity_present = true;
+    ESP_LOGI(TAG, "LRV identity provisioned (%zu bytes)", len);
     return JPP_LRV_OK;
 }
+#endif /* CONFIG_JPP_LRV_PROVISIONING */
 
 void jpp_lrv_hex_format(const uint8_t *data, size_t len,
                         size_t bytes_per_row, char *buf, size_t buf_len)

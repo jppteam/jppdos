@@ -61,7 +61,6 @@
 #include "jpp_backup_restore.h"
 #include "jpp_lrv.h"
 #include "jpp_lrv_server.h"
-#include "mbedtls/base64.h"
 
 static const char *TAG = "jppdos";
 
@@ -295,20 +294,28 @@ static void pick_random_line(void)
 static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 {
     jpp_rtc_datetime_t now;
-    if (rtc_state == NULL || jpp_rtc_get_current(rtc_state, &now) != JPP_RTC_STATUS_OK) {
-        return;
-    }
+    bool has_time = (rtc_state != NULL) &&
+                    (jpp_rtc_get_current(rtc_state, &now) == JPP_RTC_STATUS_OK);
     ssd1306_clear();
 
-    /* Large HH:MM — 2× font, centred on pages 1-2 */
+    /* Large HH:MM — 2× font, centred on pages 1-2.  With no RTC hardware and no
+       NTP sync the time is unknown, so show "--:--" rather than a wrong value. */
     char time_str[6];
-    snprintf(time_str, sizeof(time_str), "%02d:%02d", now.hour, now.minute);
+    if (has_time) {
+        snprintf(time_str, sizeof(time_str), "%02d:%02d", now.hour, now.minute);
+    } else {
+        snprintf(time_str, sizeof(time_str), "--:--");
+    }
     ssd1306_draw_string_2x(1u, (128u - 5u * 12u) / 2u, time_str, false);
 
     /* Date dd.mm.yyyy on page 4 */
     char date_str[11];
-    snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d",
-             now.day, now.month, now.year);
+    if (has_time) {
+        snprintf(date_str, sizeof(date_str), "%02d.%02d.%04d",
+                 now.day, now.month, now.year);
+    } else {
+        snprintf(date_str, sizeof(date_str), "--.--.----");
+    }
     uint8_t date_col = (uint8_t)((128u - strlen(date_str) * 6u) / 2u);
     ssd1306_draw_string(4u, date_col, date_str, false);
 
@@ -325,7 +332,6 @@ static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 #define JPP_NVS_POWER_NS  "jpp_power"
 #define JPP_NVS_WEBDAV_NS "jpp_webdav"
 #define JPP_NVS_SOUND_NS  "jpp_sound"
-#define JPP_NVS_LRV_NS    "jpp_lrv"
 #define JPP_NVS_USER_NS   "jpp_user"
 #define JPP_NVS_DUMMY_NS  "jpp_dummy"
 
@@ -448,6 +454,10 @@ static void settings_do_factory_reset(void)
 {
     remove(SETTINGS_PATH);
     remove(SETTINGS_TMP_PATH);
+    /* The LRV identity survives factory reset (it lives on the external EEPROM,
+       untouched by nvs_flash_erase), but re-lock it so the reset device requires
+       the sticker password again. */
+    jpp_lrv_relock();
     nvs_flash_erase();
     esp_restart();
 }
@@ -604,27 +614,9 @@ static void settings_do_backup(jpp_settings_state_t *state)
     cJSON_AddItemToObject(root, "nvs_sound",  nvs_sound);
     cJSON_AddItemToObject(root, "nvs_user",   nvs_user);
 
-    /* Include LRV data if present (always encrypted). */
-    if (jpp_lrv_has_data()) {
-        uint8_t *lrv_blob = NULL;
-        size_t   lrv_len  = 0u;
-        if (jpp_lrv_get_encrypted_blob(&lrv_blob, &lrv_len) == JPP_LRV_OK) {
-            /* Base64-encode for JSON embedding. */
-            size_t b64_len = ((lrv_len + 2u) / 3u) * 4u + 1u;
-            char  *b64_buf = malloc(b64_len);
-            if (b64_buf != NULL) {
-                size_t olen = 0u;
-                mbedtls_base64_encode((unsigned char *)b64_buf, b64_len, &olen,
-                                       lrv_blob, lrv_len);
-                b64_buf[olen] = '\0';
-                cJSON *nvs_lrv = cJSON_CreateObject();
-                cJSON_AddStringToObject(nvs_lrv, "lrv_enc", b64_buf);
-                cJSON_AddItemToObject(root, "nvs_lrv", nvs_lrv);
-                free(b64_buf);
-            }
-            free(lrv_blob);
-        }
-    }
+    /* LRV identity is intentionally NOT included in backups: it lives on the
+       AT24C32 EEPROM (bound to the RTC module) and is neither user-backupable
+       nor restorable — it is provisioned once at manufacturing. */
 
     char *json_out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -1226,14 +1218,19 @@ static void run_main_loop(jpp_ui_shell_t *shell,
        gate.  See jpp_ble_native_suspend(). */
     bool server_running_last = false;
 
-    /* Initial RTC read */
-    if (rtc_state != NULL && rtc_state->hw_attached) {
-        if (jpp_rtc_hw_read(rtc_state) == JPP_RTC_STATUS_OK) {
-            char time_buf[JPP_UI_STATUS_TIME_LEN];
+    /* Initial RTC read.  With no DS1307 fitted (hw_attached == false) or a failed
+       read the time is unknown, so seed the status clock with "--:--"; the
+       per-second tick below keeps it in sync (and picks up an NTP sync later). */
+    {
+        char time_buf[JPP_UI_STATUS_TIME_LEN];
+        if (rtc_state != NULL && rtc_state->hw_attached &&
+            jpp_rtc_hw_read(rtc_state) == JPP_RTC_STATUS_OK) {
             snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
                      rtc_state->datetime.hour, rtc_state->datetime.minute);
-            jpp_ui_shell_set_status(shell, time_buf, shell->status_battery_pct);
+        } else {
+            snprintf(time_buf, sizeof(time_buf), "--:--");
         }
+        jpp_ui_shell_set_status(shell, time_buf, shell->status_battery_pct);
     }
 
     while (true) {
@@ -1360,12 +1357,15 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         /* Live time update + NTP every second */
         if (ui_tick % (1000u / JPP_UI_REFRESH_MS) == 0u && rtc_state != NULL) {
             jpp_rtc_datetime_t now;
+            char time_buf[JPP_UI_STATUS_TIME_LEN];
             if (jpp_rtc_get_current(rtc_state, &now) == JPP_RTC_STATUS_OK) {
-                char time_buf[JPP_UI_STATUS_TIME_LEN];
                 snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
                          now.hour, now.minute);
-                jpp_ui_shell_set_status(shell, time_buf, shell->status_battery_pct);
+            } else {
+                /* No RTC hardware and no NTP sync yet: show a blank clock. */
+                snprintf(time_buf, sizeof(time_buf), "--:--");
             }
+            jpp_ui_shell_set_status(shell, time_buf, shell->status_battery_pct);
             /* Re-read hardware RTC every 60 seconds to prevent drift */
             if (ui_tick % (60000u / JPP_UI_REFRESH_MS) == 0u &&
                 rtc_state->hw_attached) {
@@ -1879,6 +1879,10 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "RTC: no hardware");
     }
+
+    /* LRV identity lives on the AT24C32 EEPROM (0x50) on the RTC breakout, not
+       NVS — bind it to the shared I2C bus and load/auto-unlock from the chip. */
+    jpp_lrv_init(i2c_ok ? jpp_hw_init_i2c_bus() : NULL);
 
     jpp_boot_note_services_ready(&boot);
     ESP_LOGI(TAG, "SERVICES_READY");

@@ -1,18 +1,29 @@
 #pragma once
 
 /*
- * Limited Run Verification (LRV) — NVS storage and cryptographic operations.
+ * Limited Run Verification (LRV) — AT24C32 EEPROM storage and cryptographic
+ * operations.
  *
- * LRV data is stored encrypted in the NVS namespace "jpp_lrv" until the user
- * unlocks it by entering the password printed on the device's inner sticker.
- * After unlock the decrypted fields are persisted to NVS alongside the cached
- * password so future backups can re-encrypt the blob automatically.
+ * The LRV identity lives on the external AT24C32 EEPROM (I2C 0x50) that rides on
+ * the DS1307 RTC breakout board, NOT in NVS.  This makes the identity survive a
+ * factory reset and a full firmware reflash, binding it permanently to the RTC
+ * module.  The EEPROM holds two regions:
+ *
+ *   - IDENTITY (write-once): the password-encrypted blob.  It is written exactly
+ *     once during manufacturing (see CONFIG_JPP_LRV_PROVISIONING) and is never
+ *     mutated or erased by production firmware.
+ *   - STATE (writable): caches the sticker password after the user unlocks, so
+ *     the device stays unlocked across reboots.
+ *
+ * After unlock the decrypted fields exist only in RAM (never persisted); on each
+ * boot they are re-derived from the immutable blob using the cached password.
  */
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
+#include "driver/i2c_master.h"
 #include "jpp_rtc_core.h"
 
 #ifdef __cplusplus
@@ -31,6 +42,7 @@ typedef enum {
     JPP_LRV_ERR_LOCKED,
     JPP_LRV_ERR_WRONG_PASSWORD,
     JPP_LRV_ERR_CORRUPT,
+    JPP_LRV_ERR_EXISTS,       /* provisioning: identity already written (write-once) */
     JPP_LRV_ERR_INTERNAL,
 } jpp_lrv_result_t;
 
@@ -43,11 +55,28 @@ typedef struct {
     char     cert[JPP_LRV_CERT_MAX]; /* manufacturer-signed certificate text */
 } jpp_lrv_data_t;
 
-/* Returns true if any LRV data (encrypted or unlocked) exists in NVS. */
+/*
+ * Bind the LRV subsystem to the shared I2C bus and load state from the AT24C32
+ * EEPROM.  Probes the chip (0x50); if an identity blob is present and a cached
+ * password is stored, the blob is decrypted into RAM so the device comes up
+ * already unlocked.  Must be called once at boot (after I2C init) before any
+ * other jpp_lrv_* call.  bus may be NULL (no EEPROM ⇒ no LRV data).
+ */
+void jpp_lrv_init(i2c_master_bus_handle_t bus);
+
+/* Returns true if an LRV identity blob is present on the EEPROM. */
 bool jpp_lrv_has_data(void);
 
-/* Returns true if the LRV blob has been decrypted and individual keys are in NVS. */
+/* Returns true if the blob has been decrypted (keys available in RAM). */
 bool jpp_lrv_is_unlocked(void);
+
+/*
+ * Re-lock: clear the cached password (EEPROM STATE region) and wipe the
+ * decrypted RAM copy.  The immutable identity blob is left intact, so the device
+ * keeps its identity but requires the sticker password again.  Called on factory
+ * reset.
+ */
+void jpp_lrv_relock(void);
 
 /*
  * Decrypt the stored LRV blob with the given password.
@@ -72,6 +101,13 @@ void jpp_lrv_get_display_info(uint16_t *serial, char pubkey_str[16]);
 
 /* Copy all LRV fields into *out.  Only valid after unlock. */
 jpp_lrv_result_t jpp_lrv_get_full_data(jpp_lrv_data_t *out);
+
+/*
+ * Parse "run_size=N" out of the certificate text (run_size has no separate
+ * field — see the struct comment on jpp_lrv_data_t.cert).  Only valid after
+ * unlock.  Returns JPP_LRV_ERR_CORRUPT if the certificate has no such line.
+ */
+jpp_lrv_result_t jpp_lrv_get_run_size(uint16_t *out_run_size);
 
 /*
  * Build the canonical LRV challenge string into out:
@@ -100,14 +136,18 @@ jpp_lrv_result_t jpp_lrv_sign_challenge(const char *challenge,
                                           uint8_t sig[64]);
 
 /*
- * Return the encrypted blob suitable for embedding in a settings backup.
- * If the data is currently unlocked the plaintext is re-encrypted with the
- * cached password before returning.
- * Caller must free(*buf) when done.
+ * Return a heap copy of the immutable encrypted identity blob from the EEPROM.
+ * Caller must free(*buf) when done.  Returns JPP_LRV_ERR_NOT_FOUND when no
+ * identity is provisioned.
  */
 jpp_lrv_result_t jpp_lrv_get_encrypted_blob(uint8_t **buf, size_t *len);
 
-/* Write an encrypted blob to NVS, replacing any existing LRV data. */
+/*
+ * Provisioning-only (compiled in only when CONFIG_JPP_LRV_PROVISIONING=y):
+ * write the encrypted blob to the write-once EEPROM IDENTITY region.  Refuses
+ * with JPP_LRV_ERR_EXISTS if an identity is already provisioned.  Absent from
+ * production firmware entirely.
+ */
 jpp_lrv_result_t jpp_lrv_store_encrypted_blob(const uint8_t *blob, size_t len);
 
 /*

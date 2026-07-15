@@ -1,6 +1,5 @@
 #include "jpp_backup_restore.h"
 #include "jpp_settings_load.h"
-#include "jpp_lrv.h"
 #include "jpp_buzzer_core.h"
 
 #include <string.h>
@@ -9,7 +8,6 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "cJSON.h"
-#include "mbedtls/base64.h"
 
 static const char *TAG = "backup_restore";
 
@@ -106,25 +104,8 @@ bool jpp_backup_apply_json(const char *json_buf, char *msg, size_t msg_len)
         nvs_commit(h); nvs_close(h);
     }
 
-    /* jpp_lrv — encrypted blob (base64-encoded in backup) */
-    cJSON *nvs_lrv = cJSON_GetObjectItem(root, "nvs_lrv");
-    if (cJSON_IsObject(nvs_lrv)) {
-        cJSON *enc_item = cJSON_GetObjectItem(nvs_lrv, "lrv_enc");
-        if (cJSON_IsString(enc_item) && enc_item->valuestring) {
-            const char *b64     = enc_item->valuestring;
-            size_t      b64_len = strlen(b64);
-            size_t      bin_max = (b64_len / 4u) * 3u + 4u;
-            uint8_t    *bin     = malloc(bin_max);
-            if (bin != NULL) {
-                size_t olen = 0u;
-                if (mbedtls_base64_decode(bin, bin_max, &olen,
-                                           (const unsigned char *)b64, b64_len) == 0) {
-                    jpp_lrv_store_encrypted_blob(bin, olen);
-                }
-                free(bin);
-            }
-        }
-    }
+    /* LRV identity is intentionally NOT restored from backups: it lives on the
+       write-once AT24C32 EEPROM and is provisioned only at manufacturing. */
 
     cJSON_Delete(root);
     ESP_LOGI(TAG, "RESTORE_OK");

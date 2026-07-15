@@ -11,10 +11,10 @@
 
 /* ---- I2C / OLED --------------------------------------------------------- */
 /*
- * Shared I2C bus (SSD1306 OLED @0x3C + DS1307 RTC @0x68 on real hardware).
- * Speed is capped at 100 kHz: the DS1307 RTC tops out there and both devices
- * share the bus, so the OLED must run at the same rate.  See HARDWARE_SUMMARY.md
- * §3 / §5.6.
+ * Shared I2C bus (SSD1306 OLED @0x3C + DS1307 RTC @0x68 + AT24C32 EEPROM @0x50
+ * on real hardware; the EEPROM rides on the RTC breakout board).  Speed is
+ * capped at 100 kHz: the DS1307 RTC tops out there and all devices share the
+ * bus, so the OLED must run at the same rate.  See HARDWARE_SUMMARY.md §3 / §5.6.
  */
 #define JPP_HW_OLED_SDA_PIN      20
 #define JPP_HW_OLED_SCL_PIN      19
@@ -76,6 +76,10 @@
 /* ---- DS1307 RTC (I2C 0x68) ---------------------------------------------- */
 #define JPP_HW_DS1307_I2C_ADDR       0x68u
 #define JPP_HW_DS1307_I2C_TIMEOUT_MS 50u
+
+/* ---- AT24C32 EEPROM (I2C 0x50, on the RTC breakout) --------------------- */
+#define JPP_HW_EEPROM_I2C_ADDR       0x50u
+#define JPP_HW_EEPROM_SIZE_BYTES     4096u
 
 /* ---- Wokwi GPIO simulation shim ---------------------------------------- */
 /*

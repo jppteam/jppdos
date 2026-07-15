@@ -69,19 +69,32 @@ jpp_rtc_status_t jpp_rtc_state_init(jpp_rtc_state_t *state,
         return JPP_RTC_STATUS_UNAVAILABLE;
     }
 
-    /* Register DS1307 on the I2C bus if a handle was provided. */
+    /* Register DS1307 on the I2C bus if a handle was provided.  The DS1307 is
+       optional hardware: probe the bus first, because i2c_master_bus_add_device
+       only reserves the address in the driver and never touches the wire, so
+       without a probe we would mark the RTC "attached" on a board that has no
+       chip and then log an I2C error on every read.  Attach only when the chip
+       actually answers; otherwise the firmware runs clock-less (NTP may still
+       supply the time later, and all clocks fall back to "--:--"). */
     if (src->i2c_bus != NULL) {
-        i2c_device_config_t dev_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address  = src->ds1307_addr,
-            .scl_speed_hz    = 100000,
-        };
-        esp_err_t err = i2c_master_bus_add_device(src->i2c_bus, &dev_cfg, &state->hw_dev);
-        if (err == ESP_OK) {
-            state->hw_attached = true;
-        } else {
-            ESP_LOGW(TAG, "DS1307 attach failed: %s", esp_err_to_name(err));
+        esp_err_t probe = i2c_master_probe(src->i2c_bus, src->ds1307_addr, 50);
+        if (probe != ESP_OK) {
+            ESP_LOGW(TAG, "DS1307 not detected (%s); RTC hardware disabled",
+                     esp_err_to_name(probe));
             state->hw_attached = false;
+        } else {
+            i2c_device_config_t dev_cfg = {
+                .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+                .device_address  = src->ds1307_addr,
+                .scl_speed_hz    = 100000,
+            };
+            esp_err_t err = i2c_master_bus_add_device(src->i2c_bus, &dev_cfg, &state->hw_dev);
+            if (err == ESP_OK) {
+                state->hw_attached = true;
+            } else {
+                ESP_LOGW(TAG, "DS1307 attach failed: %s", esp_err_to_name(err));
+                state->hw_attached = false;
+            }
         }
     }
 
