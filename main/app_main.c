@@ -1085,6 +1085,11 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
     jpp_battery_config_t bat_cfg;
     jpp_battery_config_defaults(&bat_cfg);
+    /* jpp_battery_config_defaults() fills in a stale library default channel
+       that was never reconciled with this board's wiring — without this, the
+       ADC unit reads an unconfigured channel every time, which fails and
+       always reports 0%.  jpp_hw_config.h is the source of truth for pins. */
+    bat_cfg.adc_channel = JPP_HW_BATTERY_ADC_CH;
     jpp_battery_state_t bat_state = { .percent = 0, .valid = false };
 
     /* Background task scheduler: load the persisted schedule table. */
