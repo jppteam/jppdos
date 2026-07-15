@@ -113,6 +113,37 @@ bool jpp_app_crash_take(char *app_id, size_t app_id_len,
 
 /* ---- App discovery ------------------------------------------------------- */
 
+/*
+ * Best-effort read of manifest.json's "name" field for the launcher label.
+ * Leaves out_name untouched (callers pre-fill it with app_id as a fallback)
+ * if the file is missing, unparsable, or the field is absent/empty --
+ * discovery intentionally skips full manifest validation here.
+ */
+static void read_manifest_display_name(const char *app_root, const char *app_id,
+                                        char *out_name, size_t out_name_len)
+{
+    char path[300];
+    snprintf(path, sizeof(path), "%s/%s/manifest.json", app_root, app_id);
+
+    char *buf = jpp_read_file(path, NULL);
+    if (buf == NULL) {
+        return;
+    }
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (root == NULL) {
+        return;
+    }
+
+    cJSON *j = cJSON_GetObjectItem(root, "name");
+    if (cJSON_IsString(j) && j->valuestring && j->valuestring[0] != '\0') {
+        strncpy(out_name, j->valuestring, out_name_len - 1u);
+        out_name[out_name_len - 1u] = '\0';
+    }
+    cJSON_Delete(root);
+}
+
 void discover_apps(bool normal_mode,
                    jpp_boot_discovery_summary_t *summary,
                    jpp_ui_shell_t *shell)
@@ -171,7 +202,12 @@ void discover_apps(bool normal_mode,
 
         ESP_LOGI(TAG, "SD app discovered: %s", ent->d_name);
         summary->sd_count++;
-        jpp_ui_shell_add_app(shell, ent->d_name, ent->d_name,
+        char display_name[JPP_UI_TEXT_LIMIT];
+        strncpy(display_name, ent->d_name, sizeof(display_name) - 1u);
+        display_name[sizeof(display_name) - 1u] = '\0';
+        read_manifest_display_name(SD_APPS_PATH, ent->d_name,
+                                   display_name, sizeof(display_name));
+        jpp_ui_shell_add_app(shell, ent->d_name, display_name,
                              JPP_UI_APP_SOURCE_SD);
     }
     closedir(dir);
@@ -223,6 +259,9 @@ static void bg_discover_task(void *arg)
                 strncpy(s_bg_disc_apps[s_bg_disc_count].name,
                         ent->d_name, JPP_UI_TEXT_LIMIT - 1u);
                 s_bg_disc_apps[s_bg_disc_count].name[JPP_UI_TEXT_LIMIT - 1u] = '\0';
+                read_manifest_display_name(SD_APPS_PATH, ent->d_name,
+                                           s_bg_disc_apps[s_bg_disc_count].name,
+                                           JPP_UI_TEXT_LIMIT);
                 s_bg_disc_count++;
             }
             closedir(dir);
