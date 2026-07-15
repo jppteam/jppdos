@@ -11,11 +11,15 @@ keygen
     - mfr_pubkey.bin  (32 bytes, public key)
     - mfr_seckey.bin  (64 bytes, libsodium seed||pubkey format)
 
-provision
-    Create an LRV payload for one device and output a JPPDOS backup JSON that
-    can be applied via Settings > Backup settings > Restore from file.
+provision-device
+    Create an LRV payload for one device and write it to the device's AT24C32
+    EEPROM over JPPD-SMP (single-use, write-once). The device must be running a
+    PROVISIONING firmware build (idf.py menuconfig -> JPPDOS -> Enable LRV EEPROM
+    provisioning, i.e. CONFIG_JPP_LRV_PROVISIONING=y). After provisioning, flash
+    the production firmware (provisioning disabled) so the write-path is gone.
 
     Required flags:
+      --port <dev>          Serial port of the target device (e.g. /dev/cu.usbmodemXXXX)
       --mfr-seckey <file>   Manufacturer secret key file (64 bytes)
       --serial   <n>        Serial number (1-65535)
       --run-size <n>        Total run size (1-65535)
@@ -28,7 +32,6 @@ provision
     Optional:
       --device-seckey <file>  Reuse an existing device secret key file instead
                               of generating a new one.
-      --output <file>         Write backup JSON to this file (default: stdout)
 
 LRV certificate format (signed by the manufacturer)
 ----------------------------------------------------
@@ -38,8 +41,8 @@ LRV certificate format (signed by the manufacturer)
     hwid=<AA:BB:CC:DD:EE:FF>
     device_pubkey=<64 lowercase hex chars>
 
-Encrypted blob format (what gets stored in NVS)
------------------------------------------------
+Encrypted blob format (what gets stored on the AT24C32 EEPROM)
+--------------------------------------------------------------
 The plaintext is a packed binary structure:
     serial     2 B LE
     pubkey     32 B
@@ -57,16 +60,19 @@ The plaintext is encrypted with libsodium crypto_secretbox_easy:
     key  = BLAKE2b-256(password)
     blob = nonce(24) || ciphertext (plaintext + 16-byte Poly1305 MAC)
 
-The blob is base64-encoded and embedded in a JPPDOS backup JSON as:
-    {"jppdos_backup": 1, "nvs_lrv": {"lrv_enc": "<base64>"}}
+The raw blob is pushed to the device over the JPPD-SMP PROVISION_LRV command
+(0x30), which the provisioning firmware write-once-writes to the EEPROM's
+IDENTITY region. It is never restorable via a user backup.
 """
 
 import argparse
-import base64
-import json
 import struct
 import sys
 from pathlib import Path
+
+# Reuse the JPPD-SMP client from the app-upload tool (same scripts/ directory).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from jppd_upload import _SMPSession, ST_OK, ST_ERR_EXISTS, STATUS_NAMES  # noqa: E402
 
 try:
     import nacl.signing
@@ -162,6 +168,43 @@ def encrypt_blob(plaintext: bytes, password: str) -> bytes:
     return bytes(box.encrypt(plaintext))
 
 
+def make_encrypted_blob(mfr_sk: 'nacl.signing.SigningKey',
+                        serial: int, run_size: int, device_type: int,
+                        hwid: str, password: str,
+                        device_sk: 'nacl.signing.SigningKey' = None) -> dict:
+    """Build the full encrypted LRV blob for one device.
+
+    Generates (or reuses) the device keypair, builds and signs the certificate
+    with the manufacturer key, serialises + encrypts the plaintext. Pure data —
+    no serial I/O — so both the CLI and the prepare_device orchestrator can use
+    it. Returns a dict with keys: blob, device_pubkey, device_seckey, cert_text,
+    cert_sig.
+    """
+    if device_sk is None:
+        device_sk = nacl.signing.SigningKey.generate()
+    dev_pubkey           = bytes(device_sk.verify_key)
+    dev_seckey_libsodium = seckey_to_libsodium_bytes(device_sk)
+
+    cert_text = build_cert(serial, run_size, device_type, hwid, dev_pubkey)
+    cert_sig  = mfr_sk.sign(cert_text.encode("utf-8")).signature
+
+    plaintext = serialise_plaintext(
+        serial           = serial,
+        pubkey           = dev_pubkey,
+        seckey_libsodium = dev_seckey_libsodium,
+        cert_sig         = cert_sig,
+        hwid             = hwid,
+        cert             = cert_text,
+    )
+    return {
+        "blob":          encrypt_blob(plaintext, password),
+        "device_pubkey": dev_pubkey,
+        "device_seckey": dev_seckey_libsodium,
+        "cert_text":     cert_text,
+        "cert_sig":      cert_sig,
+    }
+
+
 # ---------------------------------------------------------------------------
 # keygen
 # ---------------------------------------------------------------------------
@@ -185,65 +228,60 @@ def cmd_keygen(args: argparse.Namespace) -> None:
 # provision
 # ---------------------------------------------------------------------------
 
-def cmd_provision(args: argparse.Namespace) -> None:
+CMD_PROVISION_LRV = 0x30
+
+
+def cmd_provision_device(args: argparse.Namespace) -> None:
     # Load or generate device keypair.
     if args.device_seckey:
         dev_sk = load_seckey(args.device_seckey)
         print(f"Loaded device secret key from {args.device_seckey}")
     else:
-        dev_sk = nacl.signing.SigningKey.generate()
-        print("Generated new device keypair.")
-
-    dev_vk             = dev_sk.verify_key
-    dev_pubkey         = bytes(dev_vk)
-    dev_seckey_libsodium = seckey_to_libsodium_bytes(dev_sk)
+        dev_sk = None
+        print("Generating new device keypair.")
 
     # Load manufacturer secret key (used only for signing the certificate).
     mfr_sk = load_seckey(args.mfr_seckey)
 
-    # Build and sign the certificate.
-    cert_text = build_cert(args.serial, args.run_size,
-                           args.device_type, args.hwid, dev_pubkey)
-    cert_signed = mfr_sk.sign(cert_text.encode("utf-8"))
-    cert_sig    = cert_signed.signature  # 64 bytes detached Ed25519 signature
-
-    print(f"\nLRV Certificate:\n{cert_text}")
-    print(f"Certificate signature: {cert_sig.hex()}\n")
-
-    # Serialise plaintext (run_size and device_type are in the
-    # certificate text; they are not stored as separate blob fields).
-    plaintext = serialise_plaintext(
-        serial           = args.serial,
-        pubkey           = dev_pubkey,
-        seckey_libsodium = dev_seckey_libsodium,
-        cert_sig         = cert_sig,
-        hwid             = args.hwid,
-        cert             = cert_text,
+    built = make_encrypted_blob(
+        mfr_sk      = mfr_sk,
+        serial      = args.serial,
+        run_size    = args.run_size,
+        device_type = args.device_type,
+        hwid        = args.hwid,
+        password    = args.password,
+        device_sk   = dev_sk,
     )
+    dev_pubkey     = built["device_pubkey"]
+    encrypted_blob = built["blob"]
 
-    # Encrypt.
-    encrypted_blob = encrypt_blob(plaintext, args.password)
-    b64_enc        = base64.b64encode(encrypted_blob).decode("ascii")
+    print(f"\nLRV Certificate:\n{built['cert_text']}")
+    print(f"Certificate signature: {built['cert_sig'].hex()}\n")
+    print(f"Encrypted blob: {len(encrypted_blob)} bytes")
 
-    # Build JPPDOS backup JSON (LRV data only — no other settings touched).
-    backup = {
-        "jppdos_backup": 1,
-        "nvs_lrv": {
-            "lrv_enc": b64_enc,
-        }
-    }
-    backup_json = json.dumps(backup, separators=(",", ":"))
+    # Push the blob to the device's EEPROM over JPPD-SMP (write-once).
+    session = _SMPSession(args.port)
+    try:
+        session.session_start()
+        status = session.provision_lrv(encrypted_blob)
+        if status == ST_ERR_EXISTS:
+            raise SystemExit(
+                "Device already provisioned (write-once): its LRV IDENTITY "
+                "region is already written and cannot be overwritten."
+            )
+        if status != ST_OK:
+            name = STATUS_NAMES.get(status, f"0x{status:02X}")
+            raise SystemExit(f"PROVISION_LRV failed: {name}")
+        session.session_end()
+    finally:
+        session.close()
 
-    if args.output:
-        Path(args.output).write_text(backup_json, encoding="utf-8")
-        print(f"Backup JSON written to: {args.output}")
-    else:
-        print(backup_json)
-
-    print(f"\nDevice public key: {dev_pubkey.hex()}")
+    print("\nProvisioned OK.")
+    print(f"Device public key: {dev_pubkey.hex()}")
     print(f"Pubkey display:    {dev_pubkey[:3].hex().upper()}-{dev_pubkey[-3:].hex().upper()}")
     print(f"LRV password:      {args.password}")
     print(f"\nPrint this password on the inner sticker of unit #{args.serial}.")
+    print("Now flash the PRODUCTION firmware (provisioning disabled).")
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +300,11 @@ def main() -> None:
     p_kg.add_argument("--output-dir", default=".",
                       help="Directory for key files (default: current dir)")
 
-    # provision
-    p_pv = sub.add_parser("provision", help="Provision a device LRV backup")
+    # provision-device
+    p_pv = sub.add_parser("provision-device",
+                          help="Provision a device's EEPROM over JPPD-SMP")
+    p_pv.add_argument("--port",         required=True,
+                      help="Serial port of the target device (provisioning firmware)")
     p_pv.add_argument("--mfr-seckey",   required=True,
                       help="Manufacturer secret key file (64 bytes, from keygen)")
     p_pv.add_argument("--serial",       required=True, type=int,
@@ -280,19 +321,17 @@ def main() -> None:
     p_pv.add_argument("--device-seckey",
                       help="Reuse existing device secret key file (64 bytes). "
                            "Omit to generate a fresh keypair.")
-    p_pv.add_argument("--output",
-                      help="Output backup JSON file path (default: stdout)")
 
     args = parser.parse_args()
 
     if args.command == "keygen":
         cmd_keygen(args)
-    elif args.command == "provision":
+    elif args.command == "provision-device":
         if args.serial < 1 or args.serial > 65535:
             parser.error("--serial must be between 1 and 65535")
         if args.run_size < 1 or args.run_size > 65535:
             parser.error("--run-size must be between 1 and 65535")
-        cmd_provision(args)
+        cmd_provision_device(args)
 
 
 if __name__ == "__main__":

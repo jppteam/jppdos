@@ -16,8 +16,10 @@ venv/
 *.egg-info/
 
 # ESP-IDF (sdkconfig.defaults is the tracked source of truth; the full
-# sdkconfig is generated from it)
+# sdkconfig is generated from it; sdkconfig.prov is the tracked provisioning
+# fragment)
 build/
+build-prov/
 sdkconfig
 sdkconfig.old
 sdkconfig.bak
@@ -26,6 +28,9 @@ sdkconfig.bak
 scripts/mfr_seckey.bin
 scripts/mfr_pubkey.bin
 scripts/testbackup.json
+# Per-run manufacturing config + ledger (ledger holds sticker PASSWORDS)
+scripts/mfg.toml
+scripts/ledger.csv
 
 # Temporary planning notes
 CLEANUP_PLAN.md

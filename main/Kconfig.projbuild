@@ -1,0 +1,20 @@
+menu "JPPDOS"
+
+config JPP_LRV_PROVISIONING
+    bool "Enable LRV EEPROM provisioning (MANUFACTURING ONLY)"
+    default n
+    help
+        Compiles the write-once LRV provisioning path into the firmware: the
+        JPPD-SMP PROVISION_LRV command (0x30) and the EEPROM identity-write
+        code in jpp_lrv.
+
+        This must be DISABLED for production firmware.  When disabled the
+        firmware physically contains no code that can write the LRV identity
+        region of the AT24C32 EEPROM, so a shipped device's identity can never
+        be rewritten in the field.
+
+        Manufacturing flow: build+flash a provisioning image with this option
+        on, push the LRV blob with scripts/lrv_manufacturing.py, then build+
+        flash the production image with this option off.
+
+endmenu

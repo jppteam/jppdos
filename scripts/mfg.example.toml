@@ -1,0 +1,37 @@
+# Manufacturing config for scripts/prepare_device.py.
+# Copy to scripts/mfg.toml and edit for your run. Per unit you then run just:
+#     scripts/prepare_device.py --config scripts/mfg.toml
+# and the serial number + sticker password are chosen automatically.
+
+[mfg]
+# Manufacturer secret key (64-byte libsodium seed||pubkey), from:
+#     scripts/lrv_manufacturing.py keygen
+# Paths are resolved relative to the repo root.
+mfr_seckey = "scripts/mfr_seckey.bin"
+
+# Certificate constants for this production run.
+run_size    = 500        # total run size, embedded in the signed certificate
+device_type = 0          # 0 = limited run, 1 = honorary
+
+# Serial numbers auto-increment. The next serial is (max serial in the ledger
+# + 1), or serial_start when the ledger is empty. Override per unit with
+# --serial N.
+serial_start = 1
+
+# Sticker password: auto-generated per device unless you pass --password.
+# Uses an unambiguous alphabet (no 0/O/1/l/I).
+password_length = 10
+
+# Append-only record of every provisioned unit
+# (serial, hwid, device_pubkey, password, timestamp). Resolved relative to root.
+ledger = "scripts/ledger.csv"
+
+[images]
+# Pre-built firmware directories (see scripts/build_images.sh).
+prod_dir = "build"        # production image (provisioning OFF) — flashed last
+prov_dir = "build-prov"   # provisioning image (provisioning ON) — flashed first
+
+[apps]
+# Which apps to upload during provisioning. "all" = every dir under
+# <prod_dir>/apps/, or an explicit list, e.g. ["games", "meetapp"].
+upload = "all"

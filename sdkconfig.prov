@@ -1,0 +1,10 @@
+# sdkconfig fragment for the LRV PROVISIONING firmware image.
+#
+# Layered on top of sdkconfig.defaults via SDKCONFIG_DEFAULTS so the ONLY
+# difference from the production image is the write-once LRV provisioning path
+# (JPPD-SMP PROVISION_LRV 0x30 + the EEPROM identity-write code in jpp_lrv).
+#
+# This must NEVER be part of a production build. scripts/build_images.sh builds
+# the provisioning image into build-prov/ with this fragment applied, and the
+# production image into build/ without it.
+CONFIG_JPP_LRV_PROVISIONING=y

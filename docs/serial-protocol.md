@@ -69,6 +69,8 @@ A host must open a session before issuing any command other than `SESSION_START`
 - SD app launch is blocked while a session is open.
 - Deep sleep is suppressed for the duration of the consent dialog and any active session.
 
+**Provisioning builds:** on firmware built with `CONFIG_JPP_LRV_PROVISIONING`, the very first `SESSION_START` after boot auto-accepts with no OLED dialog; every session after that still requires manual consent. This lets `scripts/prepare_device.py` run unattended once a freshly-flashed unit is powered on. Production firmware always shows the consent dialog.
+
 All commands except `SESSION_START` return `ERR_NO_SESSION` if no session is open.
 
 ---
@@ -274,6 +276,21 @@ Apply a JPPDOS settings backup file that already resides on the SD card. The hos
 
 Returns `ERR_NOT_FOUND` if the path does not exist, `ERR_OVERFLOW` if the file exceeds 8 KB, `ERR_INVALID` if the file is not a valid backup, `ERR_IO` if applying fails.
 
+> **Note:** backups do **not** contain LRV identity data. LRV lives on the external AT24C32 EEPROM and is provisioned once at manufacturing (see `PROVISION_LRV`).
+
+---
+
+### 0x30 — PROVISION_LRV *(provisioning firmware only)*
+
+Write the encrypted LRV identity blob to the device's AT24C32 EEPROM (write-once). This command exists **only** in firmware built with `CONFIG_JPP_LRV_PROVISIONING=y`; a production device answers `ERR_INVALID` (unknown command). Sent by the one-command `scripts/prepare_device.py` orchestrator (or the lower-level `scripts/lrv_manufacturing.py provision-device` for manual runs). The orchestrator reads the device's own eFuse MAC via `GET_INFO` for the certificate `hwid`, so no `esptool.py chip_id` step is needed.
+
+| Direction | Body |
+|-----------|------|
+| Host → device | `[blob: raw encrypted LRV blob]` |
+| Device → host | — |
+
+The device write-once-writes the blob to the EEPROM IDENTITY region. If an identity is already provisioned it responds `ERR_EXISTS` and does not overwrite it. Returns `ERR_INVALID` on a malformed/too-short blob, `ERR_NOT_FOUND` if no EEPROM is fitted.
+
 ---
 
 ## Status codes
@@ -284,7 +301,7 @@ Returns `ERR_NOT_FOUND` if the path does not exist, `ERR_OVERFLOW` if the file e
 | 0x01 | ERR_DENIED | User denied consent, or LRV data is locked |
 | 0x02 | ERR_NOT_FOUND | File or directory does not exist |
 | 0x03 | ERR_IO | SD card or filesystem error |
-| 0x04 | ERR_EXISTS | Target already exists (rename/mkdir collision) |
+| 0x04 | ERR_EXISTS | Target already exists (rename/mkdir collision, or LRV already provisioned) |
 | 0x05 | ERR_INVALID | Malformed request (bad path, unknown command, wrong proto version) |
 | 0x06 | ERR_BUSY | Session already open |
 | 0x07 | ERR_NO_SESSION | Command sent without an open session |

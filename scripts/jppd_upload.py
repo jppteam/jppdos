@@ -46,9 +46,11 @@ CMD_FS_MKDIR        = 0x11
 CMD_FS_UPLOAD_BEGIN = 0x14
 CMD_FS_UPLOAD_CHUNK = 0x15
 CMD_FS_UPLOAD_END   = 0x16
+CMD_PROVISION_LRV   = 0x30  # manufacturing-only (provisioning firmware)
 
 ST_OK           = 0x00
 ST_ERR_EXISTS   = 0x04
+ST_ERR_INVALID  = 0x05
 
 STATUS_NAMES = {
     0x00: 'OK',
@@ -101,6 +103,17 @@ def _read_frame(ser: serial.Serial, timeout: float) -> tuple:
     """
     deadline  = time.monotonic() + timeout
     sof_idx   = 0
+    # When JPPD_SMP_DEBUG is set, echo the interleaved ESP_LOG text (the bytes
+    # that are not part of a binary frame) to stderr so firmware log lines
+    # emitted during a command — e.g. an eeprom_core write error — are visible.
+    debug_log = bool(os.environ.get("JPPD_SMP_DEBUG"))
+    noise = bytearray()
+
+    def _flush_noise():
+        if debug_log and noise:
+            sys.stderr.write("\x1b[2m" + noise.decode("utf-8", "replace") + "\x1b[0m")
+            sys.stderr.flush()
+            noise.clear()
 
     # Scan byte-by-byte for the SOF magic.  ESP_LOG text output on the same
     # channel is transparently skipped because it never contains \x01JPP.
@@ -111,6 +124,7 @@ def _read_frame(ser: serial.Serial, timeout: float) -> tuple:
     ser.timeout = 0.5
     while True:
         if time.monotonic() >= deadline:
+            _flush_noise()
             raise RuntimeError("Timeout waiting for response SOF")
         b = ser.read(1)
         if not b:
@@ -119,10 +133,17 @@ def _read_frame(ser: serial.Serial, timeout: float) -> tuple:
         if byte == SOF[sof_idx]:
             sof_idx += 1
             if sof_idx == 4:
+                _flush_noise()
                 break
         elif byte == SOF[0]:
+            if debug_log and sof_idx == 0:
+                noise.append(byte)
             sof_idx = 1
         else:
+            if debug_log:
+                noise.append(byte)
+                if byte == 0x0A:  # newline — flush a complete log line
+                    _flush_noise()
             sof_idx = 0
 
     # Read 2-byte LEN field.
@@ -250,6 +271,18 @@ class _SMPSession:
         # ERR_EXISTS is fine — directory already there
         self._require_ok(status, f"FS_MKDIR {path!r}", also_ok=(ST_ERR_EXISTS,))
 
+    def provision_lrv(self, blob: bytes) -> int:
+        """Write the encrypted LRV blob to the device EEPROM (write-once).
+
+        Only works on a PROVISIONING firmware build (CONFIG_JPP_LRV_PROVISIONING);
+        production firmware answers ERR_INVALID (unknown command).
+        Returns the raw status byte so the caller can distinguish ST_OK,
+        ST_ERR_EXISTS (already provisioned) and ST_ERR_INVALID (not a
+        provisioning build) without raising.
+        """
+        status, _ = self._cmd(CMD_PROVISION_LRV, blob, timeout=15.0)
+        return status
+
     def upload_file(self, local_path: str, remote_path: str) -> None:
         data       = open(local_path, 'rb').read()
         file_size  = len(data)
@@ -279,6 +312,51 @@ class _SMPSession:
         status, _ = self._cmd(CMD_FS_UPLOAD_END, end_body)
         self._require_ok(status, f"UPLOAD_END {remote_path!r}")
 
+# ---- Reusable app-upload helper ---------------------------------------------
+
+def list_app_files(build_dir: str) -> list:
+    """Return the sorted list of uploadable filenames in *build_dir*.
+
+    Hidden files (dotfiles) are skipped, matching the firmware's discovery.
+    """
+    return sorted(
+        f for f in os.listdir(build_dir)
+        if not f.startswith('.') and os.path.isfile(os.path.join(build_dir, f))
+    )
+
+
+def upload_app_dir(session: '_SMPSession', app_id: str,
+                   build_dir: str = None, verbose: bool = True) -> None:
+    """Upload every file in build_dir to /sd/apps/<app_id>/ over an OPEN session.
+
+    The caller owns the session lifecycle (session_start/session_end); this
+    only does the mkdir + per-file upload so it can be composed with other
+    commands (e.g. LRV provisioning) inside a single consent-gated session.
+    """
+    build_dir  = build_dir or os.path.join('build', 'apps', app_id)
+    remote_dir = f'/sd/apps/{app_id}'
+
+    if not os.path.isdir(build_dir):
+        raise RuntimeError(f"Build directory not found: {build_dir}")
+    files = list_app_files(build_dir)
+    if not files:
+        raise RuntimeError(f"No files found in {build_dir}")
+
+    if verbose:
+        total = sum(os.path.getsize(os.path.join(build_dir, f)) for f in files)
+        print(f"Uploading app '{app_id}' -> {remote_dir}/  "
+              f"({len(files)} files, {total:,} B)")
+
+    session.mkdir(remote_dir)
+    for filename in files:
+        local  = os.path.join(build_dir, filename)
+        remote = f'{remote_dir}/{filename}'
+        size   = os.path.getsize(local)
+        if verbose:
+            print(f"  {filename}  ({size:,} B)...")
+        session.upload_file(local, remote)
+
+
 # ---- Entry point ------------------------------------------------------------
 
 def main() -> None:
@@ -297,25 +375,12 @@ def main() -> None:
                         help='Build output directory (default: build/apps/<app_id>)')
     args = parser.parse_args()
 
-    build_dir  = args.build_dir or os.path.join('build', 'apps', args.app_id)
-    remote_dir = f'/sd/apps/{args.app_id}'
+    build_dir = args.build_dir or os.path.join('build', 'apps', args.app_id)
 
     if not os.path.isdir(build_dir):
         parser.error(f"Build directory not found: {build_dir}")
-
-    files = sorted(
-        f for f in os.listdir(build_dir)
-        if not f.startswith('.') and os.path.isfile(os.path.join(build_dir, f))
-    )
-    if not files:
+    if not list_app_files(build_dir):
         parser.error(f"No files found in {build_dir}")
-
-    total_bytes = sum(os.path.getsize(os.path.join(build_dir, f)) for f in files)
-    print(f"Target:  {remote_dir}/")
-    print(f"Files:   {len(files)}  ({total_bytes:,} B total)")
-    for f in files:
-        print(f"  {f}  ({os.path.getsize(os.path.join(build_dir, f)):,} B)")
-    print()
 
     session = _SMPSession(args.port)
     try:
@@ -328,18 +393,10 @@ def main() -> None:
         print(f"SD card:   {info['sd_label'] or '(no label)'}  "
               f"{sd_used_mb:,.1f} / {sd_total_mb:,.1f} MB used\n")
 
-        session.mkdir(remote_dir)
-
-        for filename in files:
-            local  = os.path.join(build_dir, filename)
-            remote = f'{remote_dir}/{filename}'
-            size   = os.path.getsize(local)
-            print(f"Uploading {filename}  ({size:,} B)...")
-            session.upload_file(local, remote)
-            print(f"  done")
+        upload_app_dir(session, args.app_id, build_dir)
 
         session.session_end()
-        print(f"\nAll files uploaded to {remote_dir}/")
+        print(f"\nAll files uploaded to /sd/apps/{args.app_id}/")
 
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
