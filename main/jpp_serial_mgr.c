@@ -29,6 +29,7 @@
 #include "jpp_backup_restore.h"
 #include "jpp_app_dispatch.h"      /* s_active_sdk_context */
 #include "jpp_lrv.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "smp";
 
@@ -54,6 +55,9 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 #define SMP_CMD_FS_DL_CHUNK     0x18u
 #define SMP_CMD_FS_DL_END       0x19u
 #define SMP_CMD_APPLY_BACKUP    0x1Au
+#if CONFIG_JPP_LRV_PROVISIONING
+#define SMP_CMD_PROVISION_LRV   0x30u   /* manufacturing-only, build-gated */
+#endif
 
 #define SMP_ST_OK             0x00u
 #define SMP_ST_ERR_DENIED     0x01u
@@ -99,6 +103,9 @@ static esp_timer_handle_t         s_session_timer   = NULL;
 static vprintf_like_t             s_orig_vprintf    = NULL;
 static smp_transfer_t             s_xfer            = {0};
 static jpp_rtc_state_t           *s_smp_rtc         = NULL;
+#if CONFIG_JPP_LRV_PROVISIONING
+static bool                       s_first_session_done = false;
+#endif
 
 /* Static receive and scratch buffers (one command at a time in the RX task). */
 static uint8_t s_rx_payload[SMP_MAX_PAYLOAD_BYTES];
@@ -265,10 +272,23 @@ static void handle_session_start(uint8_t seq, const uint8_t *body,
         return;
     }
 
-    /* Signal main loop to display consent dialog; block until resolved. */
-    s_consent_cursor = 1;                  /* default cursor: Allow */
-    s_consent_state  = SMP_CONSENT_PENDING;
-    xSemaphoreTake(s_consent_sem, portMAX_DELAY);  /* main loop gives this */
+#if CONFIG_JPP_LRV_PROVISIONING
+    /* Manufacturing convenience: the very first session after boot on a
+     * provisioning build auto-accepts (no OLED dialog), so prepare_device.py
+     * can run unattended once the unit is powered on. Every session after
+     * that still requires manual consent, same as production firmware. */
+    if (!s_first_session_done) {
+        s_first_session_done = true;
+        s_consent_allowed    = true;
+        ESP_LOGI(TAG, "SMP_CONSENT_AUTO (provisioning build, first session)");
+    } else
+#endif
+    {
+        /* Signal main loop to display consent dialog; block until resolved. */
+        s_consent_cursor = 1;                  /* default cursor: Allow */
+        s_consent_state  = SMP_CONSENT_PENDING;
+        xSemaphoreTake(s_consent_sem, portMAX_DELAY);  /* main loop gives this */
+    }
 
     if (!s_consent_allowed) {
         ESP_LOGI(TAG, "SMP_CONSENT_DENIED");
@@ -859,6 +879,28 @@ static void handle_apply_backup(uint8_t seq, const uint8_t *body,
     esp_restart();
 }
 
+#if CONFIG_JPP_LRV_PROVISIONING
+/* ---- PROVISION_LRV (manufacturing-only, build-gated) --------------------- */
+
+static void handle_provision_lrv(uint8_t seq, const uint8_t *body,
+                                 uint16_t body_len)
+{
+    if (body == NULL || body_len == 0u) { send_err(seq, SMP_ST_ERR_INVALID); return; }
+
+    jpp_lrv_result_t rc = jpp_lrv_store_encrypted_blob(body, body_len);
+    switch (rc) {
+    case JPP_LRV_OK:
+        ESP_LOGI(TAG, "PROVISION_LRV_OK (%u bytes)", (unsigned)body_len);
+        send_err(seq, SMP_ST_OK);
+        break;
+    case JPP_LRV_ERR_EXISTS:    send_err(seq, SMP_ST_ERR_EXISTS);    break;
+    case JPP_LRV_ERR_NOT_FOUND: send_err(seq, SMP_ST_ERR_NOT_FOUND); break;
+    case JPP_LRV_ERR_CORRUPT:   send_err(seq, SMP_ST_ERR_INVALID);   break;
+    default:                    send_err(seq, SMP_ST_ERR_IO);        break;
+    }
+}
+#endif /* CONFIG_JPP_LRV_PROVISIONING */
+
 /* ---- Command dispatcher -------------------------------------------------- */
 
 static void dispatch_command(const uint8_t *payload, uint16_t plen)
@@ -900,6 +942,9 @@ static void dispatch_command(const uint8_t *payload, uint16_t plen)
     case SMP_CMD_FS_DL_CHUNK:     handle_fs_dl_chunk(seq, body, body_len);      break;
     case SMP_CMD_FS_DL_END:       handle_fs_dl_end(seq, body, body_len);        break;
     case SMP_CMD_APPLY_BACKUP:    handle_apply_backup(seq, body, body_len);     break;
+#if CONFIG_JPP_LRV_PROVISIONING
+    case SMP_CMD_PROVISION_LRV:   handle_provision_lrv(seq, body, body_len);    break;
+#endif
     default:                      send_err(seq, SMP_ST_ERR_INVALID);             break;
     }
 }
