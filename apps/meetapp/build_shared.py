@@ -122,6 +122,15 @@ def main(build_dir: str, src_dir: str) -> int:
         print(f"ERROR: link failed (exit {result.returncode})", file=sys.stderr)
         return result.returncode
 
+    # Remove intermediate object files: out_dir is a deploy directory copied
+    # verbatim to /sd/apps/<id>/, so it must hold only the linked .bin (+
+    # manifest), never compiler leftovers.
+    for obj in obj_files:
+        try:
+            os.remove(obj)
+        except OSError:
+            pass
+
     manifest_src = os.path.join(src_dir, "manifest.json")
     manifest_dst = os.path.join(out_dir, "manifest.json")
     if os.path.exists(manifest_src):

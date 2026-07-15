@@ -88,13 +88,24 @@ jpp_eeprom_result_t jpp_eeprom_read(const jpp_eeprom_state_t *state,
    progress, so we probe until it ACKs (ready) or the max cycle time elapses.
    This replaces a fixed vTaskDelay, which rounds to zero ticks at low
    CONFIG_FREERTOS_HZ (100 Hz here) and would let a still-busy chip NACK the
-   next page write. */
+   next page write.
+
+   The per-probe timeout MUST round to at least one FreeRTOS tick. At
+   CONFIG_FREERTOS_HZ = 100, pdMS_TO_TICKS() of anything under 10 ms yields
+   ZERO ticks, and i2c_master_probe() then returns ESP_ERR_TIMEOUT *before*
+   the I2C peripheral finishes the START/STOP and reports the ACK/NACK -- so
+   every probe "fails" and the chip is never seen to become ready, timing out
+   after WRITE_CYCLE_MAX_MS even though the write physically completed. This is
+   the very tick-rounding trap the fixed vTaskDelay above fell into, so keep the
+   probe timeout >= JPP_EEPROM_WRITE_CYCLE_MAX_MS (a NACK still returns as soon
+   as the hardware aborts the transaction, so a busy chip does not stall here). */
 static jpp_eeprom_result_t wait_write_complete(jpp_eeprom_state_t *state)
 {
     int64_t deadline = esp_timer_get_time()
                      + (int64_t)JPP_EEPROM_WRITE_CYCLE_MAX_MS * 1000;
     for (;;) {
-        if (i2c_master_probe(state->bus, state->i2c_addr, 2) == ESP_OK) {
+        if (i2c_master_probe(state->bus, state->i2c_addr,
+                             JPP_EEPROM_WRITE_CYCLE_MAX_MS) == ESP_OK) {
             return JPP_EEPROM_OK;
         }
         if (esp_timer_get_time() >= deadline) {
