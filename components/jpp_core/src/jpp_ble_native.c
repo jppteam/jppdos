@@ -46,6 +46,7 @@
 #include "nimble/nimble_port_freertos.h"
 #include "nimble/ble.h"
 #include "host/ble_hs.h"
+#include "host/ble_att.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_uuid.h"
@@ -358,6 +359,20 @@ static int connect_event_cb(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
+/* Signals completion of an ATT MTU exchange initiated in ble_connect_impl. */
+static int mtu_exchange_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                           uint16_t mtu, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    s_ble_status = (error != NULL) ? error->status : 0;
+    if (s_ble_status == 0) {
+        ESP_LOGD(TAG, "ATT MTU negotiated: %u", mtu);
+    }
+    xSemaphoreGive(s_ble_done);
+    return 0;
+}
+
 static jpp_broker_status_t ble_connect_impl(
     void *context,
     const char *address,
@@ -406,6 +421,26 @@ static jpp_broker_status_t ble_connect_impl(
         jpp_broker_error_result(result, "BLE_CONNECT_ERROR");
         BLE_OP_EXIT();
         return JPP_BROKER_STATUS_OK;
+    }
+
+    /* Negotiate a larger ATT MTU.  The default (23) caps a characteristic
+       read/write at ~20 bytes, which silently truncates MeetApp's multi-byte
+       payloads (97-byte nonce blob, 33-byte partial sig, etc.) — the leader
+       then rejects the short read and signs over a garbage peer pubkey,
+       surfacing as "Could not create partial signature".  The preferred MTU is
+       CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU (256); NimBLE does not auto-initiate
+       the exchange, so the central must request it here.  Best-effort: on
+       failure we continue at the default MTU rather than fail the connect. */
+    s_ble_status = -1;
+    int mrc = ble_gattc_exchange_mtu(slot->handle, mtu_exchange_cb, NULL);
+    if (mrc == 0) {
+        xSemaphoreTake(s_ble_done, portMAX_DELAY);
+        if (s_ble_status != 0) {
+            ESP_LOGW(TAG, "MTU exchange failed: %d (using default MTU)", s_ble_status);
+        }
+    } else if (mrc != BLE_HS_EALREADY) {
+        /* EALREADY = peer already initiated the exchange; MTU is set. */
+        ESP_LOGW(TAG, "ble_gattc_exchange_mtu init failed: %d", mrc);
     }
 
     strncpy(slot->address, address, JPP_SDK_BLE_ADDR_LEN - 1u);
@@ -651,12 +686,36 @@ static jpp_broker_status_t ble_write_char_impl(
     }
 
     s_ble_status = -1;
-    int rc = ble_gattc_write_flat(slot->handle,
+
+    /* A single ATT Write Request carries at most (ATT_MTU - 3) value bytes.
+       MeetApp's round-1.5 payload grows with participant count (it carries every
+       signer's pubkey) and exceeds that for larger sessions, so fall back to a
+       queued long write (Prepare/Execute) when it does not fit — the peer's
+       NimBLE GATT server reassembles it automatically before delivering it to
+       the access callback. */
+    uint16_t mtu = ble_att_mtu(slot->handle);
+    if (mtu < 23u) {
+        mtu = 23u;  /* default if the link somehow has no MTU yet */
+    }
+    int rc;
+    if ((size_t)write_len <= (size_t)(mtu - 3u)) {
+        rc = ble_gattc_write_flat(slot->handle,
                                   slot->rx_char_handle,
                                   write_buf, (uint16_t)write_len,
                                   write_char_cb, NULL);
+    } else {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(write_buf, (uint16_t)write_len);
+        if (om == NULL) {
+            jpp_broker_error_result(result, "BLE_WRITE_NO_MEM");
+            BLE_OP_EXIT();
+            return JPP_BROKER_STATUS_OK;
+        }
+        /* ble_gattc_write_long consumes the mbuf on both success and failure. */
+        rc = ble_gattc_write_long(slot->handle, slot->rx_char_handle, 0,
+                                  om, write_char_cb, NULL);
+    }
     if (rc != 0) {
-        ESP_LOGW(TAG, "ble_gattc_write_flat failed: %d", rc);
+        ESP_LOGW(TAG, "ble_gattc write failed: %d (len=%d mtu=%u)", rc, write_len, mtu);
         jpp_broker_error_result(result, "BLE_WRITE_FAILED");
         BLE_OP_EXIT();
         return JPP_BROKER_STATUS_OK;
