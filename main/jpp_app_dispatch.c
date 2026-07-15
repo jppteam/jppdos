@@ -495,7 +495,8 @@ static int cap_tier(const char *cap)
 {
     if (strcmp(cap, "http.request") == 0 || strcmp(cap, "ble.scan") == 0 ||
         strcmp(cap, "ble.advertise") == 0 ||
-        strcmp(cap, "background.register") == 0) {
+        strcmp(cap, "background.register") == 0 ||
+        strcmp(cap, "esp_now") == 0) {
         return 1;
     }
     return 2;
@@ -508,6 +509,7 @@ static const char *cap_description(const char *cap)
     if (strcmp(cap, "ble.advertise") == 0) return "broadcast over Bluetooth";
     if (strcmp(cap, "background.register") == 0)
         return "run scheduled tasks in the background";
+    if (strcmp(cap, "esp_now") == 0)       return "send and receive ESP-NOW messages";
     if (strcmp(cap, "files.full") == 0)    return "open any file on the SD card";
     if (strcmp(cap, "network.bind") == 0)  return "open network servers and sockets";
     if (strcmp(cap, "ble.connect") == 0)   return "connect to Bluetooth devices";
@@ -516,7 +518,7 @@ static const char *cap_description(const char *cap)
 }
 
 static const char *const TIER1_CAPS[] = {
-    "http.request", "ble.scan", "ble.advertise", "background.register",
+    "http.request", "ble.scan", "ble.advertise", "background.register", "esp_now",
 };
 #define TIER1_CAP_COUNT (sizeof(TIER1_CAPS) / sizeof(TIER1_CAPS[0]))
 
