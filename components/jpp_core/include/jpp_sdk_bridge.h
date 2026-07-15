@@ -1098,6 +1098,15 @@ jpp_sdk_status_t jpp_sdk_buzzer_play_sequence_async(jpp_sdk_context_t *context,
 /* Stop any playing sound immediately. */
 jpp_sdk_status_t jpp_sdk_buzzer_stop(jpp_sdk_context_t *context);
 
+/* ---- Onboard LED (WS2812, single pixel) ----------------------------------- */
+
+/* Ungated — set the onboard LED to an RGB color (0-255 per channel). */
+jpp_sdk_status_t jpp_sdk_led_set_color(jpp_sdk_context_t *context,
+                                        uint8_t r, uint8_t g, uint8_t b);
+
+/* Ungated — turn the onboard LED off. Equivalent to led_set_color(0, 0, 0). */
+jpp_sdk_status_t jpp_sdk_led_off(jpp_sdk_context_t *context);
+
 const char *jpp_sdk_status_name(jpp_sdk_status_t status);
 
 #ifdef __cplusplus

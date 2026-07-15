@@ -136,6 +136,10 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_buzzer_play_sequence_async", (void *)jpp_sdk_buzzer_play_sequence_async },
     { "jpp_sdk_buzzer_stop",           (void *)jpp_sdk_buzzer_stop           },
 
+    /* LED */
+    { "jpp_sdk_led_set_color",         (void *)jpp_sdk_led_set_color         },
+    { "jpp_sdk_led_off",               (void *)jpp_sdk_led_off               },
+
     /* HTTP */
     { "jpp_sdk_http_request",          (void *)jpp_sdk_http_request          },
     { "jpp_sdk_net_bind",              (void *)jpp_sdk_net_bind              },

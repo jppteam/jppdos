@@ -161,6 +161,7 @@ These work in every app, with no manifest declaration and no user prompt:
 - Input: `poll_key`, `wait_key`
 - High-level UI helpers: `dialog`, `list`, `input`, `confirm`, `file_pick` — though `file_pick` internally requires `files.full`
 - Buzzer: `buzzer_play`, `buzzer_tone`, `buzzer_play_sequence`, `buzzer_play_sequence_async`, `buzzer_stop`
+- LED: `led_set_color`, `led_off` (onboard WS2812 pixel)
 - Wakelock: `wakelock_acquire`, `wakelock_release`
 - Device info: `device_status`, `get_time`
 - Scoped file I/O: `file_read`, `file_write`, `file_list` (sandboxed to `/sd/apps/<app_id>/`)

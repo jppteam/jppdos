@@ -21,6 +21,7 @@ idf_component_register(
         "src/jpp_mp_sdk_module.c"
         "src/jpp_mp_runner.c"
         "src/jpp_buzzer_core.c"
+        "src/jpp_led_core.c"
         "src/jpp_kbd_core.c"
         "src/jpp_heap_monitor.c"
     INCLUDE_DIRS "include"

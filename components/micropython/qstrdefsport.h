@@ -108,3 +108,7 @@ Q(SOUND_FAILURE)
 Q(SOUND_NOTIFY)
 Q(SOUND_STARTUP)
 Q(SOUND_CLICK)
+
+/* LED */
+Q(led_set_color)
+Q(led_off)

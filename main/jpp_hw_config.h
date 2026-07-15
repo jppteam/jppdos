@@ -73,6 +73,9 @@
 #define JPP_HW_BUZZER_RESOLUTION     LEDC_TIMER_10_BIT
 #define JPP_HW_BUZZER_DUTY           512u   /* 50 % duty at 10-bit resolution */
 
+/* ---- Onboard LED (WS2812 addressable RGB, single pixel) ----------------- */
+#define JPP_HW_LED_GPIO 8
+
 /* ---- DS1307 RTC (I2C 0x68) ---------------------------------------------- */
 #define JPP_HW_DS1307_I2C_ADDR       0x68u
 #define JPP_HW_DS1307_I2C_TIMEOUT_MS 50u

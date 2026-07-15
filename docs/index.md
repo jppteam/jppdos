@@ -44,7 +44,7 @@ The security model has two layers:
 - **Scoping** — file paths are automatically prefixed to the app's own directory; an app cannot see another app's files without explicit permission.
 - **Capabilities** — operations like HTTP requests, BLE, or full SD card access must be declared in the manifest and approved by the user.
 
-Most of the SDK needs no permission at all: drawing, input, the buzzer, the key-value store, IPC, and device status all work without any declaration.
+Most of the SDK needs no permission at all: drawing, input, the buzzer, the onboard LED, the key-value store, IPC, and device status all work without any declaration.
 
 ---
 

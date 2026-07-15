@@ -1049,6 +1049,31 @@ STATIC mp_obj_t mp_sdk_buzzer_stop(void)
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_buzzer_stop_obj, mp_sdk_buzzer_stop);
 
 /* -------------------------------------------------------------------------- */
+/* LED                                                                         */
+/* -------------------------------------------------------------------------- */
+
+/* led_set_color(r, g, b) */
+STATIC mp_obj_t mp_sdk_led_set_color(mp_obj_t r_obj, mp_obj_t g_obj, mp_obj_t b_obj)
+{
+    uint8_t r = (uint8_t)mp_obj_get_int(r_obj);
+    uint8_t g = (uint8_t)mp_obj_get_int(g_obj);
+    uint8_t b = (uint8_t)mp_obj_get_int(b_obj);
+    jpp_sdk_status_t st = jpp_sdk_led_set_color(get_ctx(), r, g, b);
+    if (st != JPP_SDK_STATUS_OK) { raise_sdk_error(st, NULL); }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_led_set_color_obj, mp_sdk_led_set_color);
+
+/* led_off() */
+STATIC mp_obj_t mp_sdk_led_off(void)
+{
+    jpp_sdk_status_t st = jpp_sdk_led_off(get_ctx());
+    if (st != JPP_SDK_STATUS_OK) { raise_sdk_error(st, NULL); }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_led_off_obj, mp_sdk_led_off);
+
+/* -------------------------------------------------------------------------- */
 /* Module definition                                                           */
 /* -------------------------------------------------------------------------- */
 
@@ -1148,6 +1173,10 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_SOUND_NOTIFY),  MP_ROM_INT(JPP_BUZZER_SOUND_NOTIFY)  },
     { MP_ROM_QSTR(MP_QSTR_SOUND_STARTUP), MP_ROM_INT(JPP_BUZZER_SOUND_STARTUP) },
     { MP_ROM_QSTR(MP_QSTR_SOUND_CLICK),   MP_ROM_INT(JPP_BUZZER_SOUND_CLICK)   },
+
+    /* LED */
+    { MP_ROM_QSTR(MP_QSTR_led_set_color), MP_ROM_PTR(&mp_sdk_led_set_color_obj) },
+    { MP_ROM_QSTR(MP_QSTR_led_off),       MP_ROM_PTR(&mp_sdk_led_off_obj) },
 
     /* Background tasks */
     { MP_ROM_QSTR(MP_QSTR_background_register), MP_ROM_PTR(&mp_sdk_background_register_obj) },

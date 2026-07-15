@@ -1,5 +1,6 @@
 #include "../include/jpp_sdk_bridge.h"
 #include "../include/jpp_buzzer_core.h"
+#include "../include/jpp_led_core.h"
 #include "../include/jpp_file_browser_core.h"
 #include "../include/jpp_kbd_core.h"
 #include "../include/jpp_string_util.h"
@@ -3279,6 +3280,23 @@ jpp_sdk_status_t jpp_sdk_buzzer_stop(jpp_sdk_context_t *context)
     if (status != JPP_SDK_STATUS_OK) { return status; }
     jpp_buzzer_stop();
     return JPP_SDK_STATUS_OK;
+}
+
+jpp_sdk_status_t jpp_sdk_led_set_color(jpp_sdk_context_t *context,
+                                        uint8_t r, uint8_t g, uint8_t b)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    jpp_led_status_t ls = jpp_led_set_color(r, g, b);
+    return (ls == JPP_LED_STATUS_OK) ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_INVALID_STATE;
+}
+
+jpp_sdk_status_t jpp_sdk_led_off(jpp_sdk_context_t *context)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    jpp_led_status_t ls = jpp_led_off();
+    return (ls == JPP_LED_STATUS_OK) ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_INVALID_STATE;
 }
 
 const char *jpp_sdk_status_name(jpp_sdk_status_t status)
