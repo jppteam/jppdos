@@ -59,7 +59,7 @@ Every message — in both directions — is wrapped in the same envelope:
 A host must open a session before issuing any command other than `SESSION_START`.
 
 1. Host sends `SESSION_START`.
-2. The device displays an OLED consent dialog (**Allow / Deny**). The host blocks until the user responds.
+2. The device displays an OLED consent dialog (**Allow / Deny**) and plays a notification chime. The host blocks until the user responds.
 3. If the user allows, `SESSION_START` returns `OK` and commands may flow.
 4. If the user denies, `SESSION_START` returns `ERR_DENIED`. No session is opened.
 5. The host sends `SESSION_END` when done, or the session times out after **30 seconds** of inactivity.
@@ -270,7 +270,7 @@ Apply a JPPDOS settings backup file that already resides on the SD card. The hos
 
 **Flow:**
 1. The device reads and validates the file (`jppdos_backup: 1` marker must be present).
-2. An on-screen confirmation dialog is shown (`Apply backup? / <filename> / This will restart`). The user selects **Allow** or **Deny** (default cursor on **Deny**).
+2. An on-screen confirmation dialog is shown (`Apply backup? / <filename> / This will restart`) with a notification chime. The user selects **Allow** or **Deny** (default cursor on **Deny**).
 3. On **Deny**: responds `ERR_DENIED`; the session remains open and the file is untouched.
 4. On **Allow**: applies all NVS namespaces and `settings.json`, responds `OK`, then restarts the device.
 

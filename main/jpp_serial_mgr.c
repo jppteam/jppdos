@@ -21,6 +21,7 @@
 #include "cJSON.h"
 
 #include "jpp_draw_util.h"
+#include "jpp_buzzer_core.h"
 #include "jpp_file_util.h"
 #include "ssd1306.h"
 #include "jpp_resource_budget.h"
@@ -287,6 +288,7 @@ static void handle_session_start(uint8_t seq, const uint8_t *body,
         /* Signal main loop to display consent dialog; block until resolved. */
         s_consent_cursor = 1;                  /* default cursor: Allow */
         s_consent_state  = SMP_CONSENT_PENDING;
+        jpp_buzzer_play_async(JPP_BUZZER_SOUND_NOTIFY);
         xSemaphoreTake(s_consent_sem, portMAX_DELAY);  /* main loop gives this */
     }
 
@@ -852,6 +854,7 @@ static void handle_apply_backup(uint8_t seq, const uint8_t *body,
     /* Show confirmation dialog on the OLED; default cursor to Deny. */
     s_consent_cursor = 0;
     s_consent_state  = SMP_CONSENT_BACKUP_PENDING;
+    jpp_buzzer_play_async(JPP_BUZZER_SOUND_NOTIFY);
     xSemaphoreTake(s_consent_sem, portMAX_DELAY);
 
     if (!s_consent_allowed) {
