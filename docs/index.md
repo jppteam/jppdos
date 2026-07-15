@@ -118,4 +118,4 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 | [Native code modules](native/modules.md) | Loading a second `.bin` from within a native app |
 | [Manifest reference](manifest.md) | Every field in `manifest.json`, all capabilities |
 | [SDK reference](sdk-reference.md) | Complete API documentation for every SDK call |
-| [Serial protocol](serial-protocol.md) | JPPD-SMP binary protocol for host-side tools (file management, device info, LRV) |
+| [Serial protocol](serial-protocol.md) | JPPD-SMP binary protocol for host-side tools (file management, device info, LRV, time sync) |

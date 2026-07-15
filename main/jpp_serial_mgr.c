@@ -42,6 +42,7 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 #define SMP_CMD_SESSION_END     0x01u
 #define SMP_CMD_GET_INFO        0x02u
 #define SMP_CMD_GET_LRV_DATA    0x03u
+#define SMP_CMD_SET_TIME        0x04u
 #define SMP_CMD_FS_LIST_DIR     0x10u
 #define SMP_CMD_FS_MKDIR        0x11u
 #define SMP_CMD_FS_REMOVE       0x12u
@@ -394,6 +395,41 @@ static void handle_get_lrv_data(uint8_t seq)
     memcpy(s_lrv_resp_buf + pos, resp_sig, 64u);           pos += 64u;
 
     send_response(seq, SMP_ST_OK, s_lrv_resp_buf, (uint16_t)pos);
+}
+
+/*
+ * SET_TIME body:
+ *   [year: 2 B LE u16][month:1][day:1][weekday:1][hour:1][minute:1][second:1]
+ * Updates the in-RAM RTC state and, if a DS1307 is attached, writes it to the
+ * hardware too (mirrors ntp_apply() in app_main.c).
+ */
+static void handle_set_time(uint8_t seq, const uint8_t *body, uint16_t body_len)
+{
+    if (body_len != 8u) { send_err(seq, SMP_ST_ERR_INVALID); return; }
+
+    jpp_rtc_datetime_t dt = {
+        .year       = (int)((uint16_t)body[0] | ((uint16_t)body[1] << 8)),
+        .month      = body[2],
+        .day        = body[3],
+        .weekday    = body[4],
+        .hour       = body[5],
+        .minute     = body[6],
+        .second     = body[7],
+        .subseconds = 0,
+    };
+
+    if (s_smp_rtc == NULL || !jpp_rtc_datetime_valid(&dt)) {
+        send_err(seq, SMP_ST_ERR_INVALID);
+        return;
+    }
+
+    jpp_rtc_set_time(s_smp_rtc, &dt);
+    if (s_smp_rtc->hw_attached) {
+        jpp_rtc_hw_write(s_smp_rtc, &dt);
+    }
+    send_err(seq, SMP_ST_OK);
+    ESP_LOGI(TAG, "SMP_SET_TIME %04d-%02d-%02d %02d:%02d:%02d",
+             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
 }
 
 static void handle_fs_list_dir(uint8_t seq, const uint8_t *body,
@@ -852,6 +888,7 @@ static void dispatch_command(const uint8_t *payload, uint16_t plen)
     case SMP_CMD_SESSION_END:     handle_session_end(seq);                       break;
     case SMP_CMD_GET_INFO:        handle_get_info(seq);                          break;
     case SMP_CMD_GET_LRV_DATA:    handle_get_lrv_data(seq);                     break;
+    case SMP_CMD_SET_TIME:        handle_set_time(seq, body, body_len);         break;
     case SMP_CMD_FS_LIST_DIR:     handle_fs_list_dir(seq, body, body_len);      break;
     case SMP_CMD_FS_MKDIR:        handle_fs_mkdir(seq, body, body_len);          break;
     case SMP_CMD_FS_REMOVE:       handle_fs_remove(seq, body, body_len);         break;

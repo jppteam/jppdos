@@ -23,6 +23,7 @@ import struct
 import zlib
 import time
 import argparse
+from datetime import datetime
 
 try:
     import serial
@@ -40,6 +41,7 @@ CHUNK_SIZE    = 1024
 CMD_SESSION_START   = 0x00
 CMD_SESSION_END     = 0x01
 CMD_GET_INFO        = 0x02
+CMD_SET_TIME        = 0x04
 CMD_FS_MKDIR        = 0x11
 CMD_FS_UPLOAD_BEGIN = 0x14
 CMD_FS_UPLOAD_CHUNK = 0x15
@@ -226,6 +228,21 @@ class _SMPSession:
             'sd_free':    sd_free,
             'sd_label':   sd_label,
         }
+
+    def set_time(self, dt: datetime = None) -> None:
+        """Set the device RTC (in-RAM state, and DS1307 hardware if attached)
+        from *dt* (defaults to the host's current local time).
+
+        Body: [year:2 LE u16][month:1][day:1][weekday:1][hour:1][minute:1][second:1]
+        weekday uses C tm_wday convention (0=Sunday..6=Saturday); the firmware
+        doesn't interpret its meaning beyond storing it.
+        """
+        dt = dt or datetime.now()
+        weekday = (dt.weekday() + 1) % 7  # Python Mon=0 -> C Sun=0
+        body = struct.pack('<HBBBBBB', dt.year, dt.month, dt.day, weekday,
+                           dt.hour, dt.minute, dt.second)
+        status, _ = self._cmd(CMD_SET_TIME, body)
+        self._require_ok(status, "SET_TIME")
 
     def mkdir(self, path: str) -> None:
         body   = path.encode() + b'\x00'

@@ -130,6 +130,19 @@ Returns Limited Run Verification data for the certificate verification flow. Req
 
 ---
 
+### 0x04 — SET_TIME
+
+Sets the device's RTC (in-RAM state, and the DS1307 hardware if one is attached) from the host's clock.
+
+| Direction | Body |
+|-----------|------|
+| Host → device | `[year: 2 B LE u16][month: 1 B][day: 1 B][weekday: 1 B][hour: 1 B][minute: 1 B][second: 1 B]` (8 bytes total) |
+| Device → host | — |
+
+`weekday` is `0`–`6`; the firmware does not interpret its meaning beyond storing it. Returns `ERR_INVALID` if the body is not exactly 8 bytes or the fields fail range validation (year ≥ 2000, month 1–12, day 1–31, hour 0–23, minute/second 0–59).
+
+---
+
 ### 0x10 — FS_LIST_DIR
 
 Lists the contents of a directory on the SD card. All paths must start with `/sd`.
