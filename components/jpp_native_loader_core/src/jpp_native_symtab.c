@@ -121,6 +121,10 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_ble_host_wait_write",   (void *)jpp_sdk_ble_host_wait_write   },
     { "jpp_sdk_ble_host_clear",        (void *)jpp_sdk_ble_host_clear        },
 
+    /* ESP-NOW */
+    { "jpp_sdk_espnow_send",           (void *)jpp_sdk_espnow_send           },
+    { "jpp_sdk_espnow_recv",           (void *)jpp_sdk_espnow_recv           },
+
     /* Wakelock */
     { "jpp_sdk_wakelock_acquire",      (void *)jpp_sdk_wakelock_acquire      },
     { "jpp_sdk_wakelock_release",      (void *)jpp_sdk_wakelock_release      },

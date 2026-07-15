@@ -145,6 +145,7 @@ There are **two tiers** of consent:
 | `ble.scan` | 1 | Passive BLE scan — discover nearby devices, read advertisement payloads and RSSI |
 | `ble.advertise` | 1 | Broadcast a raw BLE advertisement payload; also enables `ble_set_connectable` |
 | `background.register` | 1 | Enroll the manifest's `background.tasks` schedule for headless background execution |
+| `esp_now` | 1 | Send and receive ESP-NOW packets (`espnow_send`/`espnow_recv`) |
 | `files.full` | 2 | Full SD card access via `file_open` — each path the app opens gets its own per-path approval prompt |
 | `network.bind` | 2 | Open a TCP server socket: one listener, up to 2 accepted connections |
 | `ble.connect` | 2 | GATT client: connect to a BLE peripheral, read and write characteristics |

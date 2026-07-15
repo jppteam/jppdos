@@ -51,7 +51,7 @@ RESERVED_APP_IDS = frozenset(
     )
 )
 
-# jpp_manifest_v2_is_allowed_capability — the eight prompted capabilities
+# jpp_manifest_v2_is_allowed_capability — the nine prompted capabilities
 ALLOWED_CAPABILITIES = frozenset(
     (
         # Tier 1 — one-time user grant, persisted
@@ -59,6 +59,7 @@ ALLOWED_CAPABILITIES = frozenset(
         "ble.scan",
         "ble.advertise",
         "background.register",
+        "esp_now",
         # Tier 2 — per-session user grant
         "files.full",
         "network.bind",

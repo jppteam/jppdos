@@ -17,6 +17,7 @@
 #include "lwip/sockets.h"
 
 #include "jpp_ble_native.h"
+#include "jpp_espnow_native.h"
 #include "jpp_fileserver_core.h"
 #include "jpp_lrv_server.h"
 #include "jpp_sdk_bridge.h"
@@ -789,6 +790,11 @@ void jpp_native_services_init(jpp_rtc_state_t *rtc_state)
         &s_native_services.ble_host_wait_write,
         &s_native_services.ble_host_clear,
         &s_native_services.ble_set_connectable
+    );
+
+    jpp_espnow_native_get_services(
+        &s_native_services.espnow_send, &s_native_services.espnow_recv,
+        &s_native_services.espnow_context
     );
 
     s_native_services.rtc_reader         = rtc_reader_cb;

@@ -38,7 +38,8 @@ int jpp_manifest_v2_is_allowed_capability(const char *capability)
     if (jpp_str_eq(capability, "http.request") ||
         jpp_str_eq(capability, "ble.scan") ||
         jpp_str_eq(capability, "ble.advertise") ||
-        jpp_str_eq(capability, "background.register")) {
+        jpp_str_eq(capability, "background.register") ||
+        jpp_str_eq(capability, "esp_now")) {
         return 1;
     }
     /* Tier 2 — per-session user grant */

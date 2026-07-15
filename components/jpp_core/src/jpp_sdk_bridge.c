@@ -1585,6 +1585,133 @@ jpp_sdk_status_t jpp_sdk_get_time(jpp_sdk_context_t *context, jpp_broker_result_
     return broker_status == JPP_BROKER_STATUS_OK ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
 }
 
+/* ---- esp_now ---- */
+
+typedef struct {
+    jpp_sdk_espnow_send_fn_t fn;
+    void *fn_context;
+    const uint8_t *peer_mac;
+    const uint8_t *data;
+    size_t data_len;
+} jpp_sdk_espnow_send_op_t;
+
+static jpp_broker_status_t jpp_sdk_espnow_send_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_espnow_send_op_t *op = (jpp_sdk_espnow_send_op_t *)context;
+    return op->fn(op->fn_context, op->peer_mac, op->data, op->data_len, result);
+}
+
+jpp_sdk_status_t jpp_sdk_espnow_send(
+    jpp_sdk_context_t *context,
+    const uint8_t peer_mac[6],
+    const uint8_t *data,
+    size_t data_len,
+    jpp_broker_result_t *result
+)
+{
+    jpp_broker_status_t broker_status;
+    jpp_sdk_espnow_send_op_t op;
+    jpp_sdk_status_t status;
+
+    status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (result == NULL || peer_mac == NULL || (data == NULL && data_len > 0u) ||
+        data_len > JPP_SDK_ESPNOW_DATA_MAX) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    if (context->services.locks == NULL || context->services.espnow_send == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    {
+        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "esp_now");
+        if (cap_st != JPP_SDK_STATUS_OK) {
+            jpp_broker_error_result(result, "ACCESS_DENIED");
+            return cap_st;
+        }
+    }
+    op.fn = context->services.espnow_send;
+    op.fn_context = context->services.espnow_context;
+    op.peer_mac = peer_mac;
+    op.data = data;
+    op.data_len = data_len;
+    broker_status = jpp_broker_run_exclusive(
+        context->services.locks, "espnow_radio",
+        jpp_sdk_espnow_send_operation, &op, result
+    );
+    return broker_status == JPP_BROKER_STATUS_OK ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
+}
+
+typedef struct {
+    jpp_sdk_espnow_recv_fn_t fn;
+    void *fn_context;
+    uint8_t *out_peer_mac;
+    uint8_t *out_data;
+    size_t max_len;
+    size_t *out_len;
+    uint32_t timeout_ms;
+} jpp_sdk_espnow_recv_op_t;
+
+static jpp_broker_status_t jpp_sdk_espnow_recv_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_espnow_recv_op_t *op = (jpp_sdk_espnow_recv_op_t *)context;
+    return op->fn(op->fn_context, op->out_peer_mac, op->out_data, op->max_len,
+                  op->out_len, op->timeout_ms, result);
+}
+
+jpp_sdk_status_t jpp_sdk_espnow_recv(
+    jpp_sdk_context_t *context,
+    uint8_t out_peer_mac[6],
+    uint8_t *out_data,
+    size_t max_len,
+    size_t *out_len,
+    uint32_t timeout_ms,
+    jpp_broker_result_t *result
+)
+{
+    jpp_broker_status_t broker_status;
+    jpp_sdk_espnow_recv_op_t op;
+    jpp_sdk_status_t status;
+
+    status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (result == NULL || out_peer_mac == NULL || out_data == NULL || out_len == NULL ||
+        max_len == 0u) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    if (context->services.locks == NULL || context->services.espnow_recv == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    {
+        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "esp_now");
+        if (cap_st != JPP_SDK_STATUS_OK) {
+            jpp_broker_error_result(result, "ACCESS_DENIED");
+            return cap_st;
+        }
+    }
+    op.fn = context->services.espnow_recv;
+    op.fn_context = context->services.espnow_context;
+    op.out_peer_mac = out_peer_mac;
+    op.out_data = out_data;
+    op.max_len = max_len;
+    op.out_len = out_len;
+    op.timeout_ms = timeout_ms;
+    broker_status = jpp_broker_run_exclusive(
+        context->services.locks, "espnow_radio",
+        jpp_sdk_espnow_recv_operation, &op, result
+    );
+    if (broker_status != JPP_BROKER_STATUS_OK) {
+        return JPP_SDK_STATUS_BROKER_ERROR;
+    }
+    if (!result->ok && result->code != NULL && strcmp(result->code, "NO_DATA") == 0) {
+        return JPP_SDK_STATUS_NO_DATA;
+    }
+    return result->ok ? JPP_SDK_STATUS_OK : JPP_SDK_STATUS_BROKER_ERROR;
+}
+
 /* ---- http.request ---- */
 
 typedef struct {

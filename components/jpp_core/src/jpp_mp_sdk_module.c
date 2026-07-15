@@ -437,6 +437,55 @@ STATIC mp_obj_t mp_sdk_ble_advertise_stop(void)
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_ble_advertise_stop_obj, mp_sdk_ble_advertise_stop);
 
 /* -------------------------------------------------------------------------- */
+/* ESP-NOW  (requires: esp_now)                                               */
+/* -------------------------------------------------------------------------- */
+
+/* espnow_send(peer_mac: bytes[6], data: bytes) */
+STATIC mp_obj_t mp_sdk_espnow_send(mp_obj_t mac_obj, mp_obj_t data_obj)
+{
+    jpp_broker_result_t result;
+    mp_buffer_info_t mac_buf, data_buf;
+    mp_get_buffer_raise(mac_obj, &mac_buf, MP_BUFFER_READ);
+    mp_get_buffer_raise(data_obj, &data_buf, MP_BUFFER_READ);
+    if (mac_buf.len != 6u) {
+        mp_raise_ValueError(MP_ERROR_TEXT("peer_mac must be 6 bytes"));
+    }
+    jpp_sdk_status_t st = jpp_sdk_espnow_send(
+        get_ctx(), (const uint8_t *)mac_buf.buf, (const uint8_t *)data_buf.buf,
+        data_buf.len, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(mp_sdk_espnow_send_obj, mp_sdk_espnow_send);
+
+/* espnow_recv(timeout_ms: int) -> (peer_mac_bytes, data_bytes) or None on timeout */
+STATIC mp_obj_t mp_sdk_espnow_recv(mp_obj_t timeout_obj)
+{
+    jpp_broker_result_t result;
+    uint8_t peer_mac[6];
+    uint8_t data[JPP_SDK_ESPNOW_DATA_MAX];
+    size_t out_len = 0u;
+    uint32_t timeout_ms = (uint32_t)mp_obj_get_int(timeout_obj);
+
+    jpp_sdk_status_t st = jpp_sdk_espnow_recv(
+        get_ctx(), peer_mac, data, sizeof(data), &out_len, timeout_ms, &result);
+    if (st == JPP_SDK_STATUS_NO_DATA) {
+        return mp_const_none;
+    }
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    mp_obj_t tuple[2] = {
+        mp_obj_new_bytes(peer_mac, sizeof(peer_mac)),
+        mp_obj_new_bytes(data, out_len),
+    };
+    return mp_obj_new_tuple(2, tuple);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_espnow_recv_obj, mp_sdk_espnow_recv);
+
+/* -------------------------------------------------------------------------- */
 /* BLE — GATT client  (requires: ble.connect)                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -1069,6 +1118,10 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* BLE advertise */
     { MP_ROM_QSTR(MP_QSTR_ble_advertise_start),   MP_ROM_PTR(&mp_sdk_ble_advertise_start_obj) },
     { MP_ROM_QSTR(MP_QSTR_ble_advertise_stop),    MP_ROM_PTR(&mp_sdk_ble_advertise_stop_obj) },
+
+    /* ESP-NOW */
+    { MP_ROM_QSTR(MP_QSTR_espnow_send),          MP_ROM_PTR(&mp_sdk_espnow_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_espnow_recv),          MP_ROM_PTR(&mp_sdk_espnow_recv_obj) },
 
     /* BLE GATT client */
     { MP_ROM_QSTR(MP_QSTR_ble_connect),           MP_ROM_PTR(&mp_sdk_ble_connect_obj) },

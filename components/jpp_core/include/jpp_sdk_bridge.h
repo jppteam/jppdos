@@ -199,6 +199,30 @@ typedef jpp_broker_status_t (*jpp_sdk_ble_service_unregister_fn_t)(
     jpp_broker_result_t *result
 );
 
+/* ---- ESP-NOW native callbacks ---- */
+
+#define JPP_SDK_ESPNOW_DATA_MAX 250u  /* ESP-NOW's hard per-packet payload limit */
+
+/* Send data to a peer, adding it to the peer list first if unknown. */
+typedef jpp_broker_status_t (*jpp_sdk_espnow_send_fn_t)(
+    void *context,
+    const uint8_t peer_mac[6],
+    const uint8_t *data,
+    size_t data_len,
+    jpp_broker_result_t *result
+);
+
+/* Wait up to timeout_ms for an incoming ESP-NOW packet. */
+typedef jpp_broker_status_t (*jpp_sdk_espnow_recv_fn_t)(
+    void *context,
+    uint8_t out_peer_mac[6],
+    uint8_t *out_data,
+    size_t max_len,
+    size_t *out_len,
+    uint32_t timeout_ms,
+    jpp_broker_result_t *result
+);
+
 /* Publish bytes on the host TX (readable) characteristic. */
 typedef void (*jpp_sdk_ble_host_set_value_fn_t)(
     void *context,
@@ -385,6 +409,10 @@ typedef struct {
     jpp_sdk_ble_host_clear_fn_t         ble_host_clear;
     jpp_sdk_ble_set_connectable_fn_t    ble_set_connectable;
     void *ble_host_context;
+    /* esp_now */
+    jpp_sdk_espnow_send_fn_t espnow_send;
+    jpp_sdk_espnow_recv_fn_t espnow_recv;
+    void *espnow_context;
     /* http.request */
     jpp_sdk_http_request_fn_t http_request;
     void *http_request_context;
@@ -750,6 +778,34 @@ jpp_sdk_status_t jpp_sdk_ble_set_connectable(
 
 /* Ungated — returns UTC time as "YYYY-MM-DD HH:mm" */
 jpp_sdk_status_t jpp_sdk_get_time(jpp_sdk_context_t *context, jpp_broker_result_t *result);
+
+/*
+ * Requires: esp_now
+ * Send data (up to JPP_SDK_ESPNOW_DATA_MAX bytes) to a peer identified by its
+ * 6-byte MAC address. The peer is added to the ESP-NOW peer list on first use.
+ */
+jpp_sdk_status_t jpp_sdk_espnow_send(
+    jpp_sdk_context_t *context,
+    const uint8_t peer_mac[6],
+    const uint8_t *data,
+    size_t data_len,
+    jpp_broker_result_t *result
+);
+
+/*
+ * Requires: esp_now
+ * Block up to timeout_ms waiting for an incoming ESP-NOW packet. On timeout
+ * with nothing received, returns JPP_SDK_STATUS_NO_DATA (not an error).
+ */
+jpp_sdk_status_t jpp_sdk_espnow_recv(
+    jpp_sdk_context_t *context,
+    uint8_t out_peer_mac[6],
+    uint8_t *out_data,
+    size_t max_len,
+    size_t *out_len,
+    uint32_t timeout_ms,
+    jpp_broker_result_t *result
+);
 
 /* Requires: http.request — method is "GET" or "POST"; body may be NULL for GET */
 jpp_sdk_status_t jpp_sdk_http_request(
