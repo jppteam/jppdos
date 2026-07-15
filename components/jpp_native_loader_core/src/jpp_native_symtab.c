@@ -56,6 +56,7 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_bind_native",           (void *)jpp_sdk_bind_native           },
     { "jpp_sdk_set_frame",             (void *)jpp_sdk_set_frame             },
     { "jpp_sdk_request_close",         (void *)jpp_sdk_request_close         },
+    { "jpp_sdk_request_cap",           (void *)jpp_sdk_request_cap           },
     { "jpp_sdk_log",                   (void *)jpp_sdk_log                   },
     { "jpp_sdk_status_name",           (void *)jpp_sdk_status_name           },
 
