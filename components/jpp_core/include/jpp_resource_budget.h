@@ -40,7 +40,13 @@ extern "C" {
 
 /* J++Device Serial Management Protocol (JPPD-SMP) */
 #define SMP_TASK_STACK_BYTES   6144u
-#define SMP_RX_BUF_BYTES        512u
+/* RX ring must comfortably hold one full upload-chunk frame
+   (SOF+LEN+payload+CRC ~= SMP_CHUNK_SIZE + ~14 B) even if the smp_rx task is
+   briefly starved mid-frame (SD write, WiFi, UI): at 512 B the ring could fill
+   partway through a chunk and the USB-Serial-JTAG FIFO would then drop the tail,
+   corrupting the frame's CRC so the device silently dropped it and the host
+   stalled.  2 KB absorbs a whole frame plus margin. */
+#define SMP_RX_BUF_BYTES       2048u
 #define SMP_TX_BUF_BYTES       1536u
 #define SMP_CHUNK_SIZE         1024u
 #define SMP_SESSION_TIMEOUT_MS 30000u

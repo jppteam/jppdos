@@ -196,15 +196,42 @@ class _SMPSession:
         self._seq = (self._seq + 1) & 0xFF
         return s
 
-    def _cmd(self, cmd: int, body: bytes = b'', timeout: float = 10.0) -> tuple:
-        """Send *cmd* with *body*, wait for the matching response.  Returns (status, body)."""
-        seq   = self._next_seq()
-        frame = _build_frame(seq, cmd, body)
-        self._ser.write(frame)
-        resp_seq, status, resp_body = _read_frame(self._ser, timeout=timeout)
-        if resp_seq != seq:
-            raise RuntimeError(f"SEQ mismatch: sent {seq}, received {resp_seq}")
-        return status, resp_body
+    def _cmd(self, cmd: int, body: bytes = b'', timeout: float = 10.0,
+             retries: int = 0) -> tuple:
+        """Send *cmd* with *body* and wait for the response whose SEQ matches.
+
+        On timeout (no matching response within *timeout*) the command is
+        re-sent, up to *retries* additional times.  This makes stop-and-wait
+        uploads resilient to an occasional dropped chunk frame or lost ACK on
+        the USB-Serial-JTAG link: the device re-ACKs a re-sent chunk without
+        writing it twice (see handle_fs_upload_chunk in jpp_serial_mgr.c), so
+        both failure modes recover by re-sending.  A response whose SEQ does
+        not match (a delayed reply to a previous attempt) is skipped rather
+        than raised as a fatal error, so a late ACK arriving during the retry
+        window does not desync the stream.  Only pass retries>0 for idempotent
+        commands (chunk upload) — never for SESSION_START, UPLOAD_END, or
+        PROVISION_LRV, whose device-side state makes a re-send ambiguous.
+        """
+        last_exc = None
+        for attempt in range(retries + 1):
+            seq = self._next_seq()
+            self._ser.write(_build_frame(seq, cmd, body))
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last_exc = RuntimeError(
+                        f"Timeout waiting for response to cmd 0x{cmd:02X}")
+                    break
+                try:
+                    resp_seq, status, resp_body = _read_frame(self._ser, timeout=remaining)
+                except RuntimeError as exc:
+                    last_exc = exc     # timeout / CRC error — re-send if attempts remain
+                    break
+                if resp_seq == seq:
+                    return status, resp_body
+                # Stale reply to an earlier attempt: skip, keep reading this window.
+        raise last_exc
 
     def _require_ok(self, status: int, context: str, also_ok: tuple = ()) -> None:
         if status != ST_OK and status not in also_ok:
@@ -295,11 +322,12 @@ class _SMPSession:
         self._require_ok(status, f"UPLOAD_BEGIN {remote_path!r}")
         xfer_id = resp[0]
 
-        # --- UPLOAD_CHUNK (stop-and-wait) ---
+        # --- UPLOAD_CHUNK (stop-and-wait, with retransmit on a dropped frame) ---
         for idx in range(n_chunks):
             chunk      = data[idx * CHUNK_SIZE:(idx + 1) * CHUNK_SIZE]
             chunk_body = bytes([xfer_id]) + struct.pack('<H', idx) + chunk
-            status, _ = self._cmd(CMD_FS_UPLOAD_CHUNK, chunk_body, timeout=20.0)
+            status, _ = self._cmd(CMD_FS_UPLOAD_CHUNK, chunk_body,
+                                  timeout=10.0, retries=4)
             self._require_ok(status, f"UPLOAD_CHUNK {idx}")
             pct = (idx + 1) * 100 // n_chunks
             print(f"  chunk {idx + 1}/{n_chunks}  {pct}%", end='\r', flush=True)
@@ -314,14 +342,25 @@ class _SMPSession:
 
 # ---- Reusable app-upload helper ---------------------------------------------
 
+# Build intermediates that the app build scripts may leave alongside the real
+# deploy artifacts (e.g. <name>.c.o object files).  These must never be uploaded
+# to the SD card: they bloat the transfer several-fold and the firmware never
+# reads them.
+_SKIP_SUFFIXES = ('.o', '.d', '.map', '.lst')
+
+
 def list_app_files(build_dir: str) -> list:
     """Return the sorted list of uploadable filenames in *build_dir*.
 
     Hidden files (dotfiles) are skipped, matching the firmware's discovery.
+    Build intermediates (object files etc., see _SKIP_SUFFIXES) are skipped too
+    so a polluted build directory never ships compiler leftovers to the device.
     """
     return sorted(
         f for f in os.listdir(build_dir)
-        if not f.startswith('.') and os.path.isfile(os.path.join(build_dir, f))
+        if not f.startswith('.')
+        and not f.endswith(_SKIP_SUFFIXES)
+        and os.path.isfile(os.path.join(build_dir, f))
     )
 
 

@@ -95,6 +95,14 @@ def compile_and_link(compiler, compile_flags, includes, ref_flags,
     if subprocess.run(cmd).returncode != 0:
         print(f"ERROR: link failed for {out_bin}", file=sys.stderr)
         return False
+    # Remove the intermediate object files: out_dir is a deploy directory whose
+    # contents are copied verbatim to /sd/apps/<id>/, so it must contain only
+    # the linked .bin (+ manifest), never compiler leftovers.
+    for obj in obj_files:
+        try:
+            os.remove(obj)
+        except OSError:
+            pass
     return True
 
 
