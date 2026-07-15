@@ -656,8 +656,13 @@ static bool launch_app_from(const char *app_root,
     sd_manifest_strings_t *strs_p = &s_sd_manifest_strs;
     jpp_manifest_v2_t *manifest_p = &s_sd_manifest;
 
+    /* Set before any failure path so record_app_crash() can attribute every
+       pre-launch failure (not just runtime crashes) to the right app id. */
+    strncpy(s_sd_app_id, app_id, sizeof(s_sd_app_id) - 1u);
+
     if (!load_sd_manifest(app_root, app_id, strs_p, manifest_p)) {
         ESP_LOGE(TAG, "SD_APP_LAUNCH %s: manifest load failed (root=%s)", app_id, app_root);
+        record_app_crash("MANIFEST_LOAD_FAILED");
         return false;
     }
 
@@ -685,6 +690,7 @@ static bool launch_app_from(const char *app_root,
                  app_id,
                  jpp_app_loader_result_name(check.result),
                  jpp_manifest_result_name(check.manifest_result));
+        record_app_crash(jpp_app_loader_result_name(check.result));
         return false;
     }
 
@@ -700,8 +706,6 @@ static bool launch_app_from(const char *app_root,
     static jpp_broker_caller_t caller;
     caller.capabilities     = granted_caps;
     caller.capability_count = granted_count;
-
-    strncpy(s_sd_app_id, app_id, sizeof(s_sd_app_id) - 1u);
 
     if (manifest_p->app_type == JPP_APP_TYPE_MICROPYTHON) {
         snprintf(s_sd_app_root, sizeof(s_sd_app_root),
@@ -732,12 +736,14 @@ static bool launch_app_from(const char *app_root,
         if (vst != JPP_VM_STATUS_OK) {
             ESP_LOGE(TAG, "SD_APP_LAUNCH %s: vm prepare: %s",
                      app_id, jpp_vm_status_name(vst));
+            record_app_crash(jpp_vm_status_name(vst));
             return false;
         }
         vst = jpp_vm_runtime_start(&s_sd_vm, boot);
         if (vst != JPP_VM_STATUS_OK) {
             ESP_LOGE(TAG, "SD_APP_LAUNCH %s: vm start: %s",
                      app_id, jpp_vm_status_name(vst));
+            record_app_crash(jpp_vm_status_name(vst));
             return false;
         }
 
@@ -770,6 +776,7 @@ static bool launch_app_from(const char *app_root,
     if (s_sd_task == NULL) {
         s_active_sdk_context = NULL;
         ESP_LOGE(TAG, "SD_APP_LAUNCH %s: xTaskCreateStatic failed", app_id);
+        record_app_crash("TASK_CREATE_FAILED");
         return false;
     }
     if (bg_task != NULL) {
