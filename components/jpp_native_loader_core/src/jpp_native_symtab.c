@@ -84,6 +84,7 @@ static const jpp_native_sym_t s_symtab[] = {
     /* Device / RTC */
     { "jpp_sdk_device_status",         (void *)jpp_sdk_device_status         },
     { "jpp_sdk_get_time",              (void *)jpp_sdk_get_time              },
+    { "jpp_sdk_is_dummy_mode",         (void *)jpp_sdk_is_dummy_mode         },
 
     /* File I/O — scoped */
     { "jpp_sdk_file_read",             (void *)jpp_sdk_file_read             },
@@ -147,6 +148,7 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_net_recv",              (void *)jpp_sdk_net_recv              },
     { "jpp_sdk_net_send",              (void *)jpp_sdk_net_send              },
     { "jpp_sdk_net_close",             (void *)jpp_sdk_net_close             },
+    { "jpp_sdk_net_close_all",         (void *)jpp_sdk_net_close_all         },
 
     /* Background tasks */
     { "jpp_sdk_background_register",   (void *)jpp_sdk_background_register   },
