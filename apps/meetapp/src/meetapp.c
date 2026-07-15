@@ -464,8 +464,9 @@ static void run_leader(jpp_sdk_context_t *ctx,
     meetapp_ble_build_ad(MEETAPP_AD_PING, session.session_nonce,
                          identity->nickname, ping_ad, &ping_ad_len);
 
-    /* Trigger lazy consent for ble.advertise before starting the animation task,
-       so denial is caught before any background work is spawned. */
+    /* ble.advertise is front-loaded at startup, so this normally passes without a
+       prompt; it stays as a denial guard, catching a declined grant before any
+       background work is spawned. */
     if (jpp_sdk_ble_advertise_start(ctx, ping_ad, ping_ad_len, &br) ==
             JPP_SDK_STATUS_ACCESS_DENIED) {
         notify(ctx, "Permission needed", "Bluetooth access was denied.");
@@ -680,7 +681,8 @@ static void run_participant(jpp_sdk_context_t *ctx,
     uint8_t session_nonce[8];
     char    leader_addr[JPP_SDK_BLE_ADDR_LEN];
 
-    /* Trigger lazy consent for ble.scan before starting the animation task. */
+    /* ble.scan is front-loaded at startup; this stays as a denial guard so a
+       declined grant is caught before the animation task starts. */
     {
         size_t dummy = 0u;
         jpp_broker_result_t probe;
@@ -869,6 +871,14 @@ void meetapp_run(jpp_sdk_context_t *ctx)
         return;
     }
 
+    /* Front-load the persisted BLE grants (ble.scan + ble.advertise, tier-1) at
+       startup: both participation modes need them, and a granted tier-1 cap is
+       persisted, so asking once up front means the user is never interrupted for
+       these mid-flow. Denial isn't fatal here — the per-mode flows re-surface it
+       via their own guards — so we don't block entry to the menu. */
+    jpp_sdk_request_cap(ctx, "ble.scan");
+    jpp_sdk_request_cap(ctx, "ble.advertise");
+
     /* Main menu loop. Each action returns here; only backing out of the menu
        (long-press CENTER) exits the app. */
     static const char *const ITEMS[] = {
@@ -886,9 +896,27 @@ void meetapp_run(jpp_sdk_context_t *ctx)
         }
         switch (choice) {
         case 0:
+            /* Join (participant): ask for the one-time ble.host grant (tier-2,
+               session-scoped) the moment the mode is chosen, not deep in the
+               flow at jpp_sdk_ble_service_register. Denial aborts before we start
+               scanning. */
+            if (jpp_sdk_request_cap(ctx, "ble.host") ==
+                    JPP_SDK_STATUS_ACCESS_DENIED) {
+                notify(ctx, "Permission needed", "Bluetooth access was denied.");
+                break;
+            }
             run_participant(ctx, &identity);
             break;
         case 1:
+            /* Initiate (leader): ask for the one-time ble.connect grant (tier-2,
+               session-scoped) up front. Without this the prompt would first fire
+               inside the GATT collection loop, where a denial is silently
+               swallowed. */
+            if (jpp_sdk_request_cap(ctx, "ble.connect") ==
+                    JPP_SDK_STATUS_ACCESS_DENIED) {
+                notify(ctx, "Permission needed", "Bluetooth access was denied.");
+                break;
+            }
             run_leader(ctx, &identity);
             break;
         case 2:

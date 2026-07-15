@@ -536,6 +536,18 @@ static jpp_sdk_status_t jpp_sdk_ensure_cap(jpp_sdk_context_t *context,
     return JPP_SDK_STATUS_ACCESS_DENIED;
 }
 
+jpp_sdk_status_t jpp_sdk_request_cap(jpp_sdk_context_t *context, const char *cap)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (cap == NULL || cap[0] == '\0') {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    return jpp_sdk_ensure_cap(context, cap);
+}
+
 jpp_sdk_status_t jpp_sdk_device_status(jpp_sdk_context_t *context, jpp_broker_result_t *result)
 {
     jpp_broker_status_t broker_status;

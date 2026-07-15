@@ -24,6 +24,8 @@
 #include "jpp_broker_core.h"
 #include "jpp_battery_core.h"
 #include "jpp_native_loader_core.h"
+#include "jpp_nvs_util.h"
+#include "jpp_settings_screen.h"  /* JPP_SETTINGS_USERNAME_MAX */
 
 static const char *TAG = "native_svc";
 
@@ -745,11 +747,19 @@ static jpp_broker_status_t device_status_cb(void *context, jpp_broker_result_t *
         snprintf(battery_pct, sizeof(battery_pct), "-1");
     }
 
+    /* Read fresh from NVS each call: unlike battery this isn't polled every
+       tick, so no pointer plumbing from the main loop is needed. */
+    static char username[JPP_SETTINGS_USERNAME_MAX + 1u];
+    if (!jpp_nvs_get_str("jpp_user", "username", username, sizeof(username))) {
+        username[0] = '\0';
+    }
+
     jpp_broker_ok_result(result);
     jpp_broker_result_put(result, "battery_pct", battery_pct);
     /* The board has no charge-detect line; charging state is unknown ("-1"),
        mirroring the battery_pct convention. */
     jpp_broker_result_put(result, "charging", "-1");
+    jpp_broker_result_put(result, "username", username);
     return JPP_BROKER_STATUS_OK;
 }
 

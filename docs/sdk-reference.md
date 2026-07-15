@@ -5,12 +5,13 @@
 | Category | Functions |
 |----------|-----------|
 | [Types and constants](#types-and-constants) | [`jpp_sdk_status_t`](#c--jpp_sdk_status_t) · [`jpp_sdk_key_event_t`](#c--jpp_sdk_key_event_t) · [Python constants](#python--jppsdk-constants) · [`jpp_broker_result_t`](#c--jpp_broker_result_t) |
-| [App control](#app-control) | [`set_frame`](#set_frame) · [`request_close`](#request_close) · [`log`](#log) |
+| [App control](#app-control) | [`set_frame`](#set_frame) · [`request_close`](#request_close) · [`log`](#log) · [`request_cap`](#request_cap-c-only) |
 | [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) |
 | [Canvas](#canvas) | [`canvas_write`](#canvas_write) · [`canvas_draw_pixel`](#canvas_draw_pixel) · [`canvas_clear`](#canvas_clear) · [`canvas_fullscreen`](#canvas_fullscreen) |
 | [UI helpers](#ui-helpers) | [`dialog`](#dialog) · [`list`](#list) · [`input`](#input) · [`confirm`](#confirm) · [`file_pick`](#file_pick) · [`wrap_text`](#wrap_text-c-only) |
 | [Wakelock](#wakelock) | [`wakelock_acquire`](#wakelock_acquire) · [`wakelock_release`](#wakelock_release) |
 | [Buzzer](#buzzer) | [`buzzer_play`](#buzzer_play) · [`buzzer_tone`](#buzzer_tone) · [`buzzer_play_sequence`](#buzzer_play_sequence) · [`buzzer_play_sequence_async`](#buzzer_play_sequence_async) · [`buzzer_stop`](#buzzer_stop) |
+| [LED](#led) | [`led_set_color`](#led_set_color) · [`led_off`](#led_off) |
 | [Device status](#device-status) | [`device_status`](#device_status) · [`get_time`](#get_time) · [`is_dummy_mode`](#is_dummy_mode) |
 | [Scoped file I/O](#scoped-file-io) | [`file_read`](#file_read) · [`file_write`](#file_write) · [`file_list`](#file_list) |
 | [Shared file I/O](#shared-file-io) | [`shared_read`](#shared_read) · [`shared_write`](#shared_write) · [`shared_list`](#shared_list) |
@@ -21,6 +22,7 @@
 | [Network / TCP server](#network-tcp-server) ⚠ `network.bind` | [`net_bind`](#net_bind) · [`net_accept`](#net_accept) · [`net_recv`](#net_recv) · [`net_send`](#net_send) · [`net_close`](#net_close) |
 | [BLE scan](#ble-scan) ⚠ `ble.scan` | [`ble_scan`](#ble_scan) |
 | [BLE advertise](#ble-advertise) ⚠ `ble.advertise` | [`ble_advertise_start`](#ble_advertise_start) · [`ble_advertise_stop`](#ble_advertise_stop) · [`ble_set_connectable`](#ble_set_connectable) |
+| [ESP-NOW](#esp-now) ⚠ `esp_now` | [`espnow_send`](#espnow_send) · [`espnow_recv`](#espnow_recv) |
 | [BLE GATT client](#ble-gatt-client) ⚠ `ble.connect` | [`ble_connect`](#ble_connect) · [`ble_read_char`](#ble_read_char) · [`ble_write_char`](#ble_write_char) · [`ble_disconnect`](#ble_disconnect) |
 | [BLE GATT server](#ble-gatt-server) ⚠ `ble.host` | [`ble_service_register`](#ble_service_register) · [`ble_service_unregister`](#ble_service_unregister) · [`ble_host_set_value`](#ble_host_set_value) · [`ble_host_wait_write`](#ble_host_wait_write) · [`ble_host_clear`](#ble_host_clear) |
 | [Background registration](#background-registration) ⚠ `background.register` | [`background_register`](#background_register) |
@@ -178,6 +180,27 @@ jppsdk.log(event_name: str) -> None
 ```
 
 **Notes:** Useful for debugging. Log lines appear on the device console (native USB-Serial-JTAG) with the tag `app_log`.
+
+---
+
+### `request_cap` (C only)
+
+Proactively triggers the consent prompt for a single manifest-declared capability, without performing any operation. Use it to **front-load** permission requests — ask for the caps a screen or mode needs the moment the user chooses it, rather than letting the prompt fire mid-flow at first use.
+
+**Capability:** the one named by `cap` (must be declared in the manifest)
+
+```c
+jpp_sdk_status_t jpp_sdk_request_cap(jpp_sdk_context_t *ctx,
+                                     const char *cap);
+```
+
+**Returns:** `JPP_SDK_OK` if the cap is already granted or the user allows it; `JPP_SDK_ACCESS_DENIED` if the user declines or the cap was not declared in the manifest; `JPP_SDK_INVALID_ARGUMENT` if `cap` is `NULL`/empty.
+
+**Notes:**
+- This only changes *when* the prompt appears, never the policy. Tier-1 caps (e.g. `ble.scan`, `ble.advertise`, `http.request`, `background.register`) persist once granted; tier-2 caps (e.g. `files.full`, `ble.connect`, `ble.host`, `network.bind`) are granted for the session only and re-prompt on the next launch — identical to first-use consent.
+- Requesting an already-granted cap is a cheap no-op that returns `JPP_SDK_OK` without prompting, so it is safe to call on every entry to a screen.
+- During a headless background run every request is denied (`JPP_SDK_ACCESS_DENIED`), matching the first-use rule.
+- MeetApp is the reference user: it requests `ble.scan`/`ble.advertise` at startup and the mode-specific `ble.connect`/`ble.host` the moment the user picks "Initiate" or "Join".
 
 ---
 
@@ -698,11 +721,52 @@ jppsdk.buzzer_stop() -> None
 
 ---
 
+## LED
+
+Onboard WS2812 addressable RGB pixel.
+
+### `led_set_color`
+
+Set the onboard LED to an RGB color.
+
+**Capability:** None
+
+```c
+jpp_sdk_status_t jpp_sdk_led_set_color(jpp_sdk_context_t *ctx,
+                                        uint8_t r, uint8_t g, uint8_t b);
+```
+```python
+jppsdk.led_set_color(r: int, g: int, b: int) -> None
+```
+
+**Parameters:**
+
+| Name | Description |
+|------|-------------|
+| `r`, `g`, `b` | Color channels, 0-255 each. |
+
+---
+
+### `led_off`
+
+Turn the onboard LED off. Equivalent to `led_set_color(0, 0, 0)`.
+
+**Capability:** None
+
+```c
+jpp_sdk_status_t jpp_sdk_led_off(jpp_sdk_context_t *ctx);
+```
+```python
+jppsdk.led_off() -> None
+```
+
+---
+
 ## Device status
 
 ### `device_status`
 
-Return the current battery and charging state.
+Return the current battery/charging state and the device's username.
 
 **Capability:** None
 
@@ -715,8 +779,8 @@ jppsdk.device_status() -> dict
 ```
 
 **Returns:**
-- C: `JPP_SDK_OK`; `result` fields `battery_pct` (integer as string, `-1` if unknown) and `charging` (`"1"` if charging, `"0"` if not, `"-1"` if unknown).
-- Python: `{"battery_pct": int, "charging": str}`.
+- C: `JPP_SDK_OK`; `result` fields `battery_pct` (integer as string, `-1` if unknown), `charging` (`"1"` if charging, `"0"` if not, `"-1"` if unknown), and `username` (the device's stored user name, `Settings > User's name` — empty string if unset).
+- Python: `{"battery_pct": int, "charging": str, "username": str}`.
 
 ---
 
@@ -738,7 +802,7 @@ jppsdk.get_time() -> str
 - C: `JPP_SDK_OK`; `result->text` is `"YYYY-MM-DD HH:mm"`.
 - Python: `"YYYY-MM-DD HH:mm"` as a string.
 
-**Notes:** Reads the DS1307 I²C RTC. If the RTC has not been set, it may return a nonsensical date. Time is always in the device's configured timezone.
+**Notes:** Reads the time from the RTC/software clock. The DS1307 hardware clock is optional: if no RTC chip is fitted and the time has not been set (e.g. via NTP), the call fails (C: non-`OK` status with `result->text` = `"RTC_UNAVAILABLE"`; Python: raises) — your app should handle this and display `--:--` rather than a bogus value. When the time is available it is in the device's configured timezone.
 
 ---
 
@@ -1311,6 +1375,61 @@ jpp_sdk_status_t jpp_sdk_ble_set_connectable(jpp_sdk_context_t *ctx,
 ```
 
 **Notes:** Python binding not available — use `ble_host` for accepting inbound connections from Python.
+
+---
+
+## ESP-NOW
+
+**Capability:** `esp_now` (Tier 1 — one-time grant, persisted)
+
+Connectionless peer-to-peer messaging over WiFi. Shares the STA-mode WiFi radio with `http.request`, WebDAV, and the LRV server.
+
+### `espnow_send`
+
+Send data to a peer, identified by its 6-byte MAC address. The peer is added to the ESP-NOW peer list automatically on first use (open, unencrypted, current WiFi channel). Blocks until the send completes or an internal timeout elapses.
+
+```c
+jpp_sdk_status_t jpp_sdk_espnow_send(jpp_sdk_context_t *ctx,
+                                      const uint8_t peer_mac[6],
+                                      const uint8_t *data,
+                                      size_t data_len,
+                                      jpp_broker_result_t *result);
+```
+```python
+jppsdk.espnow_send(peer_mac: bytes, data: bytes) -> None
+```
+
+**Parameters:**
+
+| Name | Description |
+|------|-------------|
+| `peer_mac` | 6-byte peer MAC address. |
+| `data` | Payload to send. Maximum 250 bytes. |
+
+---
+
+### `espnow_recv`
+
+Wait up to `timeout_ms` for an incoming ESP-NOW packet.
+
+```c
+jpp_sdk_status_t jpp_sdk_espnow_recv(jpp_sdk_context_t *ctx,
+                                      uint8_t out_peer_mac[6],
+                                      uint8_t *out_data,
+                                      size_t max_len,
+                                      size_t *out_len,
+                                      uint32_t timeout_ms,
+                                      jpp_broker_result_t *result);
+```
+```python
+jppsdk.espnow_recv(timeout_ms: int) -> tuple[bytes, bytes] | None
+```
+
+**Returns:**
+- C: `JPP_SDK_STATUS_OK` with `out_peer_mac`/`out_data`/`out_len` filled on a received packet; `JPP_SDK_STATUS_NO_DATA` (not an error) if nothing arrived within `timeout_ms`.
+- Python: `(peer_mac, data)` tuple of `bytes`, or `None` on timeout.
+
+**Notes:** Received packets are buffered in a small internal queue (depth 8); a packet is dropped if the app doesn't call `espnow_recv` often enough to drain it.
 
 ---
 

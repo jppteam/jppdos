@@ -53,6 +53,7 @@
 #include "jpp_bg_scheduler.h"
 #include "jpp_settings_screen.h"
 #include "jpp_keyboard.h"
+#include "jpp_onboarding.h"
 #include "jpp_file_picker.h"
 #include "jpp_string_util.h"
 #include "jpp_icons.h"
@@ -1161,6 +1162,11 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
     /* Load persisted username. */
     load_username(&settings_state);
+
+    /* First-boot welcome flow (no-op on every later boot). Runs after the
+       keypad task/action queue and LRV/username state above are ready, before
+       the launcher UI takes over. */
+    jpp_onboarding_run(shell, &settings_state);
 
     /* Populate dummy mode state from NVS (loaded early in app_main). */
     settings_state.dummy_enabled = s_dummy_enabled;

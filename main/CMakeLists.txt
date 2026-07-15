@@ -13,6 +13,7 @@ idf_component_register(
         "jpp_app_dispatch.c"
         "jpp_settings_screen.c"
         "jpp_keyboard.c"
+        "jpp_onboarding.c"
         "jpp_file_picker.c"
         "jpp_icons.c"
         "jpp_serial_mgr.c"

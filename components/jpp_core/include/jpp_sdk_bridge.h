@@ -572,6 +572,20 @@ jpp_sdk_status_t jpp_sdk_set_frame(
 jpp_sdk_status_t jpp_sdk_request_close(jpp_sdk_context_t *context);
 jpp_sdk_status_t jpp_sdk_log(jpp_sdk_context_t *context, const char *event_name);
 
+/*
+ * Proactively trigger the consent prompt for a single manifest-declared
+ * capability, without performing any operation. Use this to front-load
+ * permission requests (e.g. ask for the caps a mode needs the moment the user
+ * selects that mode) instead of prompting mid-flow at first use.
+ *
+ * Returns JPP_SDK_STATUS_OK if the cap is already granted or the user allows it
+ * (a tier-1 grant is persisted, a tier-2 grant lasts the session), and
+ * JPP_SDK_STATUS_ACCESS_DENIED if the user declines or the cap was not declared
+ * in the manifest. Same tier/grant semantics as first-use consent — this only
+ * changes *when* the prompt fires, never the policy.
+ */
+jpp_sdk_status_t jpp_sdk_request_cap(jpp_sdk_context_t *context, const char *cap);
+
 /* Ungated — battery/charging status is available to every app. */
 jpp_sdk_status_t jpp_sdk_device_status(jpp_sdk_context_t *context, jpp_broker_result_t *result);
 

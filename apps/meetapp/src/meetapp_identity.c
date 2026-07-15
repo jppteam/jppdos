@@ -141,6 +141,34 @@ bool meetapp_identity_reset(jpp_sdk_context_t *ctx,
     return true;
 }
 
+/* ---- Device username default ---------------------------------------------- */
+
+/*
+ * On first run, default the nickname to the device's username (Settings >
+ * User's name) rather than prompting — "default", not "pre-fill": the SDK's
+ * input field only shows a placeholder as ghost text (pressing OK on an
+ * empty field submits "", not the ghost text), so there is no clean way to
+ * offer an editable default without changing the shared jpp_sdk_input() API
+ * for every other caller. "Reset identity" still always prompts, so users
+ * who want a different nickname than their device username can set one.
+ */
+static bool try_default_nickname_from_device(jpp_sdk_context_t *ctx,
+                                              meetapp_identity_t *identity)
+{
+    jpp_broker_result_t result;
+    jpp_sdk_status_t st = jpp_sdk_device_status(ctx, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        return false;
+    }
+    const char *username = jpp_broker_result_get(&result, "username");
+    if (username == NULL || username[0] == '\0') {
+        return false;
+    }
+    strncpy(identity->nickname, username, MEETAPP_NICKNAME_MAX);
+    identity->nickname[MEETAPP_NICKNAME_MAX] = '\0';
+    return true;
+}
+
 /* ---- Public API ---------------------------------------------------------- */
 
 bool meetapp_identity_load_or_create(jpp_sdk_context_t *ctx,
@@ -154,8 +182,9 @@ bool meetapp_identity_load_or_create(jpp_sdk_context_t *ctx,
         return true;
     }
 
-    /* First run: collect nickname from user. */
-    if (!meetapp_identity_prompt_nickname(ctx, identity)) {
+    /* First run: default to the device username; fall back to prompting. */
+    if (!try_default_nickname_from_device(ctx, identity) &&
+        !meetapp_identity_prompt_nickname(ctx, identity)) {
         return false;
     }
 
