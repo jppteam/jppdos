@@ -601,13 +601,14 @@ jpp_ui_status_t jpp_ui_shell_handle_action(jpp_ui_shell_t *shell, jpp_ui_action_
 /* ---- Crash recording ---------------------------------------------------- */
 
 jpp_ui_status_t jpp_ui_shell_record_crash(jpp_ui_shell_t *shell,
+                                           const char *title,
                                            const char *screen,
                                            const char *error_name)
 {
     const char *body[3];
     jpp_ui_status_t status;
 
-    if (shell == NULL || screen == NULL || error_name == NULL) {
+    if (shell == NULL || title == NULL || screen == NULL || error_name == NULL) {
         return JPP_UI_STATUS_INVALID_ARGUMENT;
     }
     (void)jpp_ui_stack_reset_to_root(&shell->stack);
@@ -617,7 +618,7 @@ jpp_ui_status_t jpp_ui_shell_record_crash(jpp_ui_shell_t *shell,
     body[0] = screen;
     body[1] = error_name;
     body[2] = shell->crash_log_path;
-    status = jpp_ui_shell_show_dialog(shell, "APP_CRASH", body, 3u);
+    status = jpp_ui_shell_show_dialog(shell, title, body, 3u);
     if (status == JPP_UI_STATUS_OK) {
         shell->stack.screens[shell->stack.depth - 1u] = JPP_UI_SCREEN_CRASH;
     }

@@ -171,7 +171,8 @@ jpp_ui_status_t jpp_ui_shell_show_dialog(
     const char *const *body_lines,
     size_t body_count
 );
-jpp_ui_status_t jpp_ui_shell_record_crash(jpp_ui_shell_t *shell, const char *screen, const char *error_name);
+jpp_ui_status_t jpp_ui_shell_record_crash(jpp_ui_shell_t *shell, const char *title,
+                                           const char *screen, const char *error_name);
 void jpp_ui_shell_set_fileserver_state(
     jpp_ui_shell_t *shell,
     bool            running,

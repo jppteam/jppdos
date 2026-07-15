@@ -1499,6 +1499,14 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                 if (!launched) {
                     jpp_ui_stack_pop(&shell->stack);
                     sd_app_open = false;
+                    /* Show the failure reason (the dispatcher already recorded it
+                       via record_app_crash, same plumbing as a runtime crash). */
+                    char fail_app[32];
+                    char fail_reason[32];
+                    if (jpp_app_crash_take(fail_app, sizeof(fail_app),
+                                           fail_reason, sizeof(fail_reason))) {
+                        jpp_ui_shell_record_crash(shell, "LAUNCH_FAILED", fail_app, fail_reason);
+                    }
                 } else if (s_dummy_enabled) {
                     /* Tag the SDK context so the app can query dummy mode.
                        Set before the app task runs (task starts at low priority,
@@ -1554,7 +1562,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             bool app_crashed = jpp_app_crash_take(crash_app, sizeof(crash_app),
                                                    crash_reason, sizeof(crash_reason));
             if (app_crashed) {
-                jpp_ui_shell_record_crash(shell, crash_app, crash_reason);
+                jpp_ui_shell_record_crash(shell, "APP_CRASH", crash_app, crash_reason);
                 top_screen = jpp_ui_stack_top(&shell->stack);
             }
 
