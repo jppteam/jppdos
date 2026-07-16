@@ -17,7 +17,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -182,7 +181,12 @@ static int main_menu(jpp_sdk_context_t *ctx)
         if (k_menu[i].score_key != NULL) {
             int score = games_store_get(k_menu[i].score_key, 0);
             int label_len = (int)strlen(k_menu[i].label);
-            int score_digits = (score == 0) ? 1 : (int)floor(log10(score)) + 1;
+            /* Digit count via integer math — the native loader doesn't export
+               libm (floor/log10), and this project keeps apps float-free. */
+            int score_digits = 1;
+            for (int s = score; s >= 10; s /= 10) {
+                score_digits++;
+            }
             int spaces = 20 - label_len - score_digits;
             if (spaces < 1) spaces = 1; /* always at least one space */
             snprintf(buf[i], sizeof(buf[i]), "%s%*s%d",
