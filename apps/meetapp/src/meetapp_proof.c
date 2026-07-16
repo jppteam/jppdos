@@ -31,12 +31,11 @@ void meetapp_proof_build_message(
     off += snprintf(out_msg + off, out_msg_size - off,
                     "J++DEVICE PROOF OF MEETUP\n"
                     "-----BEGIN MESSAGE-----\n"
-                    "This verifies that %zu device%s have met up in person on %s. "
+                    "This verifies that %zu devices' holders have met up in person on %s. "
                     "Message is signed by participants' J++Devices using MuSig2 algorithm.\n"
                     "Session nonce: %s\n\n"
                     "Participants and their public keys:\n",
                     n_participants,
-                    n_participants == 1u ? "" : "s",
                     timestamp,
                     nonce_hex);
 

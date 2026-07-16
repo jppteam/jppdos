@@ -1439,6 +1439,8 @@ jppsdk.espnow_recv(timeout_ms: int) -> tuple[bytes, bytes] | None
 
 Establish an outbound connection to a BLE peripheral and read/write its characteristics. Maximum 2 simultaneous connections per session.
 
+> **Value size limit.** A single characteristic value is capped at **512 bytes** in both directions — this is `BLE_ATT_ATTR_MAX_LEN`, a fixed Bluetooth spec limit, not a firmware tunable. `ble_read_char` reassembles long values via ATT Read Blob and `ble_write_char` splits large writes via ATT Prepare/Execute, but neither can exceed 512 bytes for one value; a larger write is rejected by the peer and a read is truncated. Reconnecting to a peer works reliably across rounds: `ble_disconnect` blocks until the link is fully torn down, and a `ble.host` peripheral keeps advertising after a peer disconnects. To move payloads larger than 512 bytes, chunk them at the app layer — see the reusable `jpp_ble_msg` helper (`apps/common/jpp_ble_msg.{c,h}`), which frames a message into ordered chunks over `ble_write_char` and reassembles them on the peer from `ble_host_wait_write`.
+
 ### `ble_connect`
 
 Connect to a BLE peripheral by address.

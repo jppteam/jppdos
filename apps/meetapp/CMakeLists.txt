@@ -22,7 +22,8 @@ idf_component_register(
         "src/meetapp_identity.c"
         "src/meetapp_ble.c"
         "src/meetapp_proof.c"
-    INCLUDE_DIRS "include"
+        "../common/jpp_ble_msg.c"
+    INCLUDE_DIRS "include" "../common"
     REQUIRES jpp_core jpp_crypto_core freertos
 )
 

@@ -502,8 +502,13 @@ static void run_leader(jpp_sdk_context_t *ctx,
         vTaskDelay(pdMS_TO_TICKS(350u));
         jpp_sdk_ble_advertise_stop(ctx, &br);
 
+        size_t old_peer_count = session.peer_count;
         meetapp_ble_scan_pongs(ctx, &session, 400u);
         anim.peer_count = session.peer_count;
+
+        if (old_peer_count != session.peer_count) {
+            jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_NOTIFY);
+        }
 
         jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
         jpp_sdk_poll_key(ctx, &key);
@@ -615,7 +620,8 @@ static void run_leader(jpp_sdk_context_t *ctx,
         set_text_frame(ctx, lp, 2u);
     }
     meetapp_ble_exchange_sigs(ctx, &session, msg_hash, agg_pubnonce,
-                               all_pubkeys, n_total);
+                               all_pubkeys, n_total,
+                               timestamp, participants);
 
     /* Aggregate all partial sigs: [leader, peer0, peer1, ...] */
     static uint8_t all_partial[MEETAPP_MAX_TOTAL * JPP_CRYPTO_MUSIG2_PARTIAL_SIG_BYTES];
@@ -649,6 +655,7 @@ static void run_leader(jpp_sdk_context_t *ctx,
     strncpy(ts_short, timestamp, 11u);
     ts_short[11] = '\0';
 
+    jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_SUCCESS);
     char done_msg[64];
     snprintf(done_msg, sizeof(done_msg), "%s  (%s)",
              saved ? "Proof saved." : "Save failed!", ts_short);
@@ -777,9 +784,13 @@ static void run_participant(jpp_sdk_context_t *ctx,
     uint8_t msg_hash[64];
     uint8_t agg_pubnonce[JPP_CRYPTO_MUSIG2_PUBNONCE_BYTES];
     size_t  n_total = 0u;
+    char        leader_timestamp[MEETAPP_TS_FIELD_LEN];
+    static char peer_nicknames[MEETAPP_MAX_TOTAL][MEETAPP_NICK_FIELD_LEN];
 
     if (!meetapp_ble_wait_round15(ctx, msg_hash, agg_pubnonce,
-                                  all_pubkeys, &n_total, 120000u)) {
+                                  all_pubkeys, &n_total,
+                                  leader_timestamp, peer_nicknames,
+                                  120000u)) {
         jpp_sdk_ble_advertise_stop(ctx, &br);
         jpp_sdk_ble_service_unregister(ctx, &br);
         notify(ctx, "Timed out", "No signing request from the leader.");
@@ -826,24 +837,25 @@ static void run_participant(jpp_sdk_context_t *ctx,
     jpp_sdk_ble_advertise_stop(ctx, &br);
     jpp_sdk_ble_service_unregister(ctx, &br);
 
-    /* Get timestamp. */
-    char timestamp[20];
-    get_timestamp(ctx, timestamp, sizeof(timestamp));
-
-    /* Build participant list preserving all_pubkeys order. */
+    /* Rebuild the proof from the leader's nicknames + timestamp (forwarded in
+       round-1.5), in all_pubkeys order. Using the leader's values — not local
+       "PeerN" placeholders or a fresh timestamp — makes the rebuilt message
+       hash to exactly what was signed, so the saved proof verifies. */
     static meetapp_proof_participant_t participants[MEETAPP_MAX_TOTAL];
-    size_t n_parts = 0u;
-    build_participant_list(identity, all_pubkeys, n_total,
-                           NULL, /* no session; use "PeerN" for others */
-                           participants, &n_parts);
+    for (size_t i = 0u; i < n_total; i++) {
+        memcpy(participants[i].pubkey, &all_pubkeys[i * 32u], 32u);
+        strncpy(participants[i].nickname, peer_nicknames[i], MEETAPP_NICKNAME_MAX);
+        participants[i].nickname[MEETAPP_NICKNAME_MAX] = '\0';
+    }
 
-    bool saved = meetapp_proof_save(ctx, n_parts, participants,
-                                     session_nonce, timestamp, final_sig);
+    bool saved = meetapp_proof_save(ctx, n_total, participants,
+                                    session_nonce, leader_timestamp, final_sig);
 
     char ts_short[12];
-    strncpy(ts_short, timestamp, 11u);
+    strncpy(ts_short, leader_timestamp, 11u);
     ts_short[11] = '\0';
 
+    jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_SUCCESS);
     char saved_msg[64];
     snprintf(saved_msg, sizeof(saved_msg), "%s  (%s)",
              saved ? "Proof saved." : "Save failed!", ts_short);

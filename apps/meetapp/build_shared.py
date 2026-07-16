@@ -55,6 +55,9 @@ def main(build_dir: str, src_dir: str) -> int:
     if compiler is None:
         compiler = "riscv32-esp-elf-gcc"
 
+    # Shared app-side helpers (compiled into each app that uses them).
+    common_dir = os.path.join(os.path.dirname(src_dir), "common")
+
     # Sources relative to the meetapp src/ directory.
     sources = [
         os.path.join(src_dir, "src", "meetapp.c"),
@@ -62,6 +65,7 @@ def main(build_dir: str, src_dir: str) -> int:
         os.path.join(src_dir, "src", "meetapp_identity.c"),
         os.path.join(src_dir, "src", "meetapp_ble.c"),
         os.path.join(src_dir, "src", "meetapp_proof.c"),
+        os.path.join(common_dir, "jpp_ble_msg.c"),
     ]
     for s in sources:
         if not os.path.exists(s):
@@ -75,6 +79,7 @@ def main(build_dir: str, src_dir: str) -> int:
     # Add our own include directories.
     own_includes = [
         f"-I{os.path.join(src_dir, 'include')}",
+        f"-I{common_dir}",
         f"-I{os.path.join(os.path.dirname(src_dir), '..', 'components', 'jpp_core', 'include')}",
         f"-I{os.path.join(os.path.dirname(src_dir), '..', 'components', 'jpp_crypto_core', 'include')}",
     ]

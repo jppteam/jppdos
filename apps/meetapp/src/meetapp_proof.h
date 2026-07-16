@@ -40,6 +40,12 @@ void meetapp_proof_build_message(
 /*
  * Write the completed proof file to the SD card.
  * Filename: proof_<8-hex-nonce>_<timestamp_compact>.txt
+ *
+ * The proof message embeds every participant's nickname and the timestamp, so a
+ * participant MUST call this with the leader's nicknames (in all_pubkeys order)
+ * and the leader's timestamp — both forwarded over round-1.5 — so the rebuilt
+ * message hashes to the value that was actually signed. Rebuilding with local
+ * placeholders/timestamp would produce an unverifiable proof.
  */
 bool meetapp_proof_save(jpp_sdk_context_t                 *ctx,
                         size_t                             n_participants,

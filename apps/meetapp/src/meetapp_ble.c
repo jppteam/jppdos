@@ -1,4 +1,6 @@
 #include "meetapp_ble.h"
+#include "meetapp_proof.h"
+#include "jpp_ble_msg.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -185,22 +187,39 @@ bool meetapp_ble_exchange_sigs(jpp_sdk_context_t *ctx,
                                 const uint8_t msg_hash[64],
                                 const uint8_t agg_pubnonce[JPP_CRYPTO_MUSIG2_PUBNONCE_BYTES],
                                 const uint8_t *all_pubkeys,
-                                size_t n_total)
+                                size_t n_total,
+                                const char *timestamp,
+                                const meetapp_proof_participant_t *participants)
 {
     jpp_broker_result_t result;
 
-    /* Build round-1.5 binary payload:
-       [MEETAPP_RX_ROUND15][msg_hash[64]][agg_pubnonce[64]][n[1]][pubkeys[n*32]] */
-    size_t payload_len = 1u + 64u + 64u + 1u + n_total * 32u;
-    static uint8_t r15_bin[1u + 64u + 64u + 1u + MEETAPP_MAX_TOTAL * 32u];
+    /* Round-1.5 binary payload:
+       [MEETAPP_RX_ROUND15][msg_hash[64]][agg_pubnonce[64]][n[1]][pubkeys[n*32]]
+       [timestamp[20]][nick[17] * n]
+       The nicknames+timestamp let each participant rebuild (and save) the exact
+       message the leader signed. Sent via jpp_ble_msg (auto-chunked), so it is
+       not bound by the 512-byte ATT attribute-value limit on a single write. */
+    static uint8_t r15_bin[1u + 64u + 64u + 1u + MEETAPP_MAX_TOTAL * 32u
+                           + MEETAPP_TS_FIELD_LEN
+                           + MEETAPP_MAX_TOTAL * MEETAPP_NICK_FIELD_LEN];
     r15_bin[0] = MEETAPP_RX_ROUND15;
     memcpy(&r15_bin[1],    msg_hash,    64u);
     memcpy(&r15_bin[65],   agg_pubnonce, 64u);
     r15_bin[129] = (uint8_t)n_total;
     memcpy(&r15_bin[130],  all_pubkeys, n_total * 32u);
+    size_t off = 130u + n_total * 32u;
 
-    static char r15_hex[2u * (1u + 64u + 64u + 1u + MEETAPP_MAX_TOTAL * 32u) + 1u];
-    bin_to_hex(r15_bin, payload_len, r15_hex);
+    memset(&r15_bin[off], 0, MEETAPP_TS_FIELD_LEN);
+    strncpy((char *)&r15_bin[off], timestamp, MEETAPP_TS_FIELD_LEN - 1u);
+    off += MEETAPP_TS_FIELD_LEN;
+
+    for (size_t i = 0u; i < n_total; i++) {
+        memset(&r15_bin[off], 0, MEETAPP_NICK_FIELD_LEN);
+        strncpy((char *)&r15_bin[off], participants[i].nickname,
+                MEETAPP_NICK_FIELD_LEN - 1u);
+        off += MEETAPP_NICK_FIELD_LEN;
+    }
+    size_t payload_len = off;
 
     for (size_t i = 0u; i < session->peer_count; i++) {
         meetapp_peer_t *p = &session->peers[i];
@@ -212,9 +231,15 @@ bool meetapp_ble_exchange_sigs(jpp_sdk_context_t *ctx,
             continue;
         }
 
-        /* Write round-1.5 to RX char. */
-        jpp_sdk_ble_write_char(ctx, conn, JPP_SDK_BLE_HOST_SVC_UUID, JPP_SDK_BLE_HOST_RX_UUID,
-                               r15_hex, &result);
+        /* Write round-1.5 to RX char (auto-chunked). */
+        if (jpp_ble_msg_send(ctx, conn, JPP_SDK_BLE_HOST_SVC_UUID,
+                             JPP_SDK_BLE_HOST_RX_UUID,
+                             r15_bin, payload_len) != JPP_BLE_MSG_OK) {
+            ESP_LOGW(TAG, "Round B: round-1.5 send failed to %s", p->ble_addr);
+            jpp_sdk_ble_disconnect(ctx, conn);
+            vTaskDelay(pdMS_TO_TICKS(100u));
+            continue;
+        }
 
         /* Give participant time to compute partial sig (~500ms). */
         vTaskDelay(pdMS_TO_TICKS(800u));
@@ -314,30 +339,45 @@ bool meetapp_ble_wait_round15(jpp_sdk_context_t *ctx,
                                uint8_t agg_pubnonce[JPP_CRYPTO_MUSIG2_PUBNONCE_BYTES],
                                uint8_t *all_pubkeys,
                                size_t *n_total,
+                               char out_timestamp[MEETAPP_TS_FIELD_LEN],
+                               char out_nicknames[][MEETAPP_NICK_FIELD_LEN],
                                uint32_t timeout_ms)
 {
     static uint8_t rx_buf[JPP_SDK_BLE_HOST_RX_MAX];
-    size_t rx_len = sizeof(rx_buf);
-    bool received = false;
-    jpp_broker_result_t result;
+    size_t rx_len = 0u;
 
-    if (jpp_sdk_ble_host_wait_write(ctx, rx_buf, &rx_len, timeout_ms,
-                                    &received, &result) != JPP_SDK_STATUS_OK ||
-        !received) {
+    /* Reassemble the (auto-chunked) round-1.5 message from the leader. */
+    if (jpp_ble_msg_host_recv(ctx, rx_buf, sizeof(rx_buf), &rx_len,
+                              timeout_ms) != JPP_BLE_MSG_OK) {
         return false;
     }
 
-    /* Expected: [MEETAPP_RX_ROUND15][msg_hash[64]][agg_pubnonce[64]][n][pubkeys] */
+    /* Expected: [MEETAPP_RX_ROUND15][msg_hash[64]][agg_pubnonce[64]][n][pubkeys]
+       [timestamp[20]][nick[17] * n]. */
     if (rx_len < 130u || rx_buf[0] != MEETAPP_RX_ROUND15) return false;
 
     size_t n = rx_buf[129];
     if (n == 0u || n > MEETAPP_MAX_TOTAL) return false;
-    if (rx_len < 130u + n * 32u) return false;
+
+    size_t pk_end = 130u + n * 32u;
+    size_t ts_start   = pk_end;
+    size_t nick_start = ts_start + MEETAPP_TS_FIELD_LEN;
+    size_t need       = nick_start + n * MEETAPP_NICK_FIELD_LEN;
+    if (rx_len < need) return false;
 
     memcpy(msg_hash,    &rx_buf[1],   64u);
     memcpy(agg_pubnonce, &rx_buf[65], 64u);
     *n_total = n;
     memcpy(all_pubkeys, &rx_buf[130], n * 32u);
+
+    memcpy(out_timestamp, &rx_buf[ts_start], MEETAPP_TS_FIELD_LEN);
+    out_timestamp[MEETAPP_TS_FIELD_LEN - 1u] = '\0';
+
+    for (size_t i = 0u; i < n; i++) {
+        const uint8_t *src = &rx_buf[nick_start + i * MEETAPP_NICK_FIELD_LEN];
+        memcpy(out_nicknames[i], src, MEETAPP_NICK_FIELD_LEN);
+        out_nicknames[i][MEETAPP_NICK_FIELD_LEN - 1u] = '\0';
+    }
     return true;
 }
 
