@@ -18,7 +18,7 @@ This document defines the native/app boundary for JPPDOS. The native ESP-IDF cor
 Persistent state is split between one JSON file and NVS namespaces:
 
 - `/data/settings.json` (schema v2, with `/data/settings.json.tmp` as the staging/recovery file) holds exactly: `schema_version`, `policy.wifi.preferred_ssid`, `policy.wifi.password`, and `policy.recovery.force_recovery`.
-- Everything else lives in NVS and NVS is authoritative for it: `jpp_time` (NTP enable/host/timezone), `jpp_power` (dim/poweroff seconds), `jpp_webdav` (password mode + static password), `jpp_sound` (buzzer volume, startup jingle), `jpp_user` (username), `jpp_lrv` (Limited Run Verification data).
+- Everything else lives in NVS and NVS is authoritative for it: `jpp_time` (NTP enable/host/timezone), `jpp_power` (dim/poweroff seconds), `jpp_webdav` (password mode + static password), `jpp_sound` (buzzer volume, startup jingle), `jpp_user` (username). Limited Run Verification data is the exception: it lives on the external AT24C32 EEPROM, not in NVS or settings.json, so it survives factory reset and reflash.
 
 Rules:
 

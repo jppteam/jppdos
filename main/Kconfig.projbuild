@@ -14,7 +14,7 @@ config JPP_LRV_PROVISIONING
         be rewritten in the field.
 
         Manufacturing flow: build+flash a provisioning image with this option
-        on, push the LRV blob with scripts/lrv_manufacturing.py, then build+
-        flash the production image with this option off.
+        on, push the LRV identity record with scripts/lrv_manufacturing.py,
+        then build+flash the production image with this option off.
 
 endmenu

@@ -42,8 +42,7 @@ typedef enum {
 } jpp_settings_section_t;
 
 typedef enum {
-    JPP_LRV_SS_LOCKED = 0,     /* data exists but encrypted — press OK to unlock */
-    JPP_LRV_SS_MAIN,           /* unit #, pubkey, "OK to verify validity"         */
+    JPP_LRV_SS_MAIN = 0,       /* unit #, pubkey, "OK to verify validity"         */
     JPP_LRV_SS_VERIFY_RESULT,  /* "Printed certificate to serial." screen         */
     JPP_LRV_SS_VERIFY_ERROR,   /* error screen (e.g. WebDAV running)              */
 } jpp_lrv_subscreen_t;
@@ -125,9 +124,7 @@ typedef struct {
 
     /* Device Info / LRV section */
     bool               lrv_has_data;
-    bool               lrv_is_unlocked;
     jpp_lrv_subscreen_t lrv_ss;
-    char               lrv_unlock_error[32];
     char               lrv_verify_error[40];
     uint16_t           lrv_serial;
     char               lrv_pubkey_str[16];   /* "ABCDEF-GHIJKL" */
@@ -184,10 +181,6 @@ typedef struct {
        or writes an error into state->backup_result_msg and returns normally. */
     void (*do_settings_restore)(jpp_settings_state_t *state);
 
-    /* LRV: attempt to decrypt the stored blob with the given password.
-       Populates state->lrv_is_unlocked and display fields on success; writes
-       an error message into state->lrv_unlock_error on failure. */
-    void (*do_lrv_unlock)(jpp_settings_state_t *state, const char *password);
     /* LRV: log the certificate and start the HTTP verification server.
        Populates state->lrv_server_running and state->lrv_server_addr.
        On error populates state->lrv_verify_error. */

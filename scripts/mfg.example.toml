@@ -1,7 +1,7 @@
 # Manufacturing config for scripts/prepare_device.py.
 # Copy to scripts/mfg.toml and edit for your run. Per unit you then run just:
 #     scripts/prepare_device.py --config scripts/mfg.toml
-# and the serial number + sticker password are chosen automatically.
+# and the serial number is chosen automatically.
 
 [mfg]
 # Manufacturer secret key (64-byte libsodium seed||pubkey), from:
@@ -18,12 +18,8 @@ device_type = 0          # 0 = limited run, 1 = honorary
 # --serial N.
 serial_start = 1
 
-# Sticker password: auto-generated per device unless you pass --password.
-# Uses an unambiguous alphabet (no 0/O/1/l/I).
-password_length = 10
-
 # Append-only record of every provisioned unit
-# (serial, hwid, device_pubkey, password, timestamp). Resolved relative to root.
+# (serial, hwid, device_pubkey, timestamp). Resolved relative to root.
 ledger = "scripts/ledger.csv"
 
 [images]

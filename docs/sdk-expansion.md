@@ -401,7 +401,7 @@ Raises `SdkError("DNS_FAILED")` when resolution fails.
 
 ## Step 7 — `crypto.hmac` (ungated)
 
-libsodium is already a component dependency (used by `jpp_lrv.c`).
+libsodium is already a component dependency (used by `jpp_crypto_core` and `jpp_lrv.c`).
 No callbacks or native_services fields required.
 
 ### `jpp_sdk_bridge.h`

@@ -23,7 +23,7 @@ typedef enum {
     JPP_LRV_SERVER_OK = 0,
     JPP_LRV_SERVER_ERR_NO_WIFI,
     JPP_LRV_SERVER_ERR_WEBDAV_RUNNING,
-    JPP_LRV_SERVER_ERR_NOT_UNLOCKED,
+    JPP_LRV_SERVER_ERR_NO_DATA,
     JPP_LRV_SERVER_ERR_INTERNAL,
 } jpp_lrv_server_result_t;
 
@@ -32,7 +32,7 @@ typedef enum {
  * rtc may be NULL; if non-NULL it is used to generate timestamp challenges.
  * Returns ERR_WEBDAV_RUNNING if the WebDAV server is already active.
  * Returns ERR_NO_WIFI if the device has no IP address.
- * Returns ERR_NOT_UNLOCKED if LRV data has not been decrypted yet.
+ * Returns ERR_NO_DATA if the device has no LRV identity.
  */
 jpp_lrv_server_result_t jpp_lrv_server_start(jpp_rtc_state_t *rtc);
 

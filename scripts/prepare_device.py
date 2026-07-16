@@ -13,13 +13,12 @@ For each board it:
        - GET_INFO   -> reads the device's own eFuse MAC as the hwid
                        (no more manual `esptool.py chip_id` copy/paste)
        - SET_TIME   -> syncs the device RTC to the host's current time
-       - PROVISION_LRV -> write-once-writes the encrypted LRV blob to the EEPROM
+       - PROVISION_LRV -> write-once-writes the raw LRV identity to the EEPROM
        - uploads every app to the SD card (survives the production reflash)
   3. flashes the PRODUCTION firmware image     (build/) — write path gone
-  4. appends the unit to the ledger CSV and prints the sticker line
+  4. appends the unit to the ledger CSV
 
-Serial numbers auto-increment from the ledger and the sticker password is
-generated automatically (override either with --serial / --password).
+Serial numbers auto-increment from the ledger (override with --serial).
 
 Build the two images first (once per firmware version):
     scripts/build_images.sh
@@ -36,7 +35,6 @@ import argparse
 import csv
 import json
 import os
-import secrets
 import subprocess
 import sys
 import time
@@ -60,9 +58,6 @@ except ImportError:
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-# Unambiguous password alphabet (no 0/O/1/l/I).
-_PW_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 ESPRESSIF_VID = 0x303A
 
@@ -113,10 +108,10 @@ def autodetect_port() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Ledger / serial / password
+# Ledger / serial
 # ---------------------------------------------------------------------------
 
-LEDGER_HEADER = ["serial", "hwid", "device_pubkey", "password", "timestamp"]
+LEDGER_HEADER = ["serial", "hwid", "device_pubkey", "timestamp"]
 
 
 def read_ledger_serials(ledger_path: Path) -> list:
@@ -138,19 +133,15 @@ def next_serial(ledger_path: Path, serial_start: int) -> int:
 
 
 def append_ledger(ledger_path: Path, serial: int, hwid: str,
-                  pubkey_hex: str, password: str) -> None:
+                  pubkey_hex: str) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     new_file = not ledger_path.exists()
     with open(ledger_path, "a", newline="") as f:
         w = csv.writer(f)
         if new_file:
             w.writerow(LEDGER_HEADER)
-        w.writerow([serial, hwid, pubkey_hex, password,
+        w.writerow([serial, hwid, pubkey_hex,
                     datetime.now(timezone.utc).isoformat(timespec="seconds")])
-
-
-def gen_password(length: int) -> str:
-    return "".join(secrets.choice(_PW_ALPHABET) for _ in range(length))
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +209,6 @@ def main() -> None:
     ap.add_argument("--config", required=True, help="Manufacturing TOML (see mfg.example.toml)")
     ap.add_argument("--port", default="auto", help="Serial port, or 'auto' (default)")
     ap.add_argument("--serial", type=int, help="Override the auto-incremented serial")
-    ap.add_argument("--password", help="Override the auto-generated sticker password")
     ap.add_argument("--dry-run", action="store_true",
                     help="Read-only: no flash, no write-once provision, no upload")
     ap.add_argument("--skip-prov-flash", action="store_true",
@@ -239,7 +229,6 @@ def main() -> None:
     run_size        = int(mfg["run_size"])
     device_type     = int(mfg["device_type"])
     serial_start    = int(mfg.get("serial_start", 1))
-    pw_length       = int(mfg.get("password_length", 10))
 
     if not mfr_seckey_path.exists():
         raise SystemExit(f"Manufacturer secret key not found: {mfr_seckey_path}\n"
@@ -248,8 +237,7 @@ def main() -> None:
     mfr_sk = lrv.load_seckey(str(mfr_seckey_path))
     port   = autodetect_port() if args.port == "auto" else args.port
 
-    serial   = args.serial if args.serial is not None else next_serial(ledger_path, serial_start)
-    password = args.password if args.password else gen_password(pw_length)
+    serial = args.serial if args.serial is not None else next_serial(ledger_path, serial_start)
 
     apps = [] if args.no_apps else resolve_apps(cfg, prod_dir)
 
@@ -279,19 +267,19 @@ def main() -> None:
             session.set_time()
             print(f"Set device time to {datetime.now():%Y-%m-%d %H:%M:%S}")
 
-        built = lrv.make_encrypted_blob(
+        built = lrv.make_identity_record(
             mfr_sk=mfr_sk, serial=serial, run_size=run_size,
-            device_type=device_type, hwid=hwid, password=password,
+            device_type=device_type, hwid=hwid,
         )
         pubkey_hex = built["device_pubkey"].hex()
 
         if args.dry_run:
-            print(f"[dry-run] would PROVISION_LRV: {len(built['blob'])} bytes, "
+            print(f"[dry-run] would PROVISION_LRV: {len(built['record'])} bytes, "
                   f"pubkey={pubkey_hex[:12]}…")
             print(f"[dry-run] would upload apps: "
                   f"{', '.join(a for a, _ in apps) or '(none)'}")
         else:
-            status = session.provision_lrv(built["blob"])
+            status = session.provision_lrv(built["record"])
             if status == ST_OK:
                 provisioned = True
                 print(f"Provisioned LRV: serial={serial} pubkey={pubkey_hex[:12]}…")
@@ -318,22 +306,21 @@ def main() -> None:
     if not args.skip_prod_flash and not args.dry_run:
         flash_image(port, prod_dir)
 
-    # --- Stage 4: ledger + sticker ---------------------------------------
+    # --- Stage 4: ledger --------------------------------------------------
     if args.dry_run:
         print("\n[dry-run] complete — nothing was written to the device or ledger.")
         return
 
     if provisioned:
-        append_ledger(ledger_path, serial, hwid, pubkey_hex, password)
+        append_ledger(ledger_path, serial, hwid, pubkey_hex)
 
     disp = f"{built['device_pubkey'][:3].hex().upper()}-{built['device_pubkey'][-3:].hex().upper()}"
     print("\n================= UNIT READY =================")
-    print(f"  serial   : {serial}")
-    print(f"  hwid     : {hwid}")
-    print(f"  pubkey   : {disp}")
-    print(f"  PASSWORD : {password}   <-- print on the inner sticker")
+    print(f"  serial : {serial}")
+    print(f"  hwid   : {hwid}")
+    print(f"  pubkey : {disp}")
     if provisioned:
-        print(f"  ledger   : {ledger_path}")
+        print(f"  ledger : {ledger_path}")
     print("=============================================")
 
 

@@ -455,10 +455,8 @@ static void settings_do_factory_reset(void)
 {
     remove(SETTINGS_PATH);
     remove(SETTINGS_TMP_PATH);
-    /* The LRV identity survives factory reset (it lives on the external EEPROM,
-       untouched by nvs_flash_erase), but re-lock it so the reset device requires
-       the sticker password again. */
-    jpp_lrv_relock();
+    /* The LRV identity survives factory reset: it lives on the external EEPROM,
+       untouched by nvs_flash_erase, and production firmware has no write path. */
     nvs_flash_erase();
     esp_restart();
 }
@@ -684,23 +682,6 @@ static void settings_do_restore(jpp_settings_state_t *state)
 }
 
 /* ---- LRV callbacks ------------------------------------------------------ */
-
-static void settings_do_lrv_unlock(jpp_settings_state_t *state,
-                                    const char *password)
-{
-    jpp_lrv_result_t rc = jpp_lrv_unlock(password);
-    if (rc == JPP_LRV_OK) {
-        state->lrv_is_unlocked = true;
-        state->lrv_unlock_error[0] = '\0';
-        jpp_lrv_get_display_info(&state->lrv_serial, state->lrv_pubkey_str);
-    } else {
-        state->lrv_is_unlocked = false;
-        const char *msg = (rc == JPP_LRV_ERR_WRONG_PASSWORD)
-                          ? "Wrong password." : "Unlock failed.";
-        strncpy(state->lrv_unlock_error, msg, sizeof(state->lrv_unlock_error) - 1u);
-        state->lrv_unlock_error[sizeof(state->lrv_unlock_error) - 1u] = '\0';
-    }
-}
 
 static void settings_do_lrv_verify(jpp_settings_state_t *state)
 {
@@ -1148,7 +1129,6 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .do_jingle_change       = settings_do_jingle_change,
         .do_settings_backup     = settings_do_backup,
         .do_settings_restore    = settings_do_restore,
-        .do_lrv_unlock          = settings_do_lrv_unlock,
         .do_lrv_verify          = settings_do_lrv_verify,
         .do_lrv_server_stop     = settings_do_lrv_server_stop,
         .do_username_save       = settings_do_username_save,
@@ -1159,10 +1139,9 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     s_rtc_for_lrv    = rtc_state;
     jpp_settings_screen_init(&settings_state, &settings_deps);
 
-    /* Initialise LRV display state from NVS. */
-    settings_state.lrv_has_data    = jpp_lrv_has_data();
-    settings_state.lrv_is_unlocked = jpp_lrv_is_unlocked();
-    if (settings_state.lrv_is_unlocked) {
+    /* Initialise LRV display state from the identity loaded off the EEPROM. */
+    settings_state.lrv_has_data = jpp_lrv_has_data();
+    if (settings_state.lrv_has_data) {
         jpp_lrv_get_display_info(&settings_state.lrv_serial,
                                   settings_state.lrv_pubkey_str);
     }

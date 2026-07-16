@@ -27,7 +27,6 @@ provision-device
       --hwid <str>          eFuse MAC address of the target device
                             (read from device with: esptool.py chip_id)
                             format: "AA:BB:CC:DD:EE:FF"
-      --password <str>      Password to be printed on the device's inner sticker
 
     Optional:
       --device-seckey <file>  Reuse an existing device secret key file instead
@@ -41,9 +40,9 @@ LRV certificate format (signed by the manufacturer)
     hwid=<AA:BB:CC:DD:EE:FF>
     device_pubkey=<64 lowercase hex chars>
 
-Encrypted blob format (what gets stored on the AT24C32 EEPROM)
---------------------------------------------------------------
-The plaintext is a packed binary structure:
+Identity record format (what gets stored on the AT24C32 EEPROM)
+---------------------------------------------------------------
+The record is a packed binary structure, stored in the clear:
     serial     2 B LE
     pubkey     32 B
     seckey     64 B  (seed||pubkey, libsodium format)
@@ -53,14 +52,16 @@ The plaintext is a packed binary structure:
     cert       cert_len B (including NUL terminator)
 
 Note: run_size and device_type are encoded in the certificate text and are
-NOT stored as separate binary fields in the blob. The manufacturer public key
+NOT stored as separate binary fields in the record. The manufacturer public key
 is never stored on the device at all — verifiers hold it out-of-band.
 
-The plaintext is encrypted with libsodium crypto_secretbox_easy:
-    key  = BLAKE2b-256(password)
-    blob = nonce(24) || ciphertext (plaintext + 16-byte Poly1305 MAC)
+There is no password and no encryption: the device reads its identity straight
+off the EEPROM at boot. Confidentiality of the record rests on physical access
+to the chip, and the device secret key it carries is only ever used to sign
+verification challenges. The firmware mirrors this layout in main/jpp_lrv.c —
+keep the two in sync.
 
-The raw blob is pushed to the device over the JPPD-SMP PROVISION_LRV command
+The record is pushed to the device over the JPPD-SMP PROVISION_LRV command
 (0x30), which the provisioning firmware write-once-writes to the EEPROM's
 IDENTITY region. It is never restorable via a user backup.
 """
@@ -76,10 +77,6 @@ from jppd_upload import _SMPSession, ST_OK, ST_ERR_EXISTS, STATUS_NAMES  # noqa:
 
 try:
     import nacl.signing
-    import nacl.secret
-    import nacl.hash
-    import nacl.utils
-    import nacl.encoding
 except ImportError:
     print("Error: PyNaCl is required.  Install with: pip install pynacl", file=sys.stderr)
     sys.exit(1)
@@ -105,15 +102,6 @@ def seckey_to_libsodium_bytes(sk: nacl.signing.SigningKey) -> bytes:
     return seed + pubkey
 
 
-def derive_key(password: str) -> bytes:
-    """Derive a 32-byte symmetric key from the password using BLAKE2b."""
-    return nacl.hash.generichash(
-        password.encode("utf-8"),
-        digest_size=32,
-        encoder=nacl.encoding.RawEncoder
-    )
-
-
 def build_cert(serial: int, run_size: int, device_type: int,
                hwid: str, pubkey_bytes: bytes) -> str:
     """Return the LRV certificate text (to be signed by the manufacturer)."""
@@ -127,11 +115,11 @@ def build_cert(serial: int, run_size: int, device_type: int,
     )
 
 
-def serialise_plaintext(serial: int,
-                         pubkey: bytes, seckey_libsodium: bytes,
-                         cert_sig: bytes,
-                         hwid: str, cert: str) -> bytes:
-    """Pack all fields into the binary plaintext format expected by firmware.
+def serialise_record(serial: int,
+                     pubkey: bytes, seckey_libsodium: bytes,
+                     cert_sig: bytes,
+                     hwid: str, cert: str) -> bytes:
+    """Pack all fields into the binary record format expected by firmware.
 
     Layout:
         serial     2 B LE
@@ -160,24 +148,16 @@ def serialise_plaintext(serial: int,
             + cert_bytes)
 
 
-def encrypt_blob(plaintext: bytes, password: str) -> bytes:
-    """Encrypt the plaintext with crypto_secretbox_easy (XSalsa20-Poly1305)."""
-    key  = derive_key(password)
-    box  = nacl.secret.SecretBox(key)
-    # SecretBox.encrypt() prepends a random 24-byte nonce automatically.
-    return bytes(box.encrypt(plaintext))
-
-
-def make_encrypted_blob(mfr_sk: 'nacl.signing.SigningKey',
-                        serial: int, run_size: int, device_type: int,
-                        hwid: str, password: str,
-                        device_sk: 'nacl.signing.SigningKey' = None) -> dict:
-    """Build the full encrypted LRV blob for one device.
+def make_identity_record(mfr_sk: 'nacl.signing.SigningKey',
+                         serial: int, run_size: int, device_type: int,
+                         hwid: str,
+                         device_sk: 'nacl.signing.SigningKey' = None) -> dict:
+    """Build the full raw LRV identity record for one device.
 
     Generates (or reuses) the device keypair, builds and signs the certificate
-    with the manufacturer key, serialises + encrypts the plaintext. Pure data —
-    no serial I/O — so both the CLI and the prepare_device orchestrator can use
-    it. Returns a dict with keys: blob, device_pubkey, device_seckey, cert_text,
+    with the manufacturer key, and serialises the record. Pure data — no serial
+    I/O — so both the CLI and the prepare_device orchestrator can use it.
+    Returns a dict with keys: record, device_pubkey, device_seckey, cert_text,
     cert_sig.
     """
     if device_sk is None:
@@ -188,7 +168,7 @@ def make_encrypted_blob(mfr_sk: 'nacl.signing.SigningKey',
     cert_text = build_cert(serial, run_size, device_type, hwid, dev_pubkey)
     cert_sig  = mfr_sk.sign(cert_text.encode("utf-8")).signature
 
-    plaintext = serialise_plaintext(
+    record = serialise_record(
         serial           = serial,
         pubkey           = dev_pubkey,
         seckey_libsodium = dev_seckey_libsodium,
@@ -197,7 +177,7 @@ def make_encrypted_blob(mfr_sk: 'nacl.signing.SigningKey',
         cert             = cert_text,
     )
     return {
-        "blob":          encrypt_blob(plaintext, password),
+        "record":        record,
         "device_pubkey": dev_pubkey,
         "device_seckey": dev_seckey_libsodium,
         "cert_text":     cert_text,
@@ -243,27 +223,26 @@ def cmd_provision_device(args: argparse.Namespace) -> None:
     # Load manufacturer secret key (used only for signing the certificate).
     mfr_sk = load_seckey(args.mfr_seckey)
 
-    built = make_encrypted_blob(
+    built = make_identity_record(
         mfr_sk      = mfr_sk,
         serial      = args.serial,
         run_size    = args.run_size,
         device_type = args.device_type,
         hwid        = args.hwid,
-        password    = args.password,
         device_sk   = dev_sk,
     )
-    dev_pubkey     = built["device_pubkey"]
-    encrypted_blob = built["blob"]
+    dev_pubkey = built["device_pubkey"]
+    record     = built["record"]
 
     print(f"\nLRV Certificate:\n{built['cert_text']}")
     print(f"Certificate signature: {built['cert_sig'].hex()}\n")
-    print(f"Encrypted blob: {len(encrypted_blob)} bytes")
+    print(f"Identity record: {len(record)} bytes")
 
-    # Push the blob to the device's EEPROM over JPPD-SMP (write-once).
+    # Push the record to the device's EEPROM over JPPD-SMP (write-once).
     session = _SMPSession(args.port)
     try:
         session.session_start()
-        status = session.provision_lrv(encrypted_blob)
+        status = session.provision_lrv(record)
         if status == ST_ERR_EXISTS:
             raise SystemExit(
                 "Device already provisioned (write-once): its LRV IDENTITY "
@@ -279,9 +258,7 @@ def cmd_provision_device(args: argparse.Namespace) -> None:
     print("\nProvisioned OK.")
     print(f"Device public key: {dev_pubkey.hex()}")
     print(f"Pubkey display:    {dev_pubkey[:3].hex().upper()}-{dev_pubkey[-3:].hex().upper()}")
-    print(f"LRV password:      {args.password}")
-    print(f"\nPrint this password on the inner sticker of unit #{args.serial}.")
-    print("Now flash the PRODUCTION firmware (provisioning disabled).")
+    print("\nNow flash the PRODUCTION firmware (provisioning disabled).")
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +293,6 @@ def main() -> None:
     p_pv.add_argument("--hwid",         required=True,
                       help="eFuse MAC address (e.g. AA:BB:CC:DD:EE:FF). "
                            "Read from device with: esptool.py chip_id")
-    p_pv.add_argument("--password",     required=True,
-                      help="Password to print on inner sticker")
     p_pv.add_argument("--device-seckey",
                       help="Reuse existing device secret key file (64 bytes). "
                            "Omit to generate a fresh keypair.")

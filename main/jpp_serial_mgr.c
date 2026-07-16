@@ -381,8 +381,8 @@ static uint8_t s_lrv_resp_buf[512u];
 
 static void handle_get_lrv_data(uint8_t seq)
 {
-    if (!jpp_lrv_is_unlocked()) {
-        send_err(seq, SMP_ST_ERR_DENIED);
+    if (!jpp_lrv_has_data()) {
+        send_err(seq, SMP_ST_ERR_NOT_FOUND);
         return;
     }
 
@@ -890,7 +890,7 @@ static void handle_provision_lrv(uint8_t seq, const uint8_t *body,
 {
     if (body == NULL || body_len == 0u) { send_err(seq, SMP_ST_ERR_INVALID); return; }
 
-    jpp_lrv_result_t rc = jpp_lrv_store_encrypted_blob(body, body_len);
+    jpp_lrv_result_t rc = jpp_lrv_store_identity(body, body_len);
     switch (rc) {
     case JPP_LRV_OK:
         ESP_LOGI(TAG, "PROVISION_LRV_OK (%u bytes)", (unsigned)body_len);

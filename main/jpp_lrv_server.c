@@ -93,7 +93,7 @@ static void send_verification_page(httpd_req_t *req)
 {
     jpp_lrv_data_t d;
     if (jpp_lrv_get_full_data(&d) != JPP_LRV_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "LRV not unlocked");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No LRV identity");
         return;
     }
 
@@ -210,8 +210,8 @@ static esp_err_t handle_root_get(httpd_req_t *req)
 
 jpp_lrv_server_result_t jpp_lrv_server_start(jpp_rtc_state_t *rtc)
 {
-    if (!jpp_lrv_is_unlocked()) {
-        return JPP_LRV_SERVER_ERR_NOT_UNLOCKED;
+    if (!jpp_lrv_has_data()) {
+        return JPP_LRV_SERVER_ERR_NO_DATA;
     }
     if (!wifi_is_connected()) {
         return JPP_LRV_SERVER_ERR_NO_WIFI;

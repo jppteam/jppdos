@@ -119,7 +119,7 @@ Returns device identification and SD card information.
 
 ### 0x03 — GET_LRV_DATA
 
-Returns Limited Run Verification data for the certificate verification flow. Requires LRV data to be unlocked on the device (Settings › \* Device Info \* › enter password). Returns `ERR_DENIED` if locked.
+Returns Limited Run Verification data for the certificate verification flow. Requires the device to carry an LRV identity (provisioned at manufacturing); returns `ERR_NOT_FOUND` on a device without one. No password or unlock step is involved — a provisioned device serves this data from boot.
 
 | Direction | Body |
 |-----------|------|
@@ -282,14 +282,16 @@ Returns `ERR_NOT_FOUND` if the path does not exist, `ERR_OVERFLOW` if the file e
 
 ### 0x30 — PROVISION_LRV *(provisioning firmware only)*
 
-Write the encrypted LRV identity blob to the device's AT24C32 EEPROM (write-once). This command exists **only** in firmware built with `CONFIG_JPP_LRV_PROVISIONING=y`; a production device answers `ERR_INVALID` (unknown command). Sent by the one-command `scripts/prepare_device.py` orchestrator (or the lower-level `scripts/lrv_manufacturing.py provision-device` for manual runs). The orchestrator reads the device's own eFuse MAC via `GET_INFO` for the certificate `hwid`, so no `esptool.py chip_id` step is needed.
+Write the raw LRV identity record to the device's AT24C32 EEPROM (write-once). This command exists **only** in firmware built with `CONFIG_JPP_LRV_PROVISIONING=y`; a production device answers `ERR_INVALID` (unknown command). Sent by the one-command `scripts/prepare_device.py` orchestrator (or the lower-level `scripts/lrv_manufacturing.py provision-device` for manual runs). The orchestrator reads the device's own eFuse MAC via `GET_INFO` for the certificate `hwid`, so no `esptool.py chip_id` step is needed.
 
 | Direction | Body |
 |-----------|------|
-| Host → device | `[blob: raw encrypted LRV blob]` |
+| Host → device | `[record: raw LRV identity record]` |
 | Device → host | — |
 
-The device write-once-writes the blob to the EEPROM IDENTITY region. If an identity is already provisioned it responds `ERR_EXISTS` and does not overwrite it. Returns `ERR_INVALID` on a malformed/too-short blob, `ERR_NOT_FOUND` if no EEPROM is fitted.
+The record is the packed, unencrypted layout documented in `scripts/lrv_manufacturing.py` and mirrored by `main/jpp_lrv.c`: `serial(2 LE) + device_pubkey(32) + device_seckey(64) + cert_sig(64) + hwid(24) + cert_len(2 LE) + cert(cert_len)`.
+
+The device write-once-writes the record to the EEPROM IDENTITY region. If an identity is already provisioned it responds `ERR_EXISTS` and does not overwrite it. Returns `ERR_INVALID` on a malformed/too-short record, `ERR_NOT_FOUND` if no EEPROM is fitted.
 
 ---
 
@@ -298,8 +300,8 @@ The device write-once-writes the blob to the EEPROM IDENTITY region. If an ident
 | Code | Name | Meaning |
 |------|------|---------|
 | 0x00 | OK | Success |
-| 0x01 | ERR_DENIED | User denied consent, or LRV data is locked |
-| 0x02 | ERR_NOT_FOUND | File or directory does not exist |
+| 0x01 | ERR_DENIED | User denied consent |
+| 0x02 | ERR_NOT_FOUND | File or directory does not exist (or no LRV identity / no EEPROM) |
 | 0x03 | ERR_IO | SD card or filesystem error |
 | 0x04 | ERR_EXISTS | Target already exists (rename/mkdir collision, or LRV already provisioned) |
 | 0x05 | ERR_INVALID | Malformed request (bad path, unknown command, wrong proto version) |

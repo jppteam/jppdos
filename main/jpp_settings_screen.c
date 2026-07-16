@@ -645,14 +645,6 @@ static void render_device_info(const jpp_settings_state_t *state)
 {
     draw_section_heading("Device Info");
     switch (state->lrv_ss) {
-    case JPP_LRV_SS_LOCKED:
-        ssd1306_draw_string(2, 0, "LRV data is locked.", false);
-        ssd1306_draw_string(3, 0, "Press OK to unlock", false);
-        ssd1306_draw_string(4, 0, "with printed password.", false);
-        if (state->lrv_unlock_error[0] != '\0') {
-            ssd1306_draw_string(6, 0, state->lrv_unlock_error, false);
-        }
-        break;
     case JPP_LRV_SS_MAIN: {
         draw_centred(2, "J++Device");
         char unit[20];
@@ -961,8 +953,7 @@ static bool handle_top_level(jpp_settings_state_t *state,
         state->time_ss = JPP_TIME_SS_MAIN;
         /* Initialise Device Info subscreen state on open. */
         if (state->selected_section == JPP_SETTINGS_SECTION_DEVICE_INFO) {
-            state->lrv_ss = state->lrv_is_unlocked ? JPP_LRV_SS_MAIN : JPP_LRV_SS_LOCKED;
-            state->lrv_unlock_error[0] = '\0';
+            state->lrv_ss = JPP_LRV_SS_MAIN;
             state->lrv_verify_error[0] = '\0';
         }
         /* Refresh Wi-Fi connection status so the MAIN screen shows the correct
@@ -1380,34 +1371,6 @@ static bool handle_device_info(jpp_settings_state_t *state,
                                 jpp_ui_action_t action)
 {
     switch (state->lrv_ss) {
-    case JPP_LRV_SS_LOCKED:
-        switch (action) {
-        case JPP_UI_ACTION_OK: {
-            /* Prompt for password inline (do_text_input takes over the display). */
-            char password[65] = {0};
-            bool got_input = deps->do_text_input &&
-                             deps->do_text_input("LRV Password", "",
-                                                  JPP_KBD_TYPE_TEXT,
-                                                  password, sizeof(password));
-            if (!got_input) {
-                return true;  /* user cancelled — close section */
-            }
-            state->lrv_unlock_error[0] = '\0';
-            if (deps->do_lrv_unlock) {
-                deps->do_lrv_unlock(state, password);
-            }
-            if (state->lrv_is_unlocked) {
-                state->lrv_ss = JPP_LRV_SS_MAIN;
-            }
-            /* If still locked, lrv_unlock_error is populated; stay on LOCKED screen. */
-            break;
-        }
-        case JPP_UI_ACTION_BACK:
-            return true;
-        default: break;
-        }
-        break;
-
     case JPP_LRV_SS_MAIN:
         switch (action) {
         case JPP_UI_ACTION_OK:

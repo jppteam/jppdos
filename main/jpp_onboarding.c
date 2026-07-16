@@ -31,13 +31,13 @@ static jpp_ui_action_t wait_key(jpp_ui_shell_t *shell)
 }
 
 /* Screen 1: "Welcome to J++Device! / This is unit NN/20 / Press OK to set
-   username" — the unit line is omitted unless LRV data is present and
-   unlocked. Blocks on OK only; first boot is not skippable. */
+   username" — the unit line is omitted unless LRV data is present. Blocks on
+   OK only; first boot is not skippable. */
 static void screen_welcome(jpp_ui_shell_t *shell)
 {
     uint16_t serial = 0u;
     uint16_t run_size = 0u;
-    bool has_unit = jpp_lrv_has_data() && jpp_lrv_is_unlocked();
+    bool has_unit = jpp_lrv_has_data();
     if (has_unit) {
         char pubkey_str[16];
         jpp_lrv_get_display_info(&serial, pubkey_str);

@@ -4,7 +4,7 @@
  * jpp_onboarding — first-boot welcome flow.
  *
  * Runs once (gated on an NVS flag), blocking, before the launcher UI takes
- * over: a welcome dialog (with unit serial/run count if LRV data is unlocked),
+ * over: a welcome dialog (with unit serial/run count if LRV data is present),
  * an optional username prompt, then a greeting with a "Connect to Wi-Fi now?"
  * choice that hands off into Settings on Yes.
  */
