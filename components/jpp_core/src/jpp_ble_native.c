@@ -65,7 +65,8 @@ static const char *TAG = "jpp_ble_native";
 typedef struct {
     char     address[JPP_SDK_BLE_ADDR_LEN]; /* "AA:BB:CC:DD:EE:FF\0" */
     uint16_t handle;
-    uint16_t rx_char_handle; /* cached value handle for the app-host RX char */
+    uint16_t rx_char_handle; /* cached value handle for the char we write to */
+    uint16_t tx_char_handle; /* cached value handle for the char we read from  */
     bool     active;
 } ble_conn_slot_t;
 
@@ -96,9 +97,24 @@ static uint8_t           s_read_buf[2048];
 static size_t            s_read_len;
 static uint16_t          s_discovered_handle; /* temp: filled by disc_chr_cb */
 
+/* Set while ble_disconnect_impl waits for its BLE_GAP_EVENT_DISCONNECT so the
+   connect callback only signals s_ble_done for a solicited teardown — an
+   unsolicited mid-GATT-op disconnect must not race the op's own completion. */
+static volatile bool     s_awaiting_disc = false;
+
 /* ---- Connectable advertising flag ---------------------------------------- */
 
 static bool s_connectable = false;
+
+/* Advertising restart state. Undirected connectable advertising stops the moment
+   a central connects, so a peripheral must re-arm it on disconnect to stay
+   reconnectable. MeetApp's participant is read/written over several separate
+   leader connections (round A nonce, round B partial sig, round C final sig), so
+   without this it would only ever accept the first round. s_adv_active tracks
+   whether the app wants advertising up; s_adv_params is the last-used params so
+   the disconnect handler can restart with the same mode. */
+static bool                     s_adv_active = false;
+static struct ble_gap_adv_params s_adv_params;
 
 /* ---- Stack active state -------------------------------------------------- */
 
@@ -281,6 +297,30 @@ static jpp_broker_status_t ble_scan_impl(
 
 /* ---- Advertise ----------------------------------------------------------- */
 
+/* GAP callback for advertising-initiated (peripheral) connections. Its only job
+   is to re-arm advertising when such a connection drops, so the peripheral stays
+   reconnectable across a multi-round exchange. */
+static int adv_gap_event_cb(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+
+    switch (event->type) {
+    case BLE_GAP_EVENT_DISCONNECT:
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+        if (s_adv_active) {
+            int rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
+                                       &s_adv_params, adv_gap_event_cb, NULL);
+            if (rc != 0 && rc != BLE_HS_EALREADY) {
+                ESP_LOGW(TAG, "adv restart failed: %d", rc);
+            }
+        }
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
 static jpp_broker_status_t ble_advertise_start_impl(
     void *context,
     const uint8_t *payload,
@@ -301,17 +341,21 @@ static jpp_broker_status_t ble_advertise_start_impl(
         return JPP_BROKER_STATUS_OK;
     }
 
-    struct ble_gap_adv_params adv_params;
-    memset(&adv_params, 0, sizeof(adv_params));
-    adv_params.conn_mode = s_connectable
-                         ? BLE_GAP_CONN_MODE_UND   /* undirected connectable */
-                         : BLE_GAP_CONN_MODE_NON;  /* non-connectable        */
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    memset(&s_adv_params, 0, sizeof(s_adv_params));
+    s_adv_params.conn_mode = s_connectable
+                           ? BLE_GAP_CONN_MODE_UND   /* undirected connectable */
+                           : BLE_GAP_CONN_MODE_NON;  /* non-connectable        */
+    s_adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
+    /* Mark active before starting so a near-instant connect+disconnect still
+       re-arms. A connectable peer needs the disconnect handler to resume adv;
+       pass adv_gap_event_cb for both modes (harmless when non-connectable). */
+    s_adv_active = true;
     rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
-                           &adv_params, NULL, NULL);
+                           &s_adv_params, adv_gap_event_cb, NULL);
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "ble_gap_adv_start failed: %d", rc);
+        s_adv_active = false;
         jpp_broker_error_result(result, "BLE_ADV_START_FAILED");
         return JPP_BROKER_STATUS_OK;
     }
@@ -331,6 +375,8 @@ static jpp_broker_status_t ble_advertise_stop_impl(
         return JPP_BROKER_STATUS_INVALID_ARGUMENT;
     }
 
+    /* Clear intent first so the disconnect handler does not re-arm advertising. */
+    s_adv_active = false;
     int rc = ble_gap_adv_stop();
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGW(TAG, "ble_gap_adv_stop failed: %d", rc);
@@ -355,6 +401,15 @@ static int connect_event_cb(struct ble_gap_event *event, void *arg)
             }
         }
         xSemaphoreGive(s_ble_done);
+    } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
+        /* Only wake ble_disconnect_impl for a teardown it is waiting on. NimBLE
+           keeps the peer in its connection table until this fires, so a caller
+           that reconnects to the same address immediately (MeetApp's round A→B→C)
+           would otherwise hit BLE_HS_EDONE ("already connected"). */
+        if (s_awaiting_disc) {
+            s_awaiting_disc = false;
+            xSemaphoreGive(s_ble_done);
+        }
     }
     return 0;
 }
@@ -446,6 +501,7 @@ static jpp_broker_status_t ble_connect_impl(
     strncpy(slot->address, address, JPP_SDK_BLE_ADDR_LEN - 1u);
     slot->address[JPP_SDK_BLE_ADDR_LEN - 1u] = '\0';
     slot->rx_char_handle = 0;
+    slot->tx_char_handle = 0;
     slot->active         = true;
 
     jpp_broker_ok_result(result);
@@ -455,24 +511,43 @@ static jpp_broker_status_t ble_connect_impl(
 
 /* ---- Read characteristic ------------------------------------------------- */
 
+/*
+ * Long-read callback. ble_gattc_read_long() invokes this once per ATT Read /
+ * Read Blob fragment (error->status == 0, attr->offset gives the fragment's
+ * position in the overall value) and finally once with BLE_HS_EDONE (attr ==
+ * NULL) to signal completion. We reassemble the fragments into s_read_buf by
+ * offset and only release s_ble_done on the terminal callback.
+ *
+ * This replaces ble_gattc_read_by_uuid(): NimBLE's Read-By-Type server response
+ * copies each attribute value through a fixed 19-byte stack buffer
+ * (ble_att_svr_build_read_type_rsp), so a Read-Using-Characteristic-UUID read
+ * silently truncates any value longer than 19 bytes regardless of the
+ * negotiated MTU — which corrupted MeetApp's 97-byte nonce blob.
+ */
 static int read_char_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                         struct ble_gatt_attr *attr, void *arg)
 {
     (void)conn_handle;
     (void)arg;
 
-    if (error->status == 0 && attr != NULL) {
-        s_read_len = OS_MBUF_PKTLEN(attr->om);
-        if (s_read_len > sizeof(s_read_buf)) {
-            s_read_len = sizeof(s_read_buf);
+    if (error->status == 0 && attr != NULL && attr->om != NULL) {
+        /* Intermediate fragment: append at attr->offset. */
+        uint16_t frag_len = OS_MBUF_PKTLEN(attr->om);
+        size_t   off      = attr->offset;
+        if (off < sizeof(s_read_buf) && frag_len > 0u) {
+            uint16_t room = (uint16_t)(sizeof(s_read_buf) - off);
+            uint16_t copy = frag_len < room ? frag_len : room;
+            uint16_t copied = 0u;
+            ble_hs_mbuf_to_flat(attr->om, s_read_buf + off, copy, &copied);
+            if ((size_t)off + copied > s_read_len) {
+                s_read_len = (size_t)off + copied;
+            }
         }
-        uint16_t read_copied = 0u;
-        ble_hs_mbuf_to_flat(attr->om, s_read_buf, (uint16_t)s_read_len, &read_copied);
-        s_read_len = read_copied;
-    } else {
-        s_read_len = 0u;
+        return 0; /* keep reading; do not signal completion yet */
     }
-    s_ble_status = error->status;
+
+    /* Terminal callback: BLE_HS_EDONE on success, or a real error. */
+    s_ble_status = (error->status == BLE_HS_EDONE) ? 0 : error->status;
     xSemaphoreGive(s_ble_done);
     return 0;
 }
@@ -506,6 +581,10 @@ static bool parse_uuid(const char *str, ble_uuid_any_t *out)
     return false;
 }
 
+/* Defined below with the write path; shared for read/write handle discovery. */
+static int disc_chr_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                       const struct ble_gatt_chr *chr, void *arg);
+
 static jpp_broker_status_t ble_read_char_impl(
     void *context,
     const char *address,
@@ -535,15 +614,45 @@ static jpp_broker_status_t ble_read_char_impl(
 
     BLE_OP_ENTER();
 
+    /* Discover the characteristic value handle on first read from this peer.
+       We must read by handle (Read Request / Read Blob) rather than by UUID:
+       NimBLE's Read-By-Type server response truncates every value to 19 bytes
+       (fixed stack buffer in ble_att_svr_build_read_type_rsp), so
+       ble_gattc_read_by_uuid() silently drops anything longer regardless of the
+       negotiated MTU. */
+    if (slot->tx_char_handle == 0) {
+        s_discovered_handle = 0;
+        s_ble_status = -1;
+        int drc = ble_gattc_disc_chrs_by_uuid(slot->handle,
+                                               0x0001, 0xffff,
+                                               &c_uuid.u,
+                                               disc_chr_cb, NULL);
+        if (drc != 0) {
+            ESP_LOGW(TAG, "ble_gattc_disc_chrs_by_uuid (read) failed: %d", drc);
+            jpp_broker_error_result(result, "BLE_DISC_FAILED");
+            BLE_OP_EXIT();
+            return JPP_BROKER_STATUS_OK;
+        }
+        xSemaphoreTake(s_ble_done, portMAX_DELAY);
+        if (s_ble_status != 0 || s_discovered_handle == 0) {
+            ESP_LOGW(TAG, "Read char discovery failed: st=%d h=%u",
+                     s_ble_status, s_discovered_handle);
+            jpp_broker_error_result(result, "BLE_DISC_ERROR");
+            BLE_OP_EXIT();
+            return JPP_BROKER_STATUS_OK;
+        }
+        slot->tx_char_handle = s_discovered_handle;
+    }
+
     s_ble_status = -1;
     s_read_len   = 0u;
 
-    int rc = ble_gattc_read_by_uuid(slot->handle,
-                                    0x0001, 0xffff,
-                                    &c_uuid.u,
-                                    read_char_cb, NULL);
+    /* Read Blob (long read): reassembles values of any length, so it is immune
+       to both the 19-byte Read-By-Type cap and a small negotiated MTU. */
+    int rc = ble_gattc_read_long(slot->handle, slot->tx_char_handle, 0,
+                                 read_char_cb, NULL);
     if (rc != 0) {
-        ESP_LOGW(TAG, "ble_gattc_read_by_uuid failed: %d", rc);
+        ESP_LOGW(TAG, "ble_gattc_read_long failed: %d", rc);
         jpp_broker_error_result(result, "BLE_READ_FAILED");
         BLE_OP_EXIT();
         return JPP_BROKER_STATUS_OK;
@@ -754,9 +863,19 @@ static jpp_broker_status_t ble_disconnect_impl(
         return JPP_BROKER_STATUS_OK;
     }
 
+    /* ble_gap_terminate() is asynchronous: NimBLE only removes the peer from its
+       connection table when BLE_GAP_EVENT_DISCONNECT fires. Wait for that so a
+       caller reconnecting to the same address right away doesn't get
+       BLE_HS_EDONE. Bounded, so a dropped event can't wedge the caller. */
+    s_awaiting_disc = true;
     int rc = ble_gap_terminate(slot->handle, BLE_ERR_REM_USER_CONN_TERM);
     if (rc != 0) {
+        /* ENOTCONN etc.: already gone, no event will come. */
         ESP_LOGW(TAG, "ble_gap_terminate failed: %d", rc);
+        s_awaiting_disc = false;
+    } else if (xSemaphoreTake(s_ble_done, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        s_awaiting_disc = false;
+        ESP_LOGW(TAG, "disconnect completion timed out");
     }
 
     memset(slot, 0, sizeof(*slot));
