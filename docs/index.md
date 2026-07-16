@@ -1,5 +1,7 @@
 # JPPDOS App Developer Guide
 
+*Firmware v1.0-RTM · 2026-07-16*
+
 **Guides:** [MicroPython](micropython/getting-started.md) · [Native C](native/getting-started.md) · [Code modules](native/modules.md) · [Manifest reference](manifest.md) · [SDK reference](sdk-reference.md) · [Serial protocol](serial-protocol.md)
 
 **Contents:** [Hardware](#the-jdevice-at-a-glance) · [App model](#app-model) · [MicroPython vs native C](#choosing-micropython-or-native-c) · [Quick examples](#quick-examples) · [Where to go next](#where-to-go-next)

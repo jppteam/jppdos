@@ -28,7 +28,7 @@ sdkconfig.bak
 scripts/mfr_seckey.bin
 scripts/mfr_pubkey.bin
 scripts/testbackup.json
-# Per-run manufacturing config + ledger (ledger holds sticker PASSWORDS)
+# Per-run manufacturing config + ledger (ledger holds per-unit serial/hwid/pubkey records)
 scripts/mfg.toml
 scripts/ledger.csv
 

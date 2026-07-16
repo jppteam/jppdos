@@ -1,5 +1,7 @@
 # HARDWARE_SUMMARY.md — Agent Reference for the ESP32-C6-based J++Device
 
+*Firmware v1.0-RTM · 2026-07-16*
+
 Purpose: give a coding agent everything needed to work on ESP-IDF firmware
 for the **J++Device**. This file documents the board's MCU, every
 pin, every connected device/IC, the bus configuration each one needs, and the
@@ -20,16 +22,18 @@ behavior.
 |---|---|
 | Target | **ESP32-C6** (`CONFIG_IDF_TARGET="esp32c6"`, RISC-V single core) |
 | CPU clock | 160 MHz |
-| Flash | 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`) |
-| Partition table | `partitions.csv`; factory app at offset 0x10000, plus `data_fs`, `runtime_fs`, and `coredump` |
+| Flash | 2 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y`) — a tight budget; see `partitions.csv` and the flash-budget note in AGENTS.md |
+| Partition table | `partitions.csv`; `nvs` + `phy_init`, then a maximized `factory` app at offset 0x10000 (0x1D8000 = 1,933,312 B), plus minimal `data_fs`/`runtime_fs` SPIFFS. Coredump-to-flash is disabled, so there is no coredump partition. |
 | ESP-IDF | v5.5.1 |
 | FreeRTOS tick | 100 Hz (`CONFIG_FREERTOS_HZ=100`) |
-| Console | UART0 @ 115200 (logs + JPPD-SMP binary protocol) |
+| Console | Native USB-Serial-JTAG (logs + JPPD-SMP binary protocol); no separate UART bridge chip on this board, so UART0 is not reachable from a host |
 | Main task stack | 8192 bytes (`CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192`) |
 
-ESP-IDF logging goes to UART0 at 115200 baud; the same UART carries the
-JPPD-SMP binary management protocol (see §7). The USB-Serial-JTAG peripheral
-is used for flashing.
+ESP-IDF logging and the JPPD-SMP binary management protocol (see §7) share the
+single native USB-Serial-JTAG peripheral — the board's one USB-C port has no
+separate UART bridge chip, so this is also the interface used for flashing and
+the serial console. A TX mutex keeps log lines and JPPD-SMP binary frames from
+interleaving on the wire.
 
 ---
 
@@ -46,12 +50,13 @@ All GPIO numbers are fixed by the PCB. Do not reassign without a board respin.
 | **5** | LoRa RST | output | SX1276 reset (active-low) |
 | **6** | SPI CS1 | output | SX1276 LoRa chip-select |
 | **7** | SPI CS2 | output | SD card chip-select |
+| **8** | WS2812 data | output (RMT) | Onboard single-pixel addressable RGB LED — the only GPIO not otherwise claimed by this pin map |
 | **9** | BOOT strap | input | Boot/download button (standard ESP32-C6 strap) |
 | **14** | SPI CLK | output | Shared SPI bus clock (SX1276 + SD) |
 | **15** | SPI MOSI | output | Shared SPI bus MOSI |
 | **18** | SPI MISO | input | Shared SPI bus MISO |
-| **19** | I2C SCL | open-drain | Shared I2C bus (SSD1306 + DS1307) |
-| **20** | I2C SDA | open-drain | Shared I2C bus (SSD1306 + DS1307) |
+| **19** | I2C SCL | open-drain | Shared I2C bus (SSD1306 + DS1307 + AT24C32 EEPROM) |
+| **20** | I2C SDA | open-drain | Shared I2C bus (SSD1306 + DS1307 + AT24C32 EEPROM) |
 
 USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
 
@@ -67,7 +72,12 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
   `i2c_master_bus_add_device`, `i2c_master_transmit/_transmit_receive`).
 - **Internal pull-ups enabled in firmware** (`flags.enable_internal_pullup=true`,
   `glitch_ignore_cnt=7`). If the board has weak/no external pull-ups, keep this on.
-- Two devices on the bus: SSD1306 OLED @ **0x3C**, DS1307 RTC @ **0x68**.
+- Three devices on the bus: SSD1306 OLED @ **0x3C**, DS1307 RTC @ **0x68**,
+  AT24C32 EEPROM @ **0x50** (piggybacked on the RTC breakout board).
+- The OLED is required; the **DS1307 and AT24C32 are both optional**. Each is
+  probed at boot (`i2c_master_probe`) and only marked present if it ACKs — a
+  board with neither fitted still boots and runs normally (clock-less, no LRV
+  identity). See §4.2 and §4.8.
 
 ### SPI — shared, `SPI2_HOST`
 - MISO=18, MOSI=15, CLK=14. DMA = auto. `max_transfer_sz = 4096`.
@@ -107,6 +117,11 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
 - Text uses a built-in 5×7 font (`font5x7.h`), 6 px per char → 21 chars/row, 8 rows.
 
 ### 4.2 DS1307 RTC (I2C 0x68)
+- **Optional.** `jpp_rtc_state_init()` probes the bus and only sets
+  `hw_attached` when the chip ACKs; a board with no RTC fitted runs
+  clock-less (no periodic hardware reads) rather than failing to boot. Without
+  hardware and before any NTP sync, `jpp_rtc_get_current()` returns
+  `UNAVAILABLE` and every clock display falls back to `--:--`.
 - Standard DS1307, BCD registers starting at 0x00.
 - Register 0 bit 7 = **CH (Clock Halt)**. A fresh/dead coin cell ships with CH=1
   (oscillator stopped); writing the seconds register with bit7=0 starts it.
@@ -196,6 +211,30 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
   full voltage swing / adequate loudness. Replicate this.
 - Polarity-insensitive (passive piezo).
 
+### 4.8 AT24C32 EEPROM (I2C 0x50, on the RTC breakout)
+- **Optional**, like the DS1307 — `jpp_eeprom_state_init()` probes the bus and
+  only marks the chip `present` when it ACKs.
+- 4096 bytes (32 Kbit), 2-byte big-endian word address, 32-byte page-write
+  boundary, ~5 ms self-timed write cycle per page. The driver polls for ACK
+  rather than a fixed delay (`components/jpp_core/src/jpp_eeprom_core.c`) —
+  at `FREERTOS_HZ=100`, `pdMS_TO_TICKS(6)` rounds down to 0 ticks, so any
+  sub-10 ms `vTaskDelay` here would be a silent no-op and the next page write
+  would NACK.
+- Backs LRV (Limited Run Verification) identity storage: a write-once record
+  written at manufacturing time, read straight into RAM at boot
+  (`jpp_lrv_init()`). Stored raw/unencrypted — no password, no unlock step.
+  Because the chip is external to the ESP32-C6, the identity survives factory
+  reset and a full firmware reflash.
+
+### 4.9 Onboard WS2812 LED (GPIO8, RMT)
+- Single-pixel addressable RGB LED, driven by the RMT TX peripheral with a
+  hand-rolled bit encoder — no `led_strip` managed-component dependency, to
+  keep flash footprint minimal (see the 2 MB flash budget in §1).
+- GPIO8 is otherwise unused by this pin map, making it the only free GPIO on
+  the board.
+- Ungated App SDK surface: `jpp_sdk_led_set_color(ctx, r, g, b)` /
+  `jpp_sdk_led_off(ctx)`.
+
 ---
 
 ## 5. Hardware quirks (must handle)
@@ -228,35 +267,47 @@ These are the board/silicon specifics that are easy to get wrong:
 
 ---
 
-## 6. Initialization order (`app_main` in `main/app_main.c`)
+## 6. Initialization order
+
+Orchestrated by `app_main()` in `main/app_main.c`, which calls into the split
+boot modules (`jpp_hw_init.c`, `jpp_boot_display.c`, `jpp_wifi_init.c`,
+`jpp_native_services.c`, `jpp_app_dispatch.c` — see AGENTS.md's "main/ module
+split" note):
 
 ```
 jpp_heap_monitor_init()   // failed-alloc logging + low-heap sampler, first thing
 jpp_buzzer_init()         // LEDC timer+channel, drive-strength boost on GPIO3
-init_i2c()                // master bus @100kHz + OLED(0x3C) & RTC(0x68)
-ssd1306 splash            // boot display with progress steps
+init_i2c()                // master bus @100kHz; OLED(0x3C) probed/init'd for boot splash
 mount_flash_storage()     // /data + /lib SPIFFS mounts
 settings load             // /data/settings.json probe / defaults
 mount_sd()                // SPI2 bus + SD card at /sd, held mounted
-init_wifi()               // NVS + esp_wifi STA mode
-jpp_serial_mgr_init()     // UART0 RX driver + TX log mutex (JPPD-SMP)
-app discovery             // /sd/apps scan, launcher handoff
+jpp_rtc_state_init()      // probes DS1307 @0x68; optional, hw_attached only if it ACKs
+jpp_lrv_init()             // probes/binds AT24C32 EEPROM @0x50 on the same I2C bus; optional
+init_wifi()                // NVS + esp_wifi STA mode
+jpp_ble_native_init()      // NimBLE controller + host bring-up
+jpp_native_services_init() // wires broker callbacks (file/HTTP/KV/RTC/BLE/ESP-NOW)
+jpp_serial_mgr_init()      // USB-Serial-JTAG driver install + TX log mutex (JPPD-SMP)
+app discovery              // /sd/apps scan, launcher handoff
 ```
 
 ---
 
 ## 7. Serial behavior
-- ESP-IDF logs on UART0 @115200.
-- The same UART carries **JPPD-SMP**, the binary management protocol
-  (`main/jpp_serial_mgr.c`): a host PC can manage SD files, query device
-  info, and retrieve LRV data after the user approves the session on-device.
-  A TX mutex keeps log lines and binary frames from interleaving.
+- ESP-IDF logs go out over the native **USB-Serial-JTAG** peripheral (not
+  UART0 — this board's single USB-C port has no separate UART bridge chip, so
+  UART0 is unreachable from a host).
+- The same peripheral carries **JPPD-SMP**, the binary management protocol
+  (`main/jpp_serial_mgr.c`, installed via `usb_serial_jtag_driver_install`): a
+  host PC can manage SD files, query device info, and retrieve LRV data after
+  the user approves the session on-device. A TX mutex (registered over the
+  ESP_LOG vprintf sink) keeps log lines and binary frames from interleaving.
+  There is no baud rate to configure — it's a USB CDC-ACM byte stream.
 
 ---
 
 ## 8. Required ESP-IDF components
 From `main/CMakeLists.txt`: `jpp_core`, `jpp_native_loader_core`,
 `jpp_crypto_core`, `spiffs`, `fatfs`, `sdmmc` (overridden, see §4.4),
-`driver`, `esp_adc`, `json`, `esp_wifi`, `esp_netif`, `lwip`, `nvs_flash`,
-`bt`, `esp_http_client`, `esp_http_server`, `esp_timer`, `esp_rom`,
-`espressif__libsodium`, and `mbedtls`.
+`driver`, `esp_driver_usb_serial_jtag`, `esp_adc`, `json`, `esp_wifi`,
+`esp_netif`, `lwip`, `nvs_flash`, `bt`, `esp_http_client`, `esp_http_server`,
+`esp_timer`, `esp_rom`, `espressif__libsodium`, and `mbedtls`.

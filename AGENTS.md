@@ -1,5 +1,9 @@
 # PROJECT KNOWLEDGE BASE
 
+*Firmware v1.0-RTM · 2026-07-16 — this snapshot marks the RTM (release to
+manufacturing) milestone. It does not exempt later edits from the freshness
+rule below: any doc touching a release milestone marker should update it too.*
+
 ## DOCUMENTATION MAINTENANCE (NON-NEGOTIABLE)
 These project documents — every `AGENTS.md`, `README.md`, and all files under `docs/` —
 **MUST** be updated in the same change as any code or behaviour they describe.

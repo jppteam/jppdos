@@ -1,5 +1,7 @@
 # ESP-IDF Native/App Contract
 
+*Firmware v1.0-RTM · 2026-07-16*
+
 This document defines the native/app boundary for JPPDOS. The native ESP-IDF core in `components/jpp_core/` owns boot sequencing, storage, settings, broker policy, hardware drivers, and the UI/runtime bridge. Apps interact with the system exclusively through the App SDK and broker services.
 
 ## Boot order
@@ -59,7 +61,7 @@ Two kinds of SDK surface exist:
 
 - **Ungated** — available to every app with no manifest declaration and no consent tracking: frame/canvas rendering, key input, dialogs (`dialog`/`list`/`input`), buzzer, wakelock, scoped storage, shared storage, the KV helper, IPC, `device_status()`, and `get_time()`. The firmware enforces *scoping* (sandbox roots, budgets), not permission.
 - **Declared** — must be listed in the manifest `capabilities` array and consented by the user on first use (lazy / per-use prompts via `jpp_sdk_ensure_cap`):
-  - **Tier 1** (prompted once, persisted to `/data/grants/<app_id>.json`): `http.request`, `ble.scan`, `ble.advertise`, `background.register`.
+  - **Tier 1** (prompted once, persisted to `/data/grants/<app_id>.json`): `http.request`, `ble.scan`, `ble.advertise`, `background.register`, `esp_now`.
   - **Tier 2** (prompted on first use every launch, never persisted): `files.full`, `network.bind`, `ble.connect`, `ble.host`.
 
 A denied capability stays out of the broker caller list; the broker is the final authority. Every denial is logged (`CAP_DENIED` for user-declined or undeclared capabilities, `ACCESS_DENIED` from the broker gate).
@@ -133,7 +135,7 @@ App packages are discovered from `/sd/apps/<dir>/manifest.json`. Each package mu
 | `sdk_min` | int | Inclusive minimum supported SDK version. |
 | `sdk_max` | int | Inclusive maximum supported SDK version. |
 | `entry` | string | Relative compiled entry path inside the app root; no leading `/` and no `..` traversal. `.mpy` for MicroPython apps, `.bin` for native apps. |
-| `capabilities` | list[string] | Only the eight prompted capabilities are declarable — Tier 1: `http.request`, `ble.scan`, `ble.advertise`, `background.register`; Tier 2: `files.full`, `network.bind`, `ble.connect`, `ble.host`. Anything else is `INVALID_CAPABILITY`. |
+| `capabilities` | list[string] | Only the nine prompted capabilities are declarable — Tier 1: `http.request`, `ble.scan`, `ble.advertise`, `background.register`, `esp_now`; Tier 2: `files.full`, `network.bind`, `ble.connect`, `ble.host`. Anything else is `INVALID_CAPABILITY`. |
 | `background.enabled` | bool | Enables or disables background execution for the app. |
 | `background.tasks` | list | Up to `4` tasks, each `{name, interval_s}` or `{name, cron}` — exactly one schedule source per task. `interval_s` ≥ `60`; `cron` is 5-field `min hour dom mon dow`, each field `*` or a single in-range number. Violations reject the manifest (`INVALID_BACKGROUND`). |
 | `toolchain.runtime_version` | string | MicroPython apps only: exact runtime version pin. |
@@ -149,8 +151,8 @@ App packages are discovered from `/sd/apps/<dir>/manifest.json`. Each package mu
 ## SDK surface and versioning
 
 - The native bridge exports SDK version `1`. The `sdk_min` / `sdk_max` range check is inclusive.
-- Available from both C and MicroPython (`jppsdk` module): `set_frame()`, `request_close()`, `log()`, `dialog()`, `list()`, `input()`, `poll_key()`, `wait_key()`, `canvas_write()`, `canvas_clear()`, `canvas_draw_pixel()`, `buzzer_tone()`, `buzzer_play()`, `buzzer_play_sequence()`, `buzzer_stop()`, `wakelock_acquire()`, `wakelock_release()`, `device_status()`, `get_time()`, `file_read()`, `file_write()`, `file_list()`, `shared_read()`, `shared_write()`, `shared_list()`, `file_open()`, `handle_read()`, `handle_write()`, `handle_list()`, `handle_close()`, `background_register()`, `http_request()`, `net_bind()`, `net_accept()`, `net_recv()`, `net_send()`, `net_close()`, `ipc_send()`, `ipc_recv()`, `kv_get()`, `kv_set()`, `kv_delete()`, `ble_scan()`, `ble_advertise_start()`, `ble_advertise_stop()`, `ble_connect()`, `ble_read_char()`, `ble_write_char()`, `ble_disconnect()`, `ble_service_register()`, `ble_service_unregister()`.
-- C-only: `jpp_sdk_confirm()` (the shared Deny/Allow consent surface), `jpp_sdk_file_pick()` (SD file browser, `files.full`), `jpp_sdk_wrap_text()`, and the GATT-host value operations `jpp_sdk_ble_host_set_value()` / `ble_host_wait_write()` / `ble_host_clear()` / `ble_set_connectable()`.
+- Available from both C and MicroPython (`jppsdk` module): `set_frame()`, `request_close()`, `log()`, `dialog()`, `list()`, `input()`, `poll_key()`, `wait_key()`, `canvas_write()`, `canvas_clear()`, `canvas_draw_pixel()`, `canvas_fullscreen()`, `buzzer_tone()`, `buzzer_play()`, `buzzer_play_sequence()`, `buzzer_play_sequence_async()`, `buzzer_stop()`, `led_set_color()`, `led_off()`, `wakelock_acquire()`, `wakelock_release()`, `device_status()`, `get_time()`, `is_dummy_mode()`, `file_read()`, `file_write()`, `file_list()`, `shared_read()`, `shared_write()`, `shared_list()`, `file_open()`, `handle_read()`, `handle_write()`, `handle_list()`, `handle_close()`, `background_register()`, `http_request()`, `net_bind()`, `net_accept()`, `net_recv()`, `net_send()`, `net_close()`, `ipc_send()`, `ipc_recv()`, `kv_get()`, `kv_set()`, `kv_delete()`, `ble_scan()`, `ble_advertise_start()`, `ble_advertise_stop()`, `ble_connect()`, `ble_read_char()`, `ble_write_char()`, `ble_disconnect()`, `ble_service_register()`, `ble_service_unregister()`, `espnow_send()`, `espnow_recv()`.
+- C-only: `jpp_sdk_confirm()` (the shared Deny/Allow consent surface), `jpp_sdk_file_pick()` (SD file browser, `files.full`), `jpp_sdk_wrap_text()`, `jpp_sdk_request_cap()` (proactively fires the consent prompt for one declared capability without doing any work), the code-module surface `jpp_sdk_module_load()` / `jpp_sdk_module_run()` / `jpp_sdk_module_unload()` (native apps only), and the GATT-host value operations `jpp_sdk_ble_host_set_value()` / `ble_host_wait_write()` / `ble_host_clear()` / `ble_set_connectable()`.
 - The `dialog()`, `list()`, and `input()` helpers are the standard high-level UI prompts (message box, selection list, on-screen text/value entry) and are ungated. Modal helpers with a title draw the shared "signature line" rule on page 1 (matching the launcher/settings/WebDAV header). `input()` with `INPUT_DATE` / `INPUT_TIME` renders a field spinner (LEFT/RIGHT pick field, UP/DOWN adjust) with `123` (masked manual entry), `now` (RTC), Cancel, and OK buttons; it returns `YYYY-MM-DD` for dates and `HH:MM:SS` (seconds included) for times.
 - `device_status()` returns `battery_pct` and `charging` (`-1` = unknown; the board has no charge-detect line); `get_time()` returns `"YYYY-MM-DD HH:mm"`. Both ungated. `kv_get()` returns a non-OK status when the key is absent (so a get after a delete reports "not found" rather than an empty value). `ipc_recv()` reports an empty mailbox as `NO_DATA` (MicroPython: returns `None`). `log()` writes the event to the serial console under tag `app_log`.
 - `file_read()` / `file_write()` / `file_list()` use app-local relative-path semantics rooted at `/sd/apps/<app_id>/`.

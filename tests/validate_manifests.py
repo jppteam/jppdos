@@ -255,16 +255,26 @@ def validate_package(
 
 
 def validate_apps_root(
-    apps_root: Path, *, check_entry_file: bool = True
+    apps_root: Path,
+    *,
+    check_entry_file: bool = True,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str, str]]]:
     """Validate every package under apps_root.
 
     Returns (valid, rejected): valid entries are (app_id, entry); rejected
-    entries are (app_dir, reason, details).
+    entries are (app_dir, reason, details). `exclude` skips named directories
+    entirely (for source trees that hold non-package helper dirs alongside
+    real app packages, e.g. `apps/common/` — never used for a real SD-card
+    apps root, where every subdirectory is a discoverable package).
     """
     valid: list[tuple[str, str]] = []
     rejected: list[tuple[str, str, str]] = []
-    for app_dir in sorted(path for path in apps_root.iterdir() if path.is_dir()):
+    for app_dir in sorted(
+        path
+        for path in apps_root.iterdir()
+        if path.is_dir() and path.name not in exclude
+    ):
         reason, details = validate_package(app_dir, check_entry_file=check_entry_file)
         if reason is None:
             manifest = json.loads((app_dir / "manifest.json").read_text(encoding="utf-8"))

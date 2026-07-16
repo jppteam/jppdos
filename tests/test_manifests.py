@@ -31,8 +31,12 @@ MATRIX_EXPECTED = {
 
 def test_repo_app_manifests_are_valid():
     # Entry artefacts (main.mpy, *.bin) are build outputs, so only the
-    # manifest rules are checked for the source tree.
-    valid, rejected = validate_apps_root(APPS_ROOT, check_entry_file=False)
+    # manifest rules are checked for the source tree. apps/common/ is shared
+    # app-side source (jpp_ble_msg) compiled into other apps, not a package
+    # of its own, so it carries no manifest.json and is excluded from scan.
+    valid, rejected = validate_apps_root(
+        APPS_ROOT, check_entry_file=False, exclude=frozenset({"common"})
+    )
     assert rejected == []
     assert {app_id for app_id, _ in valid} == {"demoscene", "games", "meetapp", "testapp_mp", "testapp_native"}
 

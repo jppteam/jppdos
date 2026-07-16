@@ -1,5 +1,7 @@
 # JPPDOS — firmware for the J++Device
 
+*Firmware v1.0-RTM · 2026-07-16*
+
 JPPDOS (J++Device Operating System) is the firmware that runs the **J++Device**:
 a small ESP32-C6 handheld with a monochrome OLED screen, a directional pad,
 a microSD slot, a real-time clock, and Bluetooth LE. It boots straight into a
