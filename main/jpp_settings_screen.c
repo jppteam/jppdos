@@ -1,6 +1,7 @@
 #include "jpp_settings_screen.h"
 #include "jpp_buzzer_core.h"
 #include "jpp_draw_util.h"
+#include "jpp_ui_core.h"
 #include "ssd1306.h"
 
 #include <stdio.h>
@@ -818,14 +819,22 @@ static bool handle_dummy_mode(jpp_settings_state_t *state,
 
 static void render_about(void)
 {
+    /* The device URL is wider than the 21-char (128px/6px) row, so scroll it
+       as a horizontal marquee. https:// prefix and trailing / signal a link. */
+    static const char url[] = "https://jppdevice.by.m4l3vi.ch/";
+    static const size_t url_len = sizeof(url) - 1u;
+    static const size_t window  = SSD1306_WIDTH / SSD1306_CHAR_W;   /* 21 chars */
+    static uint32_t marquee = 0u;
+
     draw_centred_2x(0, "JPPDOS");
-    char ver[12];
-    snprintf(ver, sizeof(ver), "v" JPPDOS_VERSION);
-    draw_centred(2, ver);
+    draw_centred(2, "v" JPPDOS_VERSION);
     jpp_draw_rule(3u);
-    ssd1306_draw_string(4, 0, "ESP32-C6 firmware", false);
-    ssd1306_draw_string(5, 0, "Open & hackable OS", false);
-    ssd1306_draw_string(6, 0, "jppdevice.com", false);
+    draw_centred(4, "Open & hackable fw");
+    draw_centred(5, "by Claude & m4l3vich");
+
+    size_t off = jpp_ui_marquee_offset(marquee, url_len, window, 6u);
+    ssd1306_draw_string(7, 0, url + off, false);
+    marquee++;
 }
 
 static void render_factory_reset(const jpp_settings_state_t *state)
