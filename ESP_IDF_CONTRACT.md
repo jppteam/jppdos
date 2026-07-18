@@ -1,6 +1,6 @@
 # ESP-IDF Native/App Contract
 
-*Firmware v1.0-RTM · 2026-07-16*
+*Firmware v1.0-RTM · 2026-07-18*
 
 This document defines the native/app boundary for JPPDOS. The native ESP-IDF core in `components/jpp_core/` owns boot sequencing, storage, settings, broker policy, hardware drivers, and the UI/runtime bridge. Apps interact with the system exclusively through the App SDK and broker services.
 

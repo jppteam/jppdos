@@ -1,6 +1,6 @@
 # PROJECT KNOWLEDGE BASE
 
-*Firmware v1.0-RTM · 2026-07-16 — this snapshot marks the RTM (release to
+*Firmware v1.0-RTM · 2026-07-18 — this snapshot marks the RTM (release to
 manufacturing) milestone. It does not exempt later edits from the freshness
 rule below: any doc touching a release milestone marker should update it too.*
 

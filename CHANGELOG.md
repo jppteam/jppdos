@@ -4,7 +4,7 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
-## v1.0-RTM — 2026-07-16
+## v1.0-RTM — 2026-07-18
 
 First tagged release. This build is the RTM (release to manufacturing)
 milestone: the firmware, App SDK, and manufacturing/provisioning tooling are
