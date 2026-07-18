@@ -53,6 +53,7 @@ static void screen_welcome(jpp_ui_shell_t *shell)
             snprintf(line, sizeof(line), "This is unit %02u/%u", serial, run_size);
             ssd1306_draw_string(row++, 0u, line, false);
         }
+        row++;
         ssd1306_draw_string(row++, 0u, "Press OK to set", false);
         ssd1306_draw_string(row++, 0u, "username", false);
         ssd1306_flush();
