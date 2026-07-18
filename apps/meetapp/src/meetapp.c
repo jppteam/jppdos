@@ -146,6 +146,90 @@ static void draw_progress_bar(jpp_sdk_context_t *ctx, int y_top, unsigned phase)
     }
 }
 
+/*
+ * Draw a filled (determinate) progress bar: an outlined track filled from the
+ * left in proportion to done/total.  Used by the stepper screen's bottom strip
+ * so it shows overall protocol progress even when nothing is animating.
+ */
+static void draw_bar_determinate(jpp_sdk_context_t *ctx, int y_top,
+                                 size_t done, size_t total)
+{
+    const int x0 = 4;
+    const int x1 = 123;
+    const int h  = 8;
+
+    for (int x = x0; x <= x1; x++) {
+        jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x, (uint8_t)y_top, true);
+        jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x, (uint8_t)(y_top + h - 1), true);
+    }
+    for (int y = y_top; y < y_top + h; y++) {
+        jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x0, (uint8_t)y, true);
+        jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x1, (uint8_t)y, true);
+    }
+
+    int inner_lo = x0 + 2;
+    int inner_hi = x1 - 2;
+    int span     = inner_hi - inner_lo + 1;
+    int fill     = (total == 0u) ? 0 : (int)((size_t)span * done / total);
+    for (int y = y_top + 2; y < y_top + h - 2; y++) {
+        for (int x = inner_lo; x < inner_lo + fill; x++) {
+            jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x, (uint8_t)y, true);
+        }
+    }
+}
+
+/*
+ * Full-height "protocol progress" screen shared by every post-discovery signing
+ * stage on both the leader and participant sides.  It fills all eight display
+ * rows instead of leaving the bottom blank:
+ *
+ *   row 0   centred stage title            (e.g. "SIGNING")
+ *   row 1   centred nickname subtitle
+ *   row 2   canvas divider rule
+ *   rows3-6 four-item checklist (done / active / pending)
+ *   row 7   canvas progress bar (determinate here; an animated indeterminate
+ *           bar from bar_anim_task overrides it during the long BLE waits)
+ *
+ * render_stepper is always called from the app task while no bar_anim_task is
+ * running (each long wait stops its bar before the next stage renders), so it
+ * fully clears the canvas; a bar task started afterwards then owns rows 40-47.
+ */
+#define MEETAPP_STEPPER_STEPS 4u
+
+static void render_stepper(jpp_sdk_context_t *ctx, const char *title,
+                           const char *nick,
+                           const char *const *steps, size_t active)
+{
+    jpp_sdk_canvas_clear(ctx);   /* full clear — no bar task is running here */
+
+    /* Divider rule across the middle of page 2, matching the bar margins. */
+    for (int x = 4; x <= 123; x++) {
+        jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x, 4u, true);
+    }
+
+    /* Determinate fallback bar: half-fill the active step so a static stage
+       still reads as "in progress" (an animated bar overrides it on waits). */
+    draw_bar_determinate(ctx, 40, active * 2u + 1u, MEETAPP_STEPPER_STEPS * 2u);
+
+    char t[MEETAPP_DISP_W + 1u];
+    char nk[MEETAPP_DISP_W + 1u];
+    center_into(t, title);
+    center_into(nk, nick);
+
+    char rows[MEETAPP_STEPPER_STEPS][MEETAPP_DISP_W + 8u];
+    for (size_t i = 0u; i < MEETAPP_STEPPER_STEPS; i++) {
+        const char *mark = (i < active) ? "[x]"
+                         : (i == active) ? "[>]"
+                                         : "[ ]";
+        snprintf(rows[i], sizeof(rows[i]), " %s %s", mark, steps[i]);
+    }
+
+    const char *lp[7] = {
+        t, nk, "", rows[0], rows[1], rows[2], rows[3],
+    };
+    jpp_sdk_set_frame(ctx, lp, 7u);
+}
+
 /* ---- Progress-bar animation task ---------------------------------------- */
 /*
  * Runs at priority 2 (below the BLE app task at 4, above the display loop at
@@ -243,12 +327,150 @@ static uint32_t now_ms(void)
     return (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
 }
 
-/* Show a modal message the user must acknowledge (App SDK Dialog). */
+/* ---- Full-height result screen (replaces the plain modal dialog) --------- */
+
+static int iabs_(int v) { return v < 0 ? -v : v; }
+
+/* Bounds-checked canvas pixel (windowed 0-47). */
+static void canvas_px(jpp_sdk_context_t *ctx, int x, int y, bool on)
+{
+    if (x >= 0 && x < 128 && y >= 0 && y < (int)JPP_SDK_CANVAS_ROWS) {
+        jpp_sdk_canvas_draw_pixel(ctx, (uint8_t)x, (uint8_t)y, on);
+    }
+}
+
+/* Word-wrap `text` into up to max_lines rows of MEETAPP_DISP_W columns. */
+static size_t wrap_msg(const char *text, char out[][MEETAPP_DISP_W + 1u],
+                       size_t max_lines)
+{
+    size_t line = 0u, col = 0u;
+    if (max_lines == 0u) {
+        return 0u;
+    }
+    out[0][0] = '\0';
+    for (size_t i = 0u; text[i] != '\0' && line < max_lines; ) {
+        if (text[i] == ' ') { i++; continue; }
+        size_t wl = 0u;
+        while (text[i + wl] != '\0' && text[i + wl] != ' ') { wl++; }
+        size_t need = (col > 0u ? 1u : 0u) + wl;
+        if (col > 0u && col + need > MEETAPP_DISP_W) {
+            if (++line >= max_lines) { break; }
+            out[line][0] = '\0'; col = 0u;
+        }
+        if (col > 0u) { out[line][col++] = ' '; }
+        for (size_t k = 0u; k < wl && col < MEETAPP_DISP_W; k++) {
+            out[line][col++] = text[i + k];
+        }
+        out[line][col] = '\0';
+        i += wl;
+    }
+    return (col > 0u || line > 0u) ? line + 1u : 0u;
+}
+
+static void draw_ring(jpp_sdk_context_t *ctx, int cx, int cy, int r)
+{
+    for (int y = -r; y <= r; y++) {
+        for (int x = -r; x <= r; x++) {
+            int d = x * x + y * y;
+            if (d <= r * r && d >= (r - 2) * (r - 2)) {
+                canvas_px(ctx, cx + x, cy + y, true);
+            }
+        }
+    }
+}
+
+/* A 2px-thick dot, top-left anchored. */
+static void plot_thick(jpp_sdk_context_t *ctx, int x, int y)
+{
+    canvas_px(ctx, x, y, true);
+    canvas_px(ctx, x + 1, y, true);
+    canvas_px(ctx, x, y + 1, true);
+}
+
+static void draw_seg(jpp_sdk_context_t *ctx, int x0, int y0, int x1, int y1)
+{
+    int dx = x1 - x0, dy = y1 - y0;
+    int n = (iabs_(dx) > iabs_(dy)) ? iabs_(dx) : iabs_(dy);
+    if (n == 0) { n = 1; }
+    for (int i = 0; i <= n; i++) {
+        plot_thick(ctx, x0 + dx * i / n, y0 + dy * i / n);
+    }
+}
+
+static void draw_check(jpp_sdk_context_t *ctx, int cx, int cy)
+{
+    draw_seg(ctx, cx - 6, cy, cx - 2, cy + 5);
+    draw_seg(ctx, cx - 2, cy + 5, cx + 7, cy - 6);
+}
+
+static void draw_bang(jpp_sdk_context_t *ctx, int cx, int cy)
+{
+    for (int y = cy - 7; y <= cy + 2; y++) {
+        canvas_px(ctx, cx, y, true);
+        canvas_px(ctx, cx + 1, y, true);
+    }
+    for (int y = cy + 5; y <= cy + 6; y++) {
+        canvas_px(ctx, cx, y, true);
+        canvas_px(ctx, cx + 1, y, true);
+    }
+}
+
+/*
+ * Full-height outcome screen: a centred headline, a check/warning badge on the
+ * canvas, the wrapped detail message, and a bottom rule — the terminal-state
+ * counterpart to render_stepper, filling all eight rows instead of the plain
+ * top-aligned dialog.
+ */
+static void render_result(jpp_sdk_context_t *ctx, bool ok,
+                          const char *headline, const char *msg)
+{
+    jpp_sdk_canvas_clear(ctx);
+    for (int x = 4; x <= 123; x++) {
+        canvas_px(ctx, x, 43, true);        /* bottom rule (page 7) */
+    }
+    const int cx = 64, cy = 12, r = 10;      /* badge in the upper-middle */
+    draw_ring(ctx, cx, cy, r);
+    if (ok) { draw_check(ctx, cx, cy); } else { draw_bang(ctx, cx, cy); }
+
+    char hl[MEETAPP_DISP_W + 1u];
+    center_into(hl, headline);
+    char body[2][MEETAPP_DISP_W + 1u];
+    size_t nb = wrap_msg(msg, body, 2u);
+    char m0[MEETAPP_DISP_W + 1u];
+    char m1[MEETAPP_DISP_W + 1u];
+    center_into(m0, nb > 0u ? body[0] : "");
+    center_into(m1, nb > 1u ? body[1] : "Press OK");
+
+    /* headline on row 0; badge on canvas rows for pages 2-4; message on rows
+       5-6 (page 5-6); rows 1-4 stay empty so the badge shows through. */
+    const char *lp[7] = { hl, "", "", "", "", m0, m1 };
+    jpp_sdk_set_frame(ctx, lp, 7u);
+}
+
+/* Show a full-height outcome screen the user acknowledges with OK. */
+static void show_result(jpp_sdk_context_t *ctx, bool ok,
+                        const char *headline, const char *msg)
+{
+    render_result(ctx, ok, headline, msg);
+    while (true) {
+        jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
+        jpp_sdk_wait_key(ctx, 0u, &key);
+        if (key == JPP_SDK_KEY_CENTER || key == JPP_SDK_KEY_CENTER_LONG) {
+            break;
+        }
+    }
+}
+
+/* Error/attention outcome (warning badge). Keeps the old notify() call sites. */
 static void notify(jpp_sdk_context_t *ctx, const char *title, const char *text)
 {
-    jpp_sdk_ui_result_t res;
-    jpp_sdk_canvas_clear(ctx);   /* the dialog is text; drop any canvas leftovers */
-    jpp_sdk_dialog(ctx, title, text, &res);
+    show_result(ctx, false, title, text);
+}
+
+/* Success outcome (check badge). */
+static void notify_ok(jpp_sdk_context_t *ctx, const char *title, const char *text)
+{
+    show_result(ctx, true, title, text);
 }
 
 /* ---- Main menu ----------------------------------------------------------- */
@@ -554,14 +776,17 @@ static void run_leader(jpp_sdk_context_t *ctx,
         return;
     }
 
+    static const char *const L_STEPS[MEETAPP_STEPPER_STEPS] = {
+        "Gather nonces", "Sign proof", "Deliver proof", "Save proof",
+    };
+    bar_anim_t   sanim;
+    TaskHandle_t sanim_h;
+
     /* Round A: collect each peer's pubkey + pubnonce via GATT. */
-    {
-        char l0[MEETAPP_DISP_W + 1u];
-        center_into(l0, "COLLECTING SIGS");
-        const char *lp[2] = { l0, "Round 1/3: nonces" };
-        set_text_frame(ctx, lp, 2u);
-    }
+    render_stepper(ctx, "SIGNING", identity->nickname, L_STEPS, 0u);
+    sanim_h = bar_anim_start(&sanim, ctx);
     meetapp_ble_collect_nonces(ctx, identity, &session);
+    bar_anim_stop(&sanim, sanim_h);
 
     /* Build linearised all_pubkeys: leader first, then peers in order. */
     size_t n_total = 1u + session.peer_count;
@@ -613,15 +838,12 @@ static void run_leader(jpp_sdk_context_t *ctx,
     }
 
     /* Round B: send round-1.5 to each peer and collect their partial sigs. */
-    {
-        char l0[MEETAPP_DISP_W + 1u];
-        center_into(l0, "COLLECTING SIGS");
-        const char *lp[2] = { l0, "Round 2/3: signing" };
-        set_text_frame(ctx, lp, 2u);
-    }
+    render_stepper(ctx, "SIGNING", identity->nickname, L_STEPS, 1u);
+    sanim_h = bar_anim_start(&sanim, ctx);
     meetapp_ble_exchange_sigs(ctx, &session, msg_hash, agg_pubnonce,
                                all_pubkeys, n_total,
                                timestamp, participants);
+    bar_anim_stop(&sanim, sanim_h);
 
     /* Aggregate all partial sigs: [leader, peer0, peer1, ...] */
     static uint8_t all_partial[MEETAPP_MAX_TOTAL * JPP_CRYPTO_MUSIG2_PARTIAL_SIG_BYTES];
@@ -639,15 +861,13 @@ static void run_leader(jpp_sdk_context_t *ctx,
     }
 
     /* Round C: distribute final sig to each peer. */
-    {
-        char l0[MEETAPP_DISP_W + 1u];
-        center_into(l0, "COLLECTING SIGS");
-        const char *lp[2] = { l0, "Round 3/3: deliver" };
-        set_text_frame(ctx, lp, 2u);
-    }
+    render_stepper(ctx, "SIGNING", identity->nickname, L_STEPS, 2u);
+    sanim_h = bar_anim_start(&sanim, ctx);
     meetapp_ble_distribute_sig(ctx, &session, final_sig);
+    bar_anim_stop(&sanim, sanim_h);
 
     /* Save proof locally. */
+    render_stepper(ctx, "SIGNING", identity->nickname, L_STEPS, 3u);
     bool saved = meetapp_proof_save(ctx, n_parts, participants,
                                      session.session_nonce, timestamp, final_sig);
 
@@ -655,11 +875,14 @@ static void run_leader(jpp_sdk_context_t *ctx,
     strncpy(ts_short, timestamp, 11u);
     ts_short[11] = '\0';
 
-    jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_SUCCESS);
-    char done_msg[64];
-    snprintf(done_msg, sizeof(done_msg), "%s  (%s)",
-             saved ? "Proof saved." : "Save failed!", ts_short);
-    notify(ctx, "Proof complete", done_msg);
+    if (saved) {
+        jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_SUCCESS);
+        char done_msg[64];
+        snprintf(done_msg, sizeof(done_msg), "Signed %s", ts_short);
+        notify_ok(ctx, "Proof complete", done_msg);
+    } else {
+        notify(ctx, "Save failed", "Proof signed but could not be saved.");
+    }
 }
 
 /* ---- Join (participant) flow --------------------------------------------- */
@@ -733,6 +956,14 @@ static void run_participant(jpp_sdk_context_t *ctx,
 
     jpp_broker_result_t br;
 
+    static const char *const P_STEPS[MEETAPP_STEPPER_STEPS] = {
+        "Link to leader", "Exchange keys", "Sign proof", "Get final proof",
+    };
+    bar_anim_t   sanim;
+    TaskHandle_t sanim_h;
+
+    render_stepper(ctx, "SIGNING", identity->nickname, P_STEPS, 0u);
+
     /* Claim the GATT host role so the leader can connect and exchange data. */
     {
         jpp_sdk_status_t reg = jpp_sdk_ble_service_register(
@@ -770,16 +1001,9 @@ static void run_participant(jpp_sdk_context_t *ctx,
                          identity->nickname, pong_ad, &pong_ad_len);
     jpp_sdk_ble_advertise_start(ctx, pong_ad, pong_ad_len, &br);
 
-    {
-        char l0[MEETAPP_DISP_W + 1u];
-        char l1[MEETAPP_DISP_W + 1u];
-        center_into(l0, "SIGNING");
-        center_into(l1, identity->nickname);
-        const char *lp[3] = { l0, "Waiting for leader.", l1 };
-        set_text_frame(ctx, lp, 3u);
-    }
-
-    /* Wait for round-1.5 (leader connects and writes the RX characteristic). */
+    /* Wait for round-1.5 (leader connects and writes the RX characteristic).
+       This can block for a while, so animate the bottom bar over the stepper. */
+    render_stepper(ctx, "SIGNING", identity->nickname, P_STEPS, 1u);
     static uint8_t all_pubkeys[MEETAPP_MAX_TOTAL * JPP_CRYPTO_PUBKEY_BYTES];
     uint8_t msg_hash[64];
     uint8_t agg_pubnonce[JPP_CRYPTO_MUSIG2_PUBNONCE_BYTES];
@@ -787,24 +1011,21 @@ static void run_participant(jpp_sdk_context_t *ctx,
     char        leader_timestamp[MEETAPP_TS_FIELD_LEN];
     static char peer_nicknames[MEETAPP_MAX_TOTAL][MEETAPP_NICK_FIELD_LEN];
 
-    if (!meetapp_ble_wait_round15(ctx, msg_hash, agg_pubnonce,
-                                  all_pubkeys, &n_total,
-                                  leader_timestamp, peer_nicknames,
-                                  120000u)) {
+    sanim_h = bar_anim_start(&sanim, ctx);
+    bool got_round15 = meetapp_ble_wait_round15(ctx, msg_hash, agg_pubnonce,
+                                                all_pubkeys, &n_total,
+                                                leader_timestamp, peer_nicknames,
+                                                120000u);
+    bar_anim_stop(&sanim, sanim_h);
+    if (!got_round15) {
         jpp_sdk_ble_advertise_stop(ctx, &br);
         jpp_sdk_ble_service_unregister(ctx, &br);
         notify(ctx, "Timed out", "No signing request from the leader.");
         return;
     }
 
-    {
-        char l0[MEETAPP_DISP_W + 1u];
-        center_into(l0, "SIGNING");
-        const char *lp[2] = { l0, "Please wait." };
-        set_text_frame(ctx, lp, 2u);
-    }
-
-    /* Compute partial signature. */
+    /* Compute partial signature (brief). */
+    render_stepper(ctx, "SIGNING", identity->nickname, P_STEPS, 2u);
     uint8_t my_partial_sig[JPP_CRYPTO_MUSIG2_PARTIAL_SIG_BYTES];
     if (jpp_crypto_musig2_partial_sign(my_secnonce, identity->seckey,
                                        all_pubkeys, n_total,
@@ -825,9 +1046,13 @@ static void run_participant(jpp_sdk_context_t *ctx,
         jpp_sdk_ble_host_set_value(ctx, tx, sizeof(tx), &br);
     }
 
-    /* Wait for the final signature. */
+    /* Wait for the final signature (long): animate the bottom bar again. */
+    render_stepper(ctx, "SIGNING", identity->nickname, P_STEPS, 3u);
     uint8_t final_sig[JPP_CRYPTO_SIG_BYTES];
-    if (!meetapp_ble_wait_final_sig(ctx, final_sig, 120000u)) {
+    sanim_h = bar_anim_start(&sanim, ctx);
+    bool got_final = meetapp_ble_wait_final_sig(ctx, final_sig, 120000u);
+    bar_anim_stop(&sanim, sanim_h);
+    if (!got_final) {
         jpp_sdk_ble_advertise_stop(ctx, &br);
         jpp_sdk_ble_service_unregister(ctx, &br);
         notify(ctx, "Timed out", "No final signature received.");
@@ -855,11 +1080,14 @@ static void run_participant(jpp_sdk_context_t *ctx,
     strncpy(ts_short, leader_timestamp, 11u);
     ts_short[11] = '\0';
 
-    jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_SUCCESS);
-    char saved_msg[64];
-    snprintf(saved_msg, sizeof(saved_msg), "%s  (%s)",
-             saved ? "Proof saved." : "Save failed!", ts_short);
-    notify(ctx, "Proof saved", saved_msg);
+    if (saved) {
+        jpp_sdk_buzzer_play(ctx, JPP_BUZZER_SOUND_SUCCESS);
+        char saved_msg[64];
+        snprintf(saved_msg, sizeof(saved_msg), "Signed %s", ts_short);
+        notify_ok(ctx, "Proof saved", saved_msg);
+    } else {
+        notify(ctx, "Save failed", "Proof signed but could not be saved.");
+    }
 }
 
 /* ---- Entry point --------------------------------------------------------- */
@@ -934,8 +1162,8 @@ void meetapp_run(jpp_sdk_context_t *ctx)
         case 2:
             if (confirm_reset(ctx)) {
                 if (meetapp_identity_reset(ctx, &identity)) {
-                    notify(ctx, "Identity reset",
-                           "Your new identity is ready.");
+                    notify_ok(ctx, "Identity reset",
+                              "Your new identity is ready.");
                 } else {
                     notify(ctx, "Reset cancelled",
                            "Your identity was not changed.");
