@@ -176,3 +176,5 @@ For anyone wiring or simulating the hardware:
   Build with `-DJPP_WOKWI_SIM=ON` — see [§3](#3-simulate-in-wokwi).
 - **Firmware internals:** the native implementation lives under
   `components/jpp_core/`. See [AGENTS.md](AGENTS.md) for the component map.
+- **Release notes:** see [CHANGELOG.md](CHANGELOG.md) for what shipped in
+  each tagged release.
