@@ -272,6 +272,16 @@ static void hard_drop(void)
     lock_piece();
 }
 
+static int save_score(void)
+{
+    int best = api->store_get(GAMES_KV_TETRIS_HS, 0);
+    if (g.score > best) {
+        best = g.score;
+        api->store_set(GAMES_KV_TETRIS_HS, best);
+    }
+    return best;
+}
+
 /* returns 0 = resume, 1 = restart, 2 = quit */
 static int pause_menu(void)
 {
@@ -283,6 +293,7 @@ static int pause_menu(void)
         ui == JPP_SDK_UI_BACK || count == 0u) {
         return 0;
     }
+    if ((int)index == 2) { save_score(); }
     return (int)index;
 }
 
@@ -367,11 +378,7 @@ static bool play_session(void)
         { {784,120},{659,120},{523,120},{392,250} };
     api->sfx_seq(k_over, 4);
 
-    int best = api->store_get(GAMES_KV_TETRIS_HS, 0);
-    if (g.score > best) {
-        best = g.score;
-        api->store_set(GAMES_KV_TETRIS_HS, best);
-    }
+    int best = save_score();
     char text[48];
     snprintf(text, sizeof(text), "Score %d  Best %d. OK = play again.",
              g.score, best);

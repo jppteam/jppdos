@@ -138,6 +138,16 @@ static void render(void)
     api->gfx_flush();
 }
 
+static int save_score(void)
+{
+    int best = api->store_get(GAMES_KV_RACER_HS, 0);
+    if (g.score > best) {
+        best = g.score;
+        api->store_set(GAMES_KV_RACER_HS, best);
+    }
+    return best;
+}
+
 static int pause_menu(void)
 {
     static const char *items[] = { "Resume", "Restart", "Quit" };
@@ -148,6 +158,7 @@ static int pause_menu(void)
         ui == JPP_SDK_UI_BACK || count == 0u) {
         return 0;
     }
+    if ((int)index == 2) { save_score(); }
     return (int)index;
 }
 
@@ -186,11 +197,7 @@ static bool play_session(void)
     static const jpp_buzzer_note_t k_crash[] = { {400,80},{250,90},{150,250} };
     api->sfx_seq(k_crash, 3);
 
-    int best = api->store_get(GAMES_KV_RACER_HS, 0);
-    if (g.score > best) {
-        best = g.score;
-        api->store_set(GAMES_KV_RACER_HS, best);
-    }
+    int best = save_score();
     char text[48];
     snprintf(text, sizeof(text), "Score %d  Best %d. OK = play again.",
              g.score, best);
