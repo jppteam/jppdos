@@ -128,7 +128,14 @@ static const char *BIG_DIM_CLOCK_LINES[] = {
     "okak",
     "bazinga",
     "chewsday innit",
-    "eto puhosos"
+    "eto puhosos",
+    "smen zokril",
+    "dali chivi B-)",
+    "a da nuuuuu nafig",
+    "(6)(7) Kitay-gorod",
+    "poganie prudy",
+    "privet ivan",
+    "erik <3 coffee"
 };
 static const int BIG_DIM_CLOCK_LINE_COUNT = sizeof(BIG_DIM_CLOCK_LINES) / sizeof(BIG_DIM_CLOCK_LINES[0]);
 
