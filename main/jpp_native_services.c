@@ -642,6 +642,7 @@ static jpp_broker_status_t sd_kv_write_cb(void *context,
     if (f != NULL) {
         fputs(serialized, f);
         fclose(f);
+        remove(path);
         rename(tmp_path, path);
     }
     free(serialized);
@@ -687,6 +688,7 @@ static jpp_broker_status_t sd_kv_delete_cb(void *context,
         if (f != NULL) {
             fputs(serialized, f);
             fclose(f);
+            remove(path);
             rename(tmp_path, path);
         }
         free(serialized);
