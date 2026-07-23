@@ -1,0 +1,6 @@
+# Docs site toolchain (MkDocs + the shadcn theme). Python-only, no Node — the
+# theme ships prebuilt Tailwind assets in the wheel.
+mkdocs~=1.6
+mkdocs-shadcn==0.11.0
+pymdown-extensions~=10.0
+Pygments~=2.18

@@ -1,0 +1,58 @@
+# =============================================================================
+# MkDocs configuration for the JPPDOS App Developer Guide.
+#
+# Content is the existing docs/ tree, rendered IN PLACE — this file adds only
+# site chrome (nav, theme, search). Do not fork or copy doc content here; the
+# Markdown files under docs/ remain the single source of truth (see the
+# DOCUMENTATION MAINTENANCE rule in AGENTS.md).
+#
+# Build / preview with the Dockerized toolchain (no host install needed):
+#     docker build -f tools/docs/Dockerfile -t jppd-docs .
+#     docker run --rm -p 8000:8000 -v "$PWD:/project" jppd-docs        # live preview
+#     docker run --rm -v "$PWD:/project" jppd-docs build               # → ./site/
+# =============================================================================
+site_name: JPPDOS App Developer Guide
+site_description: >-
+  Write apps for the J++Device — sandbox model, permission system, manifest
+  schema, and a complete App SDK reference.
+docs_dir: docs
+
+theme:
+  name: shadcn
+
+plugins:
+  - search
+
+# Firmware-internal design docs live under docs/ but are not part of the
+# published app-developer site.
+exclude_docs: |
+  sdk-expansion.md
+
+# Python-Markdown ships most of these OFF by default. `tables` and `fenced_code`
+# are REQUIRED — without them every table and code block in the docs breaks.
+markdown_extensions:
+  - tables
+  - fenced_code
+  - codehilite
+  - admonition
+  - footnotes
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+      # The docs' hand-written #anchors were authored for GitHub's slug
+      # algorithm; use a GitHub-compatible slugify so intra-page links resolve.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+
+nav:
+  - Overview: index.md
+  - Guides:
+      - MicroPython: micropython/getting-started.md
+      - Native C: native/getting-started.md
+      - Code modules: native/modules.md
+  - Reference:
+      - Manifest: manifest.md
+      - SDK reference: sdk-reference.md
+      - Serial protocol: serial-protocol.md

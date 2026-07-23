@@ -39,6 +39,9 @@ CLEANUP_PLAN.md
 dist/
 .idf_version
 
+# MkDocs docs-site build output (tools/docs/)
+site/
+
 # Vendored component build configs (not part of this project's config)
 managed_components/**/sdkconfig.defaults
 

@@ -40,6 +40,7 @@ jppdos/
 | Core boot and services | `components/jpp_core/` | startup, settings, broker, storage, UI, and device policy |
 | Build flow | `idf.py`, Dockerfiles/scripts | native build, target selection, and reproducible container runs |
 | App build toolchain | `tools/app-sdk/` | `jppd-app-sdk` Docker image + `jppd-build` entrypoint: builds a single native-C or MicroPython app against a baked SDK sysroot (no firmware checkout needed), validates the manifest, optionally uploads to a device. Version-locked to a firmware release. Generic native builder globs `src/**/*.c`; per-app `jppd-app.json` adds extra sources/includes/defines. **Multi-stage**: builder stage runs a full firmware build, `capture_sysroot.py` distills the compiler + 135 `-I` dirs into `sdk-flags.json` + `sysroot.tar` (absolute paths preserved), final stage is `python:3.12-slim` + pruned toolchain — ~340 MB instead of ~12.5 GB. Toolchain prune drops multilib `*.a`/`cc1plus`/`lto1`, safe because apps link `-nostdlib` and resolve libc at load time via `jpp_native_symtab.c` |
+| Docs site | `mkdocs.yml` (root) + `tools/docs/` | MkDocs + `mkdocs-shadcn` theme renders `docs/` in place as a searchable static site (Python-only, no Node). `docs/` stays the single source of truth — the site adds nav/theme/search only. `docs/sdk-expansion.md` is excluded (firmware-internal). Build/preview via the `jppd-docs` Docker image; publishing not yet wired up |
 | Flashing | `scripts/flash.sh`, `scripts/jpp_deploy.sh` | `flash.sh` wraps `idf.py flash monitor`; `jpp_deploy.sh` flashes via esptool directly (reading `build/flasher_args.json` for offsets/flash settings) and then uploads app artifacts over JPPD-SMP in one step |
 | Storage / settings | `components/jpp_core/` | `/data` state, schema migration, temp-file recovery; app data roots are `/sd/apps/<app_id>/` (scoped) and `/sd/shared/<app_id>/` (shared) |
 | Broker policy | `components/jpp_core/` | capability checks, exclusive access, and service gating |
@@ -167,6 +168,12 @@ docker build -f tools/app-sdk/Dockerfile -t jppd-app-sdk .   # build the SDK ima
 docker run --rm -v "$PWD:/app" jppd-app-sdk                  # build the app in the current dir → ./dist/<app_id>/
 docker run --rm -v "$PWD:/app" --device /dev/ttyACM0 jppd-app-sdk --upload /dev/ttyACM0   # build + upload to device
 JPPD_SDK_ROOT=. JPPD_SDK_BUILD=./build tools/app-sdk/jppd-build --app-dir apps/meetapp --dry-run  # run entrypoint on host (no Docker)
+
+# --- Docs site (tools/docs/) — MkDocs + shadcn theme, renders docs/ in place ---
+docker build -f tools/docs/Dockerfile -t jppd-docs .            # build the docs image (from repo root)
+docker run --rm -p 8000:8000 -v "$PWD:/project" jppd-docs       # live preview → http://localhost:8000
+docker run --rm -v "$PWD:/project" jppd-docs build              # static site → ./site/
+pip install -r tools/docs/requirements.txt && mkdocs serve       # host preview (no Docker)
 
 python3 scripts/jppd_upload.py <port> <app_id>          # upload build/apps/<app_id>/ to device via JPPD-SMP
 python3 scripts/jppd_upload.py <port> <app_id> <dir>    # upload from an explicit build directory
