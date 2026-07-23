@@ -99,7 +99,34 @@ The firmware calls this instead of `jpp_app_entry` during headless background ru
 
 ## Build system integration
 
+### Quick start: the `jppd-app-sdk` toolchain (recommended)
+
+If you just want to build **your** app — not the whole firmware — use the
+self-contained Docker toolchain in `tools/app-sdk/`. It bakes a firmware build
+as an SDK sysroot, so you need no firmware checkout, no `idf.py`, and no
+`CMakeLists.txt`:
+
+```bash
+# one-time: build the SDK image (from the firmware repo root)
+docker build -f tools/app-sdk/Dockerfile -t jppd-app-sdk .
+
+# from your app source directory (just manifest.json + src/**/*.c):
+docker run --rm -v "$PWD:/app" jppd-app-sdk                # → ./dist/<app_id>/
+docker run --rm -v "$PWD:/app" --device /dev/ttyACM0 \
+    jppd-app-sdk --upload /dev/ttyACM0                     # build + upload
+```
+
+The tool auto-detects native vs MicroPython from your manifest, compiles all
+`src/**/*.c`, validates the manifest, and stages `<entry>.bin` + `manifest.json`.
+Shared helpers, extra includes, and defines go in an optional `jppd-app.json`
+(see `tools/app-sdk/README.md`). The image is **version-locked** to a firmware
+release — rebuild it when you move to a new firmware version.
+
 ### Adding your app to the firmware build
+
+The alternative is to build your app *inside* the firmware tree (this is how the
+in-repo example apps build, and what you want when developing the firmware
+itself).
 
 Create `apps/my_app/CMakeLists.txt` following the pattern from an existing app (e.g. `apps/testapp_native/CMakeLists.txt`). The custom target calls `build_shared.py`, which:
 

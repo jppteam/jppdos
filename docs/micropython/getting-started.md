@@ -147,6 +147,12 @@ mpy-cross -march=rv32imc -O2 main.py
 
 This produces `main.mpy` in the same directory. The `-march=rv32imc` flag is required — omitting it produces bytecode for a different architecture that the device will refuse to load.
 
+> **Alternative:** the `jppd-app-sdk` Docker toolchain (`tools/app-sdk/`) also
+> builds MicroPython apps — `docker run --rm -v "$PWD:/app" jppd-app-sdk` — with
+> the correct `mpy-cross` version baked in, plus manifest validation and
+> optional device upload. Handy if you don't want to manage `mpy-cross`
+> versions yourself. See `tools/app-sdk/README.md`.
+
 If your app has helper modules, compile each one the same way:
 
 ```bash

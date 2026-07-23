@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""
+jppd-build — one-shot builder for J++Device (JPPDOS) apps.
+
+Detects a native-C or MicroPython app from its manifest.json, compiles it
+against a baked JPPDOS SDK sysroot, validates the manifest, stages the
+deployable artefacts, and (optionally) uploads them to a real device over
+JPPD-SMP.
+
+This is the entrypoint of the `jppd-app-sdk` Docker image, but it is a plain
+script and can be run directly on a host that already has the riscv toolchain,
+mpy-cross, and a firmware build tree.
+
+    # inside the container (app source mounted at /app):
+    docker run --rm -v "$PWD:/app" jppd-app-sdk
+    docker run --rm -v "$PWD:/app" --device /dev/ttyACM0 jppd-app-sdk --upload /dev/ttyACM0
+
+    # directly, pointing at a local firmware build:
+    JPPD_SDK_ROOT=/path/to/jppdos JPPD_SDK_BUILD=/path/to/jppdos/build \
+        tools/app-sdk/jppd-build --app-dir apps/meetapp --dry-run
+
+The SDK sysroot is located via two environment variables (both default to the
+in-image layout):
+
+    JPPD_SDK_ROOT   firmware repo root         (default: /project)
+    JPPD_SDK_BUILD  firmware idf.py build dir  (default: $JPPD_SDK_ROOT/build)
+
+An app source directory must contain a manifest.json. Optional per-app build
+tuning lives in a `jppd-app.json` next to it (all keys optional):
+
+    {
+      "sources":       ["src/extra.c"],          // added to the src/**/*.c glob
+      "extra_sources": ["common/jpp_ble_msg.c"], // resolved against SDK apps/ too
+      "includes":      ["vendor/include"],       // extra -I dirs (app-relative)
+      "defines":       ["MY_FLAG=1"]             // extra -D flags
+    }
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+# --- SDK sysroot layout ------------------------------------------------------
+
+SDK_ROOT = os.environ.get("JPPD_SDK_ROOT", "/project")
+SDK_BUILD = os.environ.get("JPPD_SDK_BUILD", os.path.join(SDK_ROOT, "build"))
+# Distilled compiler + include list produced by capture_sysroot.py at image-build
+# time. When present it replaces parsing the 6.6 MB compile_commands.json, which
+# the slim image does not ship. Falls back to the build dir for host/dev runs.
+SDK_FLAGS = os.environ.get("JPPD_SDK_FLAGS", "/opt/jppd-sdk/sdk-flags.json")
+
+# Compile/link flags mirror apps/*/build_shared.py. Keep in sync with the
+# firmware's native loader expectations (PIC ELF32, undefined firmware symbols
+# resolved at load time — do NOT add -Wl,--no-undefined).
+COMPILE_FLAGS = [
+    "-c", "-fPIC", "-mno-relax",
+    "-Os", "-g",
+    "-Wall", "-Wno-unused-parameter", "-Wno-strict-prototypes",
+    "-DESP_PLATFORM", "-D__riscv", "-DIDF_VER_MAJOR=5",
+    "-DCONFIG_LOG_DEFAULT_LEVEL=3",
+]
+LINK_FLAGS = ["-shared", "-mno-relax", "-nostdlib", "-Wl,--allow-shlib-undefined"]
+
+# MicroPython bytecode target (mpy-cross), mirrors apps/testapp_mp/build_mp.py.
+MPY_ARCH = "rv32imc"
+
+
+class BuildError(Exception):
+    pass
+
+
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+# --- manifest / config -------------------------------------------------------
+
+def load_manifest(app_dir: str) -> dict:
+    path = os.path.join(app_dir, "manifest.json")
+    if not os.path.isfile(path):
+        raise BuildError(f"no manifest.json in {app_dir}")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as exc:
+        raise BuildError(f"manifest.json is not valid JSON: {exc}") from exc
+
+
+def load_app_config(app_dir: str) -> dict:
+    path = os.path.join(app_dir, "jppd-app.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as exc:
+        raise BuildError(f"jppd-app.json is not valid JSON: {exc}") from exc
+
+
+# --- SDK sysroot introspection (reused across native builds) -----------------
+
+_DISTILLED: dict | None = None
+_DISTILLED_LOADED = False
+
+
+def _distilled() -> dict | None:
+    """The image's pre-distilled sdk-flags.json, or None on a dev/host run."""
+    global _DISTILLED, _DISTILLED_LOADED
+    if not _DISTILLED_LOADED:
+        _DISTILLED_LOADED = True
+        if os.path.isfile(SDK_FLAGS):
+            try:
+                with open(SDK_FLAGS) as f:
+                    _DISTILLED = json.load(f)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise BuildError(f"{SDK_FLAGS} is unreadable: {exc}") from exc
+    return _DISTILLED
+
+
+def _reference_compile_entry() -> dict:
+    cc_path = os.path.join(SDK_BUILD, "compile_commands.json")
+    if not os.path.isfile(cc_path):
+        raise BuildError(
+            f"SDK sysroot incomplete: {cc_path} not found.\n"
+            f"  Set JPPD_SDK_BUILD to a firmware build dir, or rebuild the image."
+        )
+    with open(cc_path) as f:
+        commands = json.load(f)
+    for entry in commands:
+        if "jpp_sdk_bridge" in entry["file"] or "jpp_core" in entry["file"]:
+            return {"commands": commands, "entry": entry}
+    raise BuildError("no jpp_core compile entry in compile_commands.json")
+
+
+def sdk_include_flags() -> list[str]:
+    distilled = _distilled()
+    if distilled is not None:
+        return list(distilled["include_flags"])
+    ref = _reference_compile_entry()
+    flags: list[str] = []
+    for tok in ref["entry"]["command"].split():
+        if tok.startswith("-I") and tok not in flags:
+            flags.append(tok)
+    # Every jpp component's public headers, so apps needn't know which one holds
+    # a symbol (e.g. jpp_crypto_core for MeetApp).
+    for inc in sorted(glob.glob(os.path.join(SDK_ROOT, "components", "*", "include"))):
+        f = f"-I{inc}"
+        if f not in flags:
+            flags.append(f)
+    common = os.path.join(SDK_ROOT, "apps", "common")
+    if os.path.isdir(common):
+        f = f"-I{common}"
+        if f not in flags:
+            flags.append(f)
+    return flags
+
+
+def sdk_compiler() -> str:
+    distilled = _distilled()
+    if distilled is not None:
+        return distilled["compiler"]
+    ref = _reference_compile_entry()
+    for entry in ref["commands"][:10]:
+        toks = entry["command"].split()
+        if toks and "riscv" in toks[0]:
+            return toks[0]
+    return "riscv32-esp-elf-gcc"
+
+
+# --- native build ------------------------------------------------------------
+
+def collect_native_sources(app_dir: str, cfg: dict) -> list[str]:
+    sources: list[str] = []
+    for pat in ("src/**/*.c", "src/*.c"):
+        sources += glob.glob(os.path.join(app_dir, pat), recursive=True)
+    for rel in cfg.get("sources", []):
+        sources.append(os.path.join(app_dir, rel))
+    # extra_sources resolve against the SDK root too (shared helpers in apps/common).
+    for rel in cfg.get("extra_sources", []):
+        for base in (app_dir, SDK_ROOT):
+            cand = os.path.join(base, rel)
+            if os.path.isfile(cand):
+                sources.append(cand)
+                break
+        else:
+            raise BuildError(f"extra_source not found: {rel}")
+    # De-dup, stable order.
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for s in sources:
+        real = os.path.realpath(s)
+        if real in seen:
+            continue
+        if not os.path.isfile(s):
+            raise BuildError(f"source file not found: {s}")
+        seen.add(real)
+        uniq.append(s)
+    if not uniq:
+        raise BuildError(f"no C sources found under {app_dir}/src/")
+    return uniq
+
+
+def build_native(app_dir: str, manifest: dict, cfg: dict, out_dir: str,
+                 dry_run: bool) -> str:
+    entry = manifest.get("entry")
+    if not entry:
+        raise BuildError("manifest is missing \"entry\" (the output .bin name)")
+
+    compiler = sdk_compiler()
+    inc_flags = sdk_include_flags()
+    own_includes = [f"-I{os.path.join(app_dir, 'include')}", f"-I{os.path.join(app_dir, 'src')}"]
+    for rel in cfg.get("includes", []):
+        own_includes.append(f"-I{os.path.join(app_dir, rel)}")
+    defines = [f"-D{d}" for d in cfg.get("defines", [])]
+
+    sources = collect_native_sources(app_dir, cfg)
+    os.makedirs(out_dir, exist_ok=True)
+    out_bin = os.path.join(out_dir, entry)
+
+    obj_files: list[str] = []
+    for src in sources:
+        obj = os.path.join(out_dir, os.path.basename(src) + ".o")
+        cmd = [compiler] + COMPILE_FLAGS + defines + own_includes + inc_flags + [src, "-o", obj]
+        _log(f"  CC  {os.path.relpath(src, app_dir)}")
+        if dry_run:
+            _log("      " + " ".join(cmd))
+        else:
+            if subprocess.run(cmd).returncode != 0:
+                raise BuildError(f"compile failed for {src}")
+        obj_files.append(obj)
+
+    _log(f"  LD  {entry}")
+    link_cmd = [compiler] + LINK_FLAGS + obj_files + ["-o", out_bin]
+    if dry_run:
+        _log("      " + " ".join(link_cmd))
+        return out_bin
+    if subprocess.run(link_cmd).returncode != 0:
+        raise BuildError("link failed")
+
+    # out_dir is copied verbatim to /sd/apps/<id>/ — leave only the .bin + manifest.
+    for obj in obj_files:
+        try:
+            os.remove(obj)
+        except OSError:
+            pass
+    size = os.path.getsize(out_bin)
+    _log(f"  OK  {out_bin}  ({size // 1024} KB)")
+    return out_bin
+
+
+# --- MicroPython build -------------------------------------------------------
+
+def _find_mpy_cross() -> str:
+    for name in ("mpy-cross", "mpy-cross-v1.28.0"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise BuildError(
+        "mpy-cross not found. Install with: pip install mpy-cross==1.28.0"
+    )
+
+
+def build_micropython(app_dir: str, manifest: dict, out_dir: str,
+                      dry_run: bool) -> str:
+    entry = manifest.get("entry", "main.mpy")
+    src_py = os.path.join(app_dir, "main.py")
+    if not os.path.isfile(src_py):
+        raise BuildError(f"MicroPython app needs main.py (not found in {app_dir})")
+    os.makedirs(out_dir, exist_ok=True)
+    out_mpy = os.path.join(out_dir, entry)
+    mpy_cross = _find_mpy_cross() if not dry_run else "mpy-cross"
+    cmd = [mpy_cross, f"-march={MPY_ARCH}", "-O2", "-o", out_mpy, src_py]
+    _log(f"  MPY main.py")
+    if dry_run:
+        _log("      " + " ".join(cmd))
+        return out_mpy
+    if subprocess.run(cmd).returncode != 0:
+        raise BuildError("mpy-cross failed")
+    _log(f"  OK  {out_mpy}  ({os.path.getsize(out_mpy)} bytes)")
+    return out_mpy
+
+
+# --- manifest validation -----------------------------------------------------
+
+def validate_manifest(app_id: str, out_dir: str) -> None:
+    """Run the firmware's own validate_manifests.py against the staged output."""
+    validator = os.path.join(SDK_ROOT, "tests", "validate_manifests.py")
+    if not os.path.isfile(validator):
+        _log("  (manifest validator not in sysroot; skipping validation)")
+        return
+    # The validator scans an apps_root of <root>/<app_id>/manifest.json; the
+    # staged out_dir already has that shape one level up.
+    apps_root = os.path.dirname(out_dir)
+    result = subprocess.run(
+        [sys.executable, validator, apps_root],
+        capture_output=True, text=True,
+    )
+    for line in result.stdout.splitlines():
+        if line.startswith("APP_INVALID") and app_id in line:
+            raise BuildError(f"manifest validation failed: {line}")
+    _log("  OK  manifest validated")
+
+
+# --- upload ------------------------------------------------------------------
+
+def upload(app_id: str, out_dir: str, port: str) -> None:
+    uploader = os.path.join(SDK_ROOT, "scripts", "jppd_upload.py")
+    if not os.path.isfile(uploader):
+        raise BuildError(f"uploader not found: {uploader}")
+    _log(f"\nUploading {app_id} → {port} (press Allow on the device)…")
+    rc = subprocess.run(
+        [sys.executable, uploader, port, app_id, out_dir]
+    ).returncode
+    if rc != 0:
+        raise BuildError(f"upload failed (exit {rc})")
+
+
+# --- driver ------------------------------------------------------------------
+
+def run(app_dir: str, out_root: str, dry_run: bool, do_validate: bool,
+        upload_port: str | None) -> int:
+    app_dir = os.path.abspath(app_dir)
+    manifest = load_manifest(app_dir)
+    cfg = load_app_config(app_dir)
+
+    app_id = manifest.get("app_id") or os.path.basename(app_dir.rstrip("/"))
+    app_type = manifest.get("app_type", "native")
+    out_dir = os.path.join(out_root, app_id)
+
+    _log(f"jppd-build: {app_id}  (type={app_type})")
+    _log(f"  SDK root : {SDK_ROOT}")
+
+    if app_type == "native":
+        build_native(app_dir, manifest, cfg, out_dir, dry_run)
+    elif app_type in ("micropython", "mp"):
+        build_micropython(app_dir, manifest, out_dir, dry_run)
+    else:
+        raise BuildError(f"unknown app_type: {app_type!r}")
+
+    # Stage the manifest alongside the artefact.
+    if not dry_run:
+        shutil.copy2(os.path.join(app_dir, "manifest.json"),
+                     os.path.join(out_dir, "manifest.json"))
+        _log("  CP  manifest.json")
+        if do_validate:
+            validate_manifest(app_id, out_dir)
+
+    if upload_port:
+        if dry_run:
+            _log(f"  (dry-run) would upload {app_id} to {upload_port}")
+        else:
+            upload(app_id, out_dir, upload_port)
+
+    if not dry_run:
+        _log(f"\nDone. Deployable output: {out_dir}")
+        _log(f"  → copy its contents to /sd/apps/{app_id}/ on the device SD card")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="jppd-build",
+        description="Build (and optionally upload) a JPPDOS app.",
+    )
+    p.add_argument("--app-dir", default=".",
+                   help="App source directory (default: current dir / mounted /app)")
+    p.add_argument("--out", default=None,
+                   help="Output root (default: <app-dir>/dist)")
+    p.add_argument("--upload", metavar="PORT", default=None,
+                   help="After building, upload to a device on this serial port "
+                        "(needs --device passed to docker run)")
+    p.add_argument("--no-validate", action="store_true",
+                   help="Skip manifest validation")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Print the build plan without invoking the compiler")
+    args = p.parse_args()
+
+    out_root = args.out or os.path.join(os.path.abspath(args.app_dir), "dist")
+    try:
+        return run(args.app_dir, out_root, args.dry_run,
+                   not args.no_validate, args.upload)
+    except BuildError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

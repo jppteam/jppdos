@@ -29,6 +29,7 @@ jppdos/
 ├── apps/                  # example/reference app packages (meetapp, testapp_native, testapp_mp); apps/common/ holds shared app-side helpers compiled into each app (e.g. jpp_ble_msg)
 ├── docs/                  # human-facing app developer documentation (index, guides, SDK reference)
 ├── scripts/               # flash and helper scripts
+├── tools/                 # developer tooling (app-sdk: self-contained Docker app-build toolchain)
 ├── tests/                 # host-side checks and fixtures
 └── wokwi/                 # simulator assets and reference topology
 ```
@@ -38,6 +39,7 @@ jppdos/
 |---|---|---|
 | Core boot and services | `components/jpp_core/` | startup, settings, broker, storage, UI, and device policy |
 | Build flow | `idf.py`, Dockerfiles/scripts | native build, target selection, and reproducible container runs |
+| App build toolchain | `tools/app-sdk/` | `jppd-app-sdk` Docker image + `jppd-build` entrypoint: builds a single native-C or MicroPython app against a baked SDK sysroot (no firmware checkout needed), validates the manifest, optionally uploads to a device. Version-locked to a firmware release. Generic native builder globs `src/**/*.c`; per-app `jppd-app.json` adds extra sources/includes/defines. **Multi-stage**: builder stage runs a full firmware build, `capture_sysroot.py` distills the compiler + 135 `-I` dirs into `sdk-flags.json` + `sysroot.tar` (absolute paths preserved), final stage is `python:3.12-slim` + pruned toolchain — ~340 MB instead of ~12.5 GB. Toolchain prune drops multilib `*.a`/`cc1plus`/`lto1`, safe because apps link `-nostdlib` and resolve libc at load time via `jpp_native_symtab.c` |
 | Flashing | `scripts/flash.sh`, `scripts/jpp_deploy.sh` | `flash.sh` wraps `idf.py flash monitor`; `jpp_deploy.sh` flashes via esptool directly (reading `build/flasher_args.json` for offsets/flash settings) and then uploads app artifacts over JPPD-SMP in one step |
 | Storage / settings | `components/jpp_core/` | `/data` state, schema migration, temp-file recovery; app data roots are `/sd/apps/<app_id>/` (scoped) and `/sd/shared/<app_id>/` (shared) |
 | Broker policy | `components/jpp_core/` | capability checks, exclusive access, and service gating |
@@ -160,6 +162,12 @@ idf.py flash
 docker compose run --rm build idf.py build
 scripts/flash.sh
 python3 -m pytest tests          # host-side checks (docs, contract, manifests)
+# --- Single-app build toolchain (tools/app-sdk/) — no firmware checkout needed by app devs ---
+docker build -f tools/app-sdk/Dockerfile -t jppd-app-sdk .   # build the SDK image (bakes a firmware build as sysroot; run from repo root)
+docker run --rm -v "$PWD:/app" jppd-app-sdk                  # build the app in the current dir → ./dist/<app_id>/
+docker run --rm -v "$PWD:/app" --device /dev/ttyACM0 jppd-app-sdk --upload /dev/ttyACM0   # build + upload to device
+JPPD_SDK_ROOT=. JPPD_SDK_BUILD=./build tools/app-sdk/jppd-build --app-dir apps/meetapp --dry-run  # run entrypoint on host (no Docker)
+
 python3 scripts/jppd_upload.py <port> <app_id>          # upload build/apps/<app_id>/ to device via JPPD-SMP
 python3 scripts/jppd_upload.py <port> <app_id> <dir>    # upload from an explicit build directory
 scripts/jpp_deploy.sh <port>                            # esptool-flash firmware only
