@@ -5,7 +5,6 @@
   "name": "MeetApp",
   "version": "0.1.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "entry": "meetapp.bin",
   "background": {
     "enabled": false

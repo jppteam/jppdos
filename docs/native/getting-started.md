@@ -229,7 +229,6 @@ This app scans for nearby BLE devices and displays the results. The user can scr
   "name": "BLE Scanner",
   "version": "1.0.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "app_type": "native",
   "entry": "blescanner.bin",
   "capabilities": ["ble.scan"],

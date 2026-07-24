@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "esp_log.h"
 #include "esp_http_client.h"
@@ -15,6 +16,7 @@
 #include "cJSON.h"
 
 #include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 #include "jpp_ble_native.h"
 #include "jpp_espnow_native.h"
@@ -410,6 +412,90 @@ static jpp_broker_status_t net_accept_cb(void *context, uint32_t timeout_ms,
     s_net_conns[slot] = conn;
     *out_sock = conn;
     jpp_broker_ok_result(result);
+    return JPP_BROKER_STATUS_OK;
+}
+
+/* network.connect callback — outbound TCP client over lwIP. Uses a
+   non-blocking connect + select so timeout_ms is honoured, then restores
+   blocking mode for the shared net_recv/net_send calls. */
+static jpp_broker_status_t net_connect_cb(void *context, const char *host,
+                                          uint16_t port, uint32_t timeout_ms,
+                                          int *out_sock, jpp_broker_result_t *result)
+{
+    (void)context;
+    *out_sock = -1;
+
+    jpp_fileserver_status_t fs_status;
+    jpp_fileserver_get_status(&fs_status);
+    if (fs_status.state == JPP_FILESERVER_STATE_RUNNING ||
+        jpp_lrv_server_is_running()) {
+        jpp_broker_error_result(result, "SERVER_ACTIVE");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int slot = -1;
+    for (size_t i = 0u; i < JPP_RESOURCE_SDK_NET_SOCKET_LIMIT; i++) {
+        if (s_net_conns[i] < 0) { slot = (int)i; break; }
+    }
+    if (slot < 0) {
+        jpp_broker_error_result(result, "SOCKET_LIMIT");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || res == NULL) {
+        jpp_broker_error_result(result, "CONNECT_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) {
+        freeaddrinfo(res);
+        jpp_broker_error_result(result, "SOCKET_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+
+    if (rc != 0 && errno == EINPROGRESS) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv = {
+            .tv_sec  = (time_t)(timeout_ms / 1000u),
+            .tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u),
+        };
+        int ready = select(fd + 1, NULL, &wfds, NULL, timeout_ms ? &tv : NULL);
+        if (ready <= 0) {
+            close(fd);
+            jpp_broker_error_result(result, "CONNECT_FAILED");
+            return JPP_BROKER_STATUS_OK;
+        }
+        int so_err = 0;
+        socklen_t elen = sizeof(so_err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &elen) != 0 || so_err != 0) {
+            close(fd);
+            jpp_broker_error_result(result, "CONNECT_FAILED");
+            return JPP_BROKER_STATUS_OK;
+        }
+    } else if (rc != 0) {
+        close(fd);
+        jpp_broker_error_result(result, "CONNECT_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    fcntl(fd, F_SETFL, flags);   /* restore blocking mode */
+    s_net_conns[slot] = fd;
+    *out_sock = fd;
+    jpp_broker_ok_result(result);
+    ESP_LOGI(TAG, "NET_CONNECT %s:%u fd=%d", host, (unsigned)port, fd);
     return JPP_BROKER_STATUS_OK;
 }
 
@@ -838,6 +924,7 @@ void jpp_native_services_init(jpp_rtc_state_t *rtc_state)
 
     s_native_services.net_bind      = net_bind_cb;
     s_native_services.net_accept    = net_accept_cb;
+    s_native_services.net_connect   = net_connect_cb;
     s_native_services.net_recv      = net_recv_cb;
     s_native_services.net_send      = net_send_cb;
     s_native_services.net_close     = net_close_cb;

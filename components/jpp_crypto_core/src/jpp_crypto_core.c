@@ -26,6 +26,12 @@
 #include "sodium/crypto_scalarmult_ed25519.h"
 #include "sodium/randombytes.h"
 
+/* Generic primitives (SDK v2) are backed by mbedTLS — HW-accelerated on C6. */
+#include "mbedtls/sha256.h"
+#include "mbedtls/sha1.h"
+#include "mbedtls/aes.h"
+#include "mbedtls/bignum.h"
+
 /* ---- Helpers ------------------------------------------------------------ */
 
 /*
@@ -465,4 +471,211 @@ jpp_crypto_status_t jpp_crypto_musig2_verify(
     }
 
     return JPP_CRYPTO_OK;
+}
+
+/* ======================================================================== *
+ *  Generic primitives (SDK v2) — mbedTLS-backed SHA / AES-IGE / bignum.
+ * ======================================================================== */
+
+/* ---- Hashing ------------------------------------------------------------ */
+
+jpp_crypto_status_t jpp_crypto_sha256(const uint8_t *message, size_t message_len,
+                                      uint8_t out[JPP_CRYPTO_SHA256_BYTES])
+{
+    if ((message == NULL && message_len != 0u) || out == NULL) {
+        return JPP_CRYPTO_ERR_INVALID_ARG;
+    }
+    /* is224 = 0 selects SHA-256. */
+    if (mbedtls_sha256(message, message_len, out, 0) != 0) {
+        return JPP_CRYPTO_ERR_INTERNAL;
+    }
+    return JPP_CRYPTO_OK;
+}
+
+jpp_crypto_status_t jpp_crypto_sha1(const uint8_t *message, size_t message_len,
+                                    uint8_t out[JPP_CRYPTO_SHA1_BYTES])
+{
+    if ((message == NULL && message_len != 0u) || out == NULL) {
+        return JPP_CRYPTO_ERR_INVALID_ARG;
+    }
+    if (mbedtls_sha1(message, message_len, out) != 0) {
+        return JPP_CRYPTO_ERR_INTERNAL;
+    }
+    return JPP_CRYPTO_OK;
+}
+
+/* ---- AES-256-IGE -------------------------------------------------------- *
+ *
+ * IGE (Infinite Garble Extension) over an AES-256 block cipher, matching the
+ * OpenSSL AES_ige_encrypt convention that MTProto follows.  The 32-byte IV is
+ * two blocks: iv[0..16] seeds the "previous ciphertext" chain, iv[16..32] the
+ * "previous plaintext" chain.
+ *
+ *   encrypt: c_i = E(m_i XOR c_{i-1}) XOR m_{i-1}
+ *   decrypt: m_i = D(c_i XOR m_{i-1}) XOR c_{i-1}
+ */
+
+static void xor16(uint8_t *dst, const uint8_t *a, const uint8_t *b)
+{
+    for (size_t i = 0u; i < JPP_CRYPTO_AES_BLOCK_BYTES; i++) {
+        dst[i] = a[i] ^ b[i];
+    }
+}
+
+static jpp_crypto_status_t aes256_ige(const uint8_t *in, size_t length,
+                                      const uint8_t key[JPP_CRYPTO_AES256_KEY_BYTES],
+                                      const uint8_t iv[JPP_CRYPTO_AES_IGE_IV_BYTES],
+                                      uint8_t *out, int encrypt)
+{
+    if (in == NULL || key == NULL || iv == NULL || out == NULL) {
+        return JPP_CRYPTO_ERR_INVALID_ARG;
+    }
+    if (length == 0u || (length % JPP_CRYPTO_AES_BLOCK_BYTES) != 0u) {
+        return JPP_CRYPTO_ERR_INVALID_ARG;
+    }
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+
+    int rc = encrypt
+        ? mbedtls_aes_setkey_enc(&ctx, key, 256)
+        : mbedtls_aes_setkey_dec(&ctx, key, 256);
+    if (rc != 0) {
+        mbedtls_aes_free(&ctx);
+        return JPP_CRYPTO_ERR_INTERNAL;
+    }
+
+    /* Working copies of the two IV chains, so the caller's iv[] is untouched. */
+    uint8_t chain_c[JPP_CRYPTO_AES_BLOCK_BYTES];  /* previous ciphertext */
+    uint8_t chain_m[JPP_CRYPTO_AES_BLOCK_BYTES];  /* previous plaintext  */
+    memcpy(chain_c, iv, JPP_CRYPTO_AES_BLOCK_BYTES);
+    memcpy(chain_m, iv + JPP_CRYPTO_AES_BLOCK_BYTES, JPP_CRYPTO_AES_BLOCK_BYTES);
+
+    uint8_t tmp[JPP_CRYPTO_AES_BLOCK_BYTES];
+    uint8_t cur_in[JPP_CRYPTO_AES_BLOCK_BYTES];
+    jpp_crypto_status_t status = JPP_CRYPTO_OK;
+
+    for (size_t off = 0u; off < length; off += JPP_CRYPTO_AES_BLOCK_BYTES) {
+        const uint8_t *ib = in + off;
+        uint8_t *ob = out + off;
+        memcpy(cur_in, ib, JPP_CRYPTO_AES_BLOCK_BYTES);  /* out may alias in */
+
+        if (encrypt) {
+            xor16(tmp, cur_in, chain_c);                 /* m_i XOR c_{i-1} */
+            if (mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_ENCRYPT, tmp, ob) != 0) {
+                status = JPP_CRYPTO_ERR_INTERNAL;
+                break;
+            }
+            xor16(ob, ob, chain_m);                      /* XOR m_{i-1} */
+            memcpy(chain_c, ob, JPP_CRYPTO_AES_BLOCK_BYTES);      /* c_i */
+            memcpy(chain_m, cur_in, JPP_CRYPTO_AES_BLOCK_BYTES);  /* m_i */
+        } else {
+            xor16(tmp, cur_in, chain_m);                 /* c_i XOR m_{i-1} */
+            if (mbedtls_aes_crypt_ecb(&ctx, MBEDTLS_AES_DECRYPT, tmp, ob) != 0) {
+                status = JPP_CRYPTO_ERR_INTERNAL;
+                break;
+            }
+            xor16(ob, ob, chain_c);                      /* XOR c_{i-1} */
+            memcpy(chain_m, ob, JPP_CRYPTO_AES_BLOCK_BYTES);      /* m_i */
+            memcpy(chain_c, cur_in, JPP_CRYPTO_AES_BLOCK_BYTES);  /* c_i */
+        }
+    }
+
+    mbedtls_aes_free(&ctx);
+    return status;
+}
+
+jpp_crypto_status_t jpp_crypto_aes256_ige_encrypt(
+    const uint8_t *in, size_t length,
+    const uint8_t key[JPP_CRYPTO_AES256_KEY_BYTES],
+    const uint8_t iv[JPP_CRYPTO_AES_IGE_IV_BYTES],
+    uint8_t *out)
+{
+    return aes256_ige(in, length, key, iv, out, 1);
+}
+
+jpp_crypto_status_t jpp_crypto_aes256_ige_decrypt(
+    const uint8_t *in, size_t length,
+    const uint8_t key[JPP_CRYPTO_AES256_KEY_BYTES],
+    const uint8_t iv[JPP_CRYPTO_AES_IGE_IV_BYTES],
+    uint8_t *out)
+{
+    return aes256_ige(in, length, key, iv, out, 0);
+}
+
+/* ---- Modular exponentiation --------------------------------------------- */
+
+jpp_crypto_status_t jpp_crypto_modexp(
+    const uint8_t *base, size_t base_len,
+    const uint8_t *exp, size_t exp_len,
+    const uint8_t *modulus, size_t modulus_len,
+    uint8_t *out, size_t *out_len)
+{
+    if (base == NULL || exp == NULL || modulus == NULL || out == NULL ||
+        base_len == 0u || exp_len == 0u || modulus_len == 0u) {
+        return JPP_CRYPTO_ERR_INVALID_ARG;
+    }
+
+    mbedtls_mpi mb, me, mm, mr;
+    mbedtls_mpi_init(&mb);
+    mbedtls_mpi_init(&me);
+    mbedtls_mpi_init(&mm);
+    mbedtls_mpi_init(&mr);
+
+    jpp_crypto_status_t status = JPP_CRYPTO_ERR_INTERNAL;
+    do {
+        if (mbedtls_mpi_read_binary(&mb, base, base_len) != 0 ||
+            mbedtls_mpi_read_binary(&me, exp, exp_len) != 0 ||
+            mbedtls_mpi_read_binary(&mm, modulus, modulus_len) != 0) {
+            break;
+        }
+        if (mbedtls_mpi_cmp_int(&mm, 0) == 0) {
+            status = JPP_CRYPTO_ERR_INVALID_ARG;
+            break;
+        }
+        /* RR = NULL lets mbedTLS compute the Montgomery constant internally. */
+        if (mbedtls_mpi_exp_mod(&mr, &mb, &me, &mm, NULL) != 0) {
+            break;
+        }
+        /* Fixed-width big-endian output, left-padded to the modulus size. */
+        if (mbedtls_mpi_write_binary(&mr, out, modulus_len) != 0) {
+            break;
+        }
+        if (out_len != NULL) {
+            *out_len = modulus_len;
+        }
+        status = JPP_CRYPTO_OK;
+    } while (0);
+
+    mbedtls_mpi_free(&mb);
+    mbedtls_mpi_free(&me);
+    mbedtls_mpi_free(&mm);
+    mbedtls_mpi_free(&mr);
+    return status;
+}
+
+jpp_crypto_status_t jpp_crypto_rsa_encrypt(
+    const uint8_t *data, size_t data_len,
+    const uint8_t *modulus, size_t modulus_len,
+    const uint8_t *exponent, size_t exponent_len,
+    uint8_t *out, size_t *out_len)
+{
+    /* RSA public-key op is data^exponent mod modulus. */
+    return jpp_crypto_modexp(data, data_len,
+                             exponent, exponent_len,
+                             modulus, modulus_len,
+                             out, out_len);
+}
+
+jpp_crypto_status_t jpp_crypto_dh_compute(
+    const uint8_t *base, size_t base_len,
+    const uint8_t *exp, size_t exp_len,
+    const uint8_t *prime, size_t prime_len,
+    uint8_t *out, size_t *out_len)
+{
+    /* DH step is base^exp mod prime. */
+    return jpp_crypto_modexp(base, base_len,
+                             exp, exp_len,
+                             prime, prime_len,
+                             out, out_len);
 }

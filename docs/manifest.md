@@ -2,7 +2,7 @@
 
 **Contents:**
 
-- [Schema v2 — field reference](#schema-v2--complete-field-reference): [`schema_version`](#schema_version) · [`app_id`](#app_id) · [`name`](#name) · [`version`](#version) · [`sdk_min` / `sdk_max`](#sdk_min-and-sdk_max) · [`app_type`](#app_type) · [`entry`](#entry) · [`capabilities`](#capabilities) · [`background`](#background) · [`toolchain`](#toolchain)
+- [Schema v2 — field reference](#schema-v2--complete-field-reference): [`schema_version`](#schema_version) · [`app_id`](#app_id) · [`name`](#name) · [`version`](#version) · [`sdk_min`](#sdk_min) · [`app_type`](#app_type) · [`entry`](#entry) · [`capabilities`](#capabilities) · [`background`](#background) · [`toolchain`](#toolchain)
 - [Capabilities](#capabilities-1): [Capability table](#capability-table) · [Ungated surface](#ungated-surface-no-capability-needed)
 - [Complete examples](#complete-examples)
 
@@ -21,7 +21,6 @@ Every app package contains a `manifest.json` that tells the firmware who the app
   "name": "My App",
   "version": "1.0.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "app_type": "micropython",
   "entry": "main.mpy",
   "capabilities": [],
@@ -57,9 +56,20 @@ Every app package contains a `manifest.json` that tells the firmware who the app
 
 **Required.** A version string shown in the launcher and device info screens. Any format is accepted (e.g. `"1.0.0"`, `"2024-06"`, `"beta"`).
 
-### `sdk_min` and `sdk_max`
+### `sdk_min`
 
-**Required.** Inclusive SDK version range this app supports. Both must be `1` for the current firmware. The loader rejects apps whose range does not include the running SDK version.
+**Required.** The minimum SDK API level the app needs, as an integer `≥ 1`. The
+firmware exports one SDK level (`JPP_SDK_VERSION`, currently **2**); the loader
+rejects an app whose `sdk_min` is greater than the running level with
+`SDK_TOO_OLD`. There is no upper bound: the SDK surface only ever grows in a
+backward-compatible way, so an app built for an older level keeps running on
+newer firmware. Declare the lowest level that provides every SDK symbol and
+capability your app uses:
+
+| `sdk_min` | Requires firmware providing |
+|-----------|-----------------------------|
+| `1` | the original SDK surface |
+| `2` | outbound TCP (`net_connect`, capability `network.connect`) and the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) |
 
 ### `app_type`
 
@@ -148,6 +158,7 @@ There are **two tiers** of consent:
 | `esp_now` | 1 | Send and receive ESP-NOW packets (`espnow_send`/`espnow_recv`) |
 | `files.full` | 2 | Full SD card access via `file_open` — each path the app opens gets its own per-path approval prompt |
 | `network.bind` | 2 | Open a TCP server socket: one listener, up to 2 accepted connections |
+| `network.connect` | 2 | Open an outbound TCP connection via `net_connect` (SDK v2); shares the connection table with `network.bind` |
 | `ble.connect` | 2 | GATT client: connect to a BLE peripheral, read and write characteristics |
 | `ble.host` | 2 | GATT server: register one service and accept inbound BLE connections |
 
@@ -184,7 +195,6 @@ These work in every app, with no manifest declaration and no user prompt:
   "name": "Hello World",
   "version": "1.0.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "app_type": "micropython",
   "entry": "main.mpy",
   "capabilities": [],
@@ -206,7 +216,6 @@ These work in every app, with no manifest declaration and no user prompt:
   "name": "Weather",
   "version": "2.1.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "app_type": "micropython",
   "entry": "main.mpy",
   "capabilities": ["http.request", "background.register"],
@@ -233,7 +242,6 @@ These work in every app, with no manifest declaration and no user prompt:
   "name": "Counter",
   "version": "1.0.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "app_type": "native",
   "entry": "counter.bin",
   "capabilities": [],

@@ -1791,10 +1791,10 @@ jpp_sdk_status_t jpp_sdk_http_request(
 
 /* ---- network.bind — TCP server sockets ---- */
 
-/* Shared gate for every net call: bound context, declared+consented
-   capability, and a wired native callback set. */
-static jpp_sdk_status_t jpp_sdk_net_ensure(jpp_sdk_context_t *context,
-                                           jpp_broker_result_t *result)
+/* Bound context, non-NULL result, and a wired native callback set — shared by
+   every net call, no capability check. */
+static jpp_sdk_status_t jpp_sdk_net_ensure_ready(jpp_sdk_context_t *context,
+                                                 jpp_broker_result_t *result)
 {
     jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
     if (status != JPP_SDK_STATUS_OK) {
@@ -1806,18 +1806,47 @@ static jpp_sdk_status_t jpp_sdk_net_ensure(jpp_sdk_context_t *context,
     if (context->services.locks == NULL || context->services.net_bind == NULL) {
         return JPP_SDK_STATUS_INVALID_STATE;
     }
-    {
-        jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, "network.bind");
-        if (cap_st != JPP_SDK_STATUS_OK) {
-            jpp_broker_error_result(result, "ACCESS_DENIED");
-            return cap_st;
-        }
+    return JPP_SDK_STATUS_OK;
+}
+
+/* Gate a net call on one specific capability (prompts lazily, like other caps).
+   network.bind for the server calls; network.connect for the client call. */
+static jpp_sdk_status_t jpp_sdk_net_ensure(jpp_sdk_context_t *context,
+                                           jpp_broker_result_t *result,
+                                           const char *cap)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure_ready(context, result);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    jpp_sdk_status_t cap_st = jpp_sdk_ensure_cap(context, cap);
+    if (cap_st != JPP_SDK_STATUS_OK) {
+        jpp_broker_error_result(result, "ACCESS_DENIED");
+        return cap_st;
     }
     return JPP_SDK_STATUS_OK;
 }
 
+/* Gate the shared recv/send/close ops: pass if the app already holds either net
+   capability. No prompt — a live socket implies bind or connect was granted. */
+static jpp_sdk_status_t jpp_sdk_net_ensure_any(jpp_sdk_context_t *context,
+                                               jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure_ready(context, result);
+    if (status != JPP_SDK_STATUS_OK) {
+        return status;
+    }
+    if (jpp_broker_caller_has_capability(&context->caller, "network.bind") ||
+        jpp_broker_caller_has_capability(&context->caller, "network.connect")) {
+        return JPP_SDK_STATUS_OK;
+    }
+    jpp_broker_error_result(result, "ACCESS_DENIED");
+    return JPP_SDK_STATUS_ACCESS_DENIED;
+}
+
 typedef struct {
     jpp_sdk_context_t *sdk;
+    const char *host;
     uint16_t  port;
     uint32_t  timeout_ms;
     int       sock;
@@ -1839,6 +1868,14 @@ static jpp_broker_status_t jpp_sdk_net_accept_operation(void *context, jpp_broke
     jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
     return op->sdk->services.net_accept(op->sdk->services.net_context,
                                         op->timeout_ms, op->out_sock, result);
+}
+
+static jpp_broker_status_t jpp_sdk_net_connect_operation(void *context, jpp_broker_result_t *result)
+{
+    jpp_sdk_net_op_t *op = (jpp_sdk_net_op_t *)context;
+    return op->sdk->services.net_connect(op->sdk->services.net_context,
+                                         op->host, op->port, op->timeout_ms,
+                                         op->out_sock, result);
 }
 
 static jpp_broker_status_t jpp_sdk_net_recv_operation(void *context, jpp_broker_result_t *result)
@@ -1878,7 +1915,7 @@ jpp_sdk_status_t jpp_sdk_net_bind(
     uint16_t port,
     jpp_broker_result_t *result)
 {
-    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result, "network.bind");
     if (status != JPP_SDK_STATUS_OK) { return status; }
     if (port == 0u) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
 
@@ -1892,7 +1929,7 @@ jpp_sdk_status_t jpp_sdk_net_accept(
     int *out_sock,
     jpp_broker_result_t *result)
 {
-    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result, "network.bind");
     if (status != JPP_SDK_STATUS_OK) { return status; }
     if (out_sock == NULL) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
     *out_sock = -1;
@@ -1900,6 +1937,29 @@ jpp_sdk_status_t jpp_sdk_net_accept(
     jpp_sdk_net_op_t op = { .sdk = context, .timeout_ms = timeout_ms,
                             .out_sock = out_sock };
     return jpp_sdk_net_run(context, jpp_sdk_net_accept_operation, &op, result);
+}
+
+jpp_sdk_status_t jpp_sdk_net_connect(
+    jpp_sdk_context_t *context,
+    const char *host,
+    uint16_t port,
+    uint32_t timeout_ms,
+    int *out_sock,
+    jpp_broker_result_t *result)
+{
+    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result, "network.connect");
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if (host == NULL || host[0] == '\0' || port == 0u || out_sock == NULL) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    if (context->services.net_connect == NULL) {
+        return JPP_SDK_STATUS_INVALID_STATE;
+    }
+    *out_sock = -1;
+
+    jpp_sdk_net_op_t op = { .sdk = context, .host = host, .port = port,
+                            .timeout_ms = timeout_ms, .out_sock = out_sock };
+    return jpp_sdk_net_run(context, jpp_sdk_net_connect_operation, &op, result);
 }
 
 jpp_sdk_status_t jpp_sdk_net_recv(
@@ -1911,7 +1971,7 @@ jpp_sdk_status_t jpp_sdk_net_recv(
     uint32_t timeout_ms,
     jpp_broker_result_t *result)
 {
-    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    jpp_sdk_status_t status = jpp_sdk_net_ensure_any(context, result);
     if (status != JPP_SDK_STATUS_OK) { return status; }
     if (buf == NULL || buf_len == 0u || out_len == NULL) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
@@ -1931,7 +1991,7 @@ jpp_sdk_status_t jpp_sdk_net_send(
     size_t len,
     jpp_broker_result_t *result)
 {
-    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    jpp_sdk_status_t status = jpp_sdk_net_ensure_any(context, result);
     if (status != JPP_SDK_STATUS_OK) { return status; }
     if (data == NULL || len == 0u) { return JPP_SDK_STATUS_INVALID_ARGUMENT; }
 
@@ -1945,7 +2005,7 @@ jpp_sdk_status_t jpp_sdk_net_close(
     int sock,
     jpp_broker_result_t *result)
 {
-    jpp_sdk_status_t status = jpp_sdk_net_ensure(context, result);
+    jpp_sdk_status_t status = jpp_sdk_net_ensure_any(context, result);
     if (status != JPP_SDK_STATUS_OK) { return status; }
 
     jpp_sdk_net_op_t op = { .sdk = context, .sock = sock };

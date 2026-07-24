@@ -5,7 +5,6 @@
   "name": "Valid MP",
   "version": "1.0.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "entry": "main.mpy",
   "background": { "enabled": true, "tasks": [ { "name": "heartbeat", "interval_s": 300 }, { "name": "nightly", "cron": "0 3 * * *" } ] },
   "capabilities": ["http.request", "background.register"],

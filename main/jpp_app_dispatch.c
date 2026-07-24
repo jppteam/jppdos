@@ -372,8 +372,6 @@ static bool load_sd_manifest(const char *app_root,
     out->schema_version = cJSON_IsNumber(j) ? (int)j->valuedouble : 2;
     j = cJSON_GetObjectItem(root, "sdk_min");
     out->sdk_min = cJSON_IsNumber(j) ? (int)j->valuedouble : 1;
-    j = cJSON_GetObjectItem(root, "sdk_max");
-    out->sdk_max = cJSON_IsNumber(j) ? (int)j->valuedouble : 1;
 
     cJSON *caps = cJSON_GetObjectItem(root, "capabilities");
     if (cJSON_IsArray(caps)) {

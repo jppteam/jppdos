@@ -269,6 +269,20 @@ typedef jpp_broker_status_t (*jpp_sdk_net_accept_fn_t)(
     int *out_sock,                /* -1 when no connection arrived in time */
     jpp_broker_result_t *result
 );
+/*
+ * network.connect — outbound TCP client (SDK v2). Resolves `host` (name or
+ * dotted-quad) and connects to `port`, returning a socket id usable with the
+ * shared net_recv / net_send / net_close calls. A connected socket occupies a
+ * slot in the same connection table as accepted sockets.
+ */
+typedef jpp_broker_status_t (*jpp_sdk_net_connect_fn_t)(
+    void *context,
+    const char *host,
+    uint16_t port,
+    uint32_t timeout_ms,
+    int *out_sock,                /* -1 on failure/timeout */
+    jpp_broker_result_t *result
+);
 typedef jpp_broker_status_t (*jpp_sdk_net_recv_fn_t)(
     void *context,
     int sock,
@@ -416,9 +430,10 @@ typedef struct {
     /* http.request */
     jpp_sdk_http_request_fn_t http_request;
     void *http_request_context;
-    /* network.bind — TCP server sockets */
+    /* network.bind — TCP server sockets; network.connect — outbound TCP */
     jpp_sdk_net_bind_fn_t      net_bind;
     jpp_sdk_net_accept_fn_t    net_accept;
+    jpp_sdk_net_connect_fn_t   net_connect;
     jpp_sdk_net_recv_fn_t      net_recv;
     jpp_sdk_net_send_fn_t      net_send;
     jpp_sdk_net_close_fn_t     net_close;
@@ -898,6 +913,21 @@ jpp_sdk_status_t jpp_sdk_net_bind(
 );
 jpp_sdk_status_t jpp_sdk_net_accept(
     jpp_sdk_context_t *context,
+    uint32_t timeout_ms,
+    int *out_sock,
+    jpp_broker_result_t *result
+);
+/*
+ * Requires: network.connect — open an outbound TCP connection to host:port.
+ * On success *out_sock is a socket id for net_recv / net_send / net_close (the
+ * same calls used for accepted server sockets). Fails with CONNECT_FAILED on
+ * DNS/connect error or timeout, and SOCKET_LIMIT when the connection table is
+ * full. Like net_bind, refused while the WebDAV or LRV server is running.
+ */
+jpp_sdk_status_t jpp_sdk_net_connect(
+    jpp_sdk_context_t *context,
+    const char *host,
+    uint16_t port,
     uint32_t timeout_ms,
     int *out_sock,
     jpp_broker_result_t *result

@@ -44,6 +44,83 @@ jpp_crypto_status_t jpp_crypto_verify(
     const uint8_t sig[JPP_CRYPTO_SIG_BYTES]
 );
 
+/* ---- Generic primitives (SDK v2) ---------------------------------------- *
+ *
+ * These are thin, stateless wrappers over the ESP-IDF mbedTLS backend (AES,
+ * SHA, and the MPI bignum are hardware-accelerated on the ESP32-C6).  They are
+ * exposed to native apps through the symbol table (ungated — pure computation,
+ * no I/O or security boundary) so an app can implement transport crypto such as
+ * MTProto without carrying its own AES/bignum in the 64 KB app pool.
+ */
+
+#define JPP_CRYPTO_SHA256_BYTES 32u
+#define JPP_CRYPTO_SHA1_BYTES   20u
+#define JPP_CRYPTO_AES256_KEY_BYTES 32u
+#define JPP_CRYPTO_AES_BLOCK_BYTES  16u
+#define JPP_CRYPTO_AES_IGE_IV_BYTES 32u   /* IGE uses a two-block IV */
+
+/* SHA-256 / SHA-1 one-shot digests. */
+jpp_crypto_status_t jpp_crypto_sha256(
+    const uint8_t *message, size_t message_len,
+    uint8_t out[JPP_CRYPTO_SHA256_BYTES]
+);
+jpp_crypto_status_t jpp_crypto_sha1(
+    const uint8_t *message, size_t message_len,
+    uint8_t out[JPP_CRYPTO_SHA1_BYTES]
+);
+
+/*
+ * AES-256 in IGE mode (the mode MTProto uses).  `length` must be a non-zero
+ * multiple of JPP_CRYPTO_AES_BLOCK_BYTES (16).  `iv` is 32 bytes and is read
+ * only — the functions keep their own working copy, so the caller's IV is
+ * untouched.  `out` may equal `in` for in-place operation.
+ */
+jpp_crypto_status_t jpp_crypto_aes256_ige_encrypt(
+    const uint8_t *in, size_t length,
+    const uint8_t key[JPP_CRYPTO_AES256_KEY_BYTES],
+    const uint8_t iv[JPP_CRYPTO_AES_IGE_IV_BYTES],
+    uint8_t *out
+);
+jpp_crypto_status_t jpp_crypto_aes256_ige_decrypt(
+    const uint8_t *in, size_t length,
+    const uint8_t key[JPP_CRYPTO_AES256_KEY_BYTES],
+    const uint8_t iv[JPP_CRYPTO_AES_IGE_IV_BYTES],
+    uint8_t *out
+);
+
+/*
+ * Big-integer modular exponentiation: out = base^exp mod modulus.
+ * All operands are unsigned big-endian byte strings of arbitrary length.
+ * `out` must have room for `modulus_len` bytes; the result is written
+ * big-endian, left-padded with zeros, and *out_len is set to modulus_len.
+ * Fails (INVALID_ARG) if modulus is zero.
+ */
+jpp_crypto_status_t jpp_crypto_modexp(
+    const uint8_t *base, size_t base_len,
+    const uint8_t *exp, size_t exp_len,
+    const uint8_t *modulus, size_t modulus_len,
+    uint8_t *out, size_t *out_len
+);
+
+/*
+ * Thin MTProto-named wrappers over jpp_crypto_modexp:
+ *   rsa_encrypt: out = data^exponent mod modulus   (RSA public-key operation)
+ *   dh_compute:  out = base^exp     mod prime       (Diffie-Hellman step)
+ * Both exist purely for call-site clarity; the math is identical to modexp.
+ */
+jpp_crypto_status_t jpp_crypto_rsa_encrypt(
+    const uint8_t *data, size_t data_len,
+    const uint8_t *modulus, size_t modulus_len,
+    const uint8_t *exponent, size_t exponent_len,
+    uint8_t *out, size_t *out_len
+);
+jpp_crypto_status_t jpp_crypto_dh_compute(
+    const uint8_t *base, size_t base_len,
+    const uint8_t *exp, size_t exp_len,
+    const uint8_t *prime, size_t prime_len,
+    uint8_t *out, size_t *out_len
+);
+
 /* ---- MuSig2 — simplified two-round multi-signature over Ed25519 --------- */
 
 /*

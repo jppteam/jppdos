@@ -192,7 +192,6 @@ This app fetches a weather summary from a local endpoint, saves it to the KV sto
   "name": "Weather",
   "version": "1.0.0",
   "sdk_min": 1,
-  "sdk_max": 1,
   "app_type": "micropython",
   "entry": "main.mpy",
   "capabilities": ["http.request", "background.register"],

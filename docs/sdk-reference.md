@@ -20,6 +20,8 @@
 | [IPC](#ipc) | [`ipc_send`](#ipc_send) · [`ipc_recv`](#ipc_recv) |
 | [HTTP](#http) ⚠ `http.request` | [`http_request`](#http_request) |
 | [Network / TCP server](#network-tcp-server) ⚠ `network.bind` | [`net_bind`](#net_bind) · [`net_accept`](#net_accept) · [`net_recv`](#net_recv) · [`net_send`](#net_send) · [`net_close`](#net_close) |
+| [Network / TCP client](#network-tcp-client) ⚠ `network.connect` | [`net_connect`](#net_connect) · (shares `net_recv`/`net_send`/`net_close`) |
+| [Crypto primitives](#crypto-primitives) | [`sha256`](#jpp_crypto_sha256) · [`sha1`](#jpp_crypto_sha1) · [`aes256_ige_encrypt`/`_decrypt`](#jpp_crypto_aes256_ige_encrypt--jpp_crypto_aes256_ige_decrypt) · [`modexp`](#jpp_crypto_modexp) · [`rsa_encrypt`](#jpp_crypto_rsa_encrypt) · [`dh_compute`](#jpp_crypto_dh_compute) |
 | [BLE scan](#ble-scan) ⚠ `ble.scan` | [`ble_scan`](#ble_scan) |
 | [BLE advertise](#ble-advertise) ⚠ `ble.advertise` | [`ble_advertise_start`](#ble_advertise_start) · [`ble_advertise_stop`](#ble_advertise_stop) · [`ble_set_connectable`](#ble_set_connectable) |
 | [ESP-NOW](#esp-now) ⚠ `esp_now` | [`espnow_send`](#espnow_send) · [`espnow_recv`](#espnow_recv) |
@@ -1272,6 +1274,125 @@ jppsdk.net_close(sock: int) -> None
 ```
 
 **Notes:** Close accepted sockets when done — the connection table has only 2 slots. Close the listener (`sock=-1`) when you no longer want new connections.
+
+---
+
+## Network (TCP client)
+
+**Capability:** `network.connect` (Tier 2 — per-session grant) · **Requires SDK ≥ 2** (`sdk_min: 2`)
+
+Open an outbound TCP connection. A connected socket is used with the same
+`net_recv` / `net_send` / `net_close` calls as an accepted server socket, and
+occupies a slot in the same 2-entry connection table. `net_recv`/`net_send`/
+`net_close` accept a socket obtained from **either** `net_bind`+`net_accept`
+(`network.bind`) **or** `net_connect` (`network.connect`) — holding either
+capability is sufficient to move bytes on a socket you own.
+
+### `net_connect`
+
+Resolve `host` (DNS name or dotted-quad) and connect to `port`.
+
+```c
+jpp_sdk_status_t jpp_sdk_net_connect(jpp_sdk_context_t *ctx,
+                                     const char *host,
+                                     uint16_t port,
+                                     uint32_t timeout_ms,
+                                     int *out_sock,
+                                     jpp_broker_result_t *result);
+```
+```python
+jppsdk.net_connect(host: str, port: int, timeout_ms: int) -> int
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `host` | Hostname or IPv4 literal to connect to. |
+| `port` | TCP port. |
+| `timeout_ms` | Connect timeout. `0` blocks until the OS gives up. |
+| `out_sock` / return | Socket id for `net_recv`/`net_send`/`net_close`; `-1` on failure. |
+
+**Returns:** `JPP_SDK_OK` with `*out_sock ≥ 0` on success. `result->code` is
+`CONNECT_FAILED` (DNS/connect error or timeout), `SOCKET_LIMIT` (connection
+table full), or `SERVER_ACTIVE` (the WebDAV or LRV HTTP server is running).
+
+**Notes:** Wi-Fi must be connected. Binary-safe in both directions (unlike
+`http_request`, which is HTTP-only and NUL-terminates the body). Close the
+socket with `net_close` when done; all sockets close automatically at app exit.
+
+---
+
+## Crypto primitives
+
+**Capability:** none — ungated (pure computation, no I/O or security boundary) · **Requires SDK ≥ 2** (`sdk_min: 2`)
+
+Stateless, mbedTLS-backed primitives (AES / SHA / bignum are hardware-accelerated
+on the ESP32-C6). The heavy crypto code lives in the firmware, so an app can
+implement transport crypto such as MTProto without carrying its own AES/bignum
+in the 64 KB app pool. C-only (declare the prototypes from `jpp_crypto_core.h`).
+
+### `jpp_crypto_sha256`
+### `jpp_crypto_sha1`
+
+One-shot digests.
+
+```c
+jpp_crypto_status_t jpp_crypto_sha256(const uint8_t *msg, size_t len, uint8_t out[32]);
+jpp_crypto_status_t jpp_crypto_sha1(const uint8_t *msg, size_t len, uint8_t out[20]);
+```
+
+### `jpp_crypto_aes256_ige_encrypt` / `jpp_crypto_aes256_ige_decrypt`
+
+AES-256 in IGE mode (the mode MTProto uses). `length` must be a non-zero
+multiple of 16. `iv` is 32 bytes (two blocks) and is read-only. `out` may alias
+`in` for in-place operation.
+
+```c
+jpp_crypto_status_t jpp_crypto_aes256_ige_encrypt(
+    const uint8_t *in, size_t length,
+    const uint8_t key[32], const uint8_t iv[32], uint8_t *out);
+jpp_crypto_status_t jpp_crypto_aes256_ige_decrypt(
+    const uint8_t *in, size_t length,
+    const uint8_t key[32], const uint8_t iv[32], uint8_t *out);
+```
+
+### `jpp_crypto_modexp`
+
+Big-integer modular exponentiation `out = base^exp mod modulus`. All operands
+are unsigned big-endian byte strings. `out` receives `modulus_len` bytes,
+big-endian, left-padded with zeros.
+
+```c
+jpp_crypto_status_t jpp_crypto_modexp(
+    const uint8_t *base, size_t base_len,
+    const uint8_t *exp, size_t exp_len,
+    const uint8_t *modulus, size_t modulus_len,
+    uint8_t *out, size_t *out_len);
+```
+
+### `jpp_crypto_rsa_encrypt`
+### `jpp_crypto_dh_compute`
+
+Thin, clarity-only wrappers over `modexp`: `rsa_encrypt` computes
+`data^exponent mod modulus` (the RSA public-key operation); `dh_compute`
+computes `base^exp mod prime` (a Diffie-Hellman step). The math is identical to
+`modexp`.
+
+```c
+jpp_crypto_status_t jpp_crypto_rsa_encrypt(
+    const uint8_t *data, size_t data_len,
+    const uint8_t *modulus, size_t modulus_len,
+    const uint8_t *exponent, size_t exponent_len,
+    uint8_t *out, size_t *out_len);
+jpp_crypto_status_t jpp_crypto_dh_compute(
+    const uint8_t *base, size_t base_len,
+    const uint8_t *exp, size_t exp_len,
+    const uint8_t *prime, size_t prime_len,
+    uint8_t *out, size_t *out_len);
+```
+
+**Returns (all):** `JPP_CRYPTO_OK`, `JPP_CRYPTO_ERR_INVALID_ARG` (NULL/zero-length
+operand, non-block-multiple AES length, or zero modulus), or
+`JPP_CRYPTO_ERR_INTERNAL`.
 
 ---
 

@@ -146,6 +146,7 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_http_request",          (void *)jpp_sdk_http_request          },
     { "jpp_sdk_net_bind",              (void *)jpp_sdk_net_bind              },
     { "jpp_sdk_net_accept",            (void *)jpp_sdk_net_accept            },
+    { "jpp_sdk_net_connect",           (void *)jpp_sdk_net_connect           },
     { "jpp_sdk_net_recv",              (void *)jpp_sdk_net_recv              },
     { "jpp_sdk_net_send",              (void *)jpp_sdk_net_send              },
     { "jpp_sdk_net_close",             (void *)jpp_sdk_net_close             },
@@ -182,6 +183,15 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_crypto_musig2_aggregate_pubkeys",
                                        (void *)jpp_crypto_musig2_aggregate_pubkeys},
     { "jpp_crypto_musig2_verify",      (void *)jpp_crypto_musig2_verify      },
+
+    /* ---- generic primitives (SDK v2) — sha/aes-ige/modexp ---------------- */
+    { "jpp_crypto_sha256",             (void *)jpp_crypto_sha256             },
+    { "jpp_crypto_sha1",               (void *)jpp_crypto_sha1               },
+    { "jpp_crypto_aes256_ige_encrypt", (void *)jpp_crypto_aes256_ige_encrypt },
+    { "jpp_crypto_aes256_ige_decrypt", (void *)jpp_crypto_aes256_ige_decrypt },
+    { "jpp_crypto_modexp",             (void *)jpp_crypto_modexp             },
+    { "jpp_crypto_rsa_encrypt",        (void *)jpp_crypto_rsa_encrypt        },
+    { "jpp_crypto_dh_compute",         (void *)jpp_crypto_dh_compute         },
 
     /* libsodium */
     { "randombytes_buf",               (void *)randombytes_buf               },
