@@ -25,12 +25,13 @@
    (JPP_SDK_BLE_HOST_SVC_UUID / _TX_UUID / _RX_UUID). */
 
 /* RX characteristic data type tags. */
-#define MEETAPP_RX_ROUND15  0x01u  /* round-1.5: msg_hash + agg_nonce + n + pubkeys + timestamp + nicks */
+#define MEETAPP_RX_ROUND15  0x01u  /* round-1.5: msg_hash + agg_nonce + n + pubkeys + timestamp + nicks + comment */
 #define MEETAPP_RX_FINALSIG 0x02u  /* final signature */
 
 /* Fixed field widths in the round-1.5 payload (NUL-padded on the wire). */
-#define MEETAPP_TS_FIELD_LEN   20u                       /* timestamp buffer size */
-#define MEETAPP_NICK_FIELD_LEN (MEETAPP_NICKNAME_MAX + 1u)
+#define MEETAPP_TS_FIELD_LEN      20u                       /* timestamp buffer size */
+#define MEETAPP_NICK_FIELD_LEN    (MEETAPP_NICKNAME_MAX + 1u)
+#define MEETAPP_COMMENT_FIELD_LEN (MEETAPP_COMMENT_MAX + 1u) /* leader comment buffer size */
 
 /* TX characteristic data type tags. */
 #define MEETAPP_TX_NONCE    0x01u  /* pubkey + public_nonce */
@@ -75,9 +76,10 @@ bool meetapp_ble_collect_nonces(jpp_sdk_context_t *ctx,
 /*
  * Leader round B: connect to each peer, write round-1.5 data, wait, read
  * partial sig.  msg_hash is SHA-512(message_text).  The proof message embeds
- * every nickname and the timestamp, so those are forwarded (participants[] holds
- * the nicknames in all_pubkeys order) — small enough to stay under the 512-byte
- * ATT attribute limit, unlike the full message text.  Returns false on error.
+ * every nickname, the timestamp and the leader's optional comment, so those are
+ * forwarded (participants[] holds the nicknames in all_pubkeys order; comment may
+ * be NULL/"") — small enough to stay under the 512-byte ATT attribute limit,
+ * unlike the full message text.  Returns false on error.
  */
 bool meetapp_ble_exchange_sigs(jpp_sdk_context_t *ctx,
                                 meetapp_session_t *session,
@@ -86,6 +88,7 @@ bool meetapp_ble_exchange_sigs(jpp_sdk_context_t *ctx,
                                 const uint8_t *all_pubkeys, /* (1+n)*32 leader-first */
                                 size_t n_total,
                                 const char *timestamp,
+                                const char *comment,
                                 const meetapp_proof_participant_t *participants);
 
 /*
@@ -110,9 +113,11 @@ bool meetapp_ble_scan_ping_once(jpp_sdk_context_t *ctx,
  * Participant: wait for round-1.5 data from the leader (via the host RX
  * characteristic write). Returns true on success; fills msg_hash, agg_pubnonce,
  * all_pubkeys, n_total, the leader's timestamp (out_timestamp, NUL-terminated,
- * MEETAPP_TS_FIELD_LEN bytes) and each participant's nickname in all_pubkeys
- * order (out_nicknames[i], each NUL-terminated). all_pubkeys must be at least
- * MEETAPP_MAX_TOTAL*32 bytes; out_nicknames at least MEETAPP_MAX_TOTAL rows.
+ * MEETAPP_TS_FIELD_LEN bytes), each participant's nickname in all_pubkeys
+ * order (out_nicknames[i], each NUL-terminated) and the leader's optional
+ * comment (out_comment, NUL-terminated, MEETAPP_COMMENT_FIELD_LEN bytes; empty
+ * string if none). all_pubkeys must be at least MEETAPP_MAX_TOTAL*32 bytes;
+ * out_nicknames at least MEETAPP_MAX_TOTAL rows.
  */
 bool meetapp_ble_wait_round15(jpp_sdk_context_t *ctx,
                                uint8_t msg_hash[64],
@@ -121,6 +126,7 @@ bool meetapp_ble_wait_round15(jpp_sdk_context_t *ctx,
                                size_t *n_total,
                                char out_timestamp[MEETAPP_TS_FIELD_LEN],
                                char out_nicknames[][MEETAPP_NICK_FIELD_LEN],
+                               char out_comment[MEETAPP_COMMENT_FIELD_LEN],
                                uint32_t timeout_ms);
 
 /*
