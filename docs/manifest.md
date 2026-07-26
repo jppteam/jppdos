@@ -2,7 +2,7 @@
 
 **Contents:**
 
-- [Schema v2 — field reference](#schema-v2--complete-field-reference): [`schema_version`](#schema_version) · [`app_id`](#app_id) · [`name`](#name) · [`version`](#version) · [`sdk_min`](#sdk_min) · [`app_type`](#app_type) · [`entry`](#entry) · [`capabilities`](#capabilities) · [`background`](#background) · [`toolchain`](#toolchain)
+- [Schema v2 — field reference](#schema-v2--complete-field-reference): [`schema_version`](#schema_version) · [`app_id`](#app_id) · [`name`](#name) · [`version`](#version) · [`author`](#author) · [`sdk_min`](#sdk_min) · [`app_type`](#app_type) · [`entry`](#entry) · [`capabilities`](#capabilities) · [`background`](#background) · [`toolchain`](#toolchain)
 - [Capabilities](#capabilities-1): [Capability table](#capability-table) · [Ungated surface](#ungated-surface-no-capability-needed)
 - [Complete examples](#complete-examples)
 
@@ -20,6 +20,7 @@ Every app package contains a `manifest.json` that tells the firmware who the app
   "app_id": "my_app",
   "name": "My App",
   "version": "1.0.0",
+  "author": "Jane Dev",
   "sdk_min": 1,
   "app_type": "micropython",
   "entry": "main.mpy",
@@ -55,6 +56,14 @@ Every app package contains a `manifest.json` that tells the firmware who the app
 ### `version`
 
 **Required.** A version string shown in the launcher and device info screens. Any format is accepted (e.g. `"1.0.0"`, `"2024-06"`, `"beta"`).
+
+### `author`
+
+**Optional.** A free-form string naming the app's author or publisher (e.g.
+`"jppdos"`, `"Jane Dev"`). Purely informational: the current firmware does
+**not** read, validate, or verify this field in any way — it is metadata for
+humans and tooling only. Any string value is accepted and unknown-to-firmware
+fields are ignored, so declaring it never affects loading or capabilities.
 
 ### `sdk_min`
 
@@ -194,6 +203,7 @@ These work in every app, with no manifest declaration and no user prompt:
   "app_id": "hello",
   "name": "Hello World",
   "version": "1.0.0",
+  "author": "Jane Dev",
   "sdk_min": 1,
   "app_type": "micropython",
   "entry": "main.mpy",
@@ -241,6 +251,7 @@ These work in every app, with no manifest declaration and no user prompt:
   "app_id": "counter",
   "name": "Counter",
   "version": "1.0.0",
+  "author": "Jane Dev",
   "sdk_min": 1,
   "app_type": "native",
   "entry": "counter.bin",

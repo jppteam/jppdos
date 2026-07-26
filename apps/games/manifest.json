@@ -4,6 +4,7 @@
   "app_type": "native",
   "name": "Games",
   "version": "1.0.0",
+  "author": "jppdos",
   "sdk_min": 1,
   "entry": "games.bin",
   "capabilities": [

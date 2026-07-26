@@ -4,6 +4,7 @@
   "app_type": "native",
   "name": "MTProto (skeleton)",
   "version": "0.1.0",
+  "author": "jppdos",
   "sdk_min": 2,
   "entry": "mtproto.bin",
   "background": { "enabled": false },

@@ -4,6 +4,7 @@
   "app_type": "native",
   "name": "MeetApp",
   "version": "0.1.0",
+  "author": "jppdos",
   "sdk_min": 1,
   "entry": "meetapp.bin",
   "background": {
