@@ -267,7 +267,7 @@ void jpp_sdk_push_key(jpp_sdk_context_t *ctx, jpp_sdk_key_event_t event);
 
 ---
 
-### `set_back_gesture_enabled` (C only)
+### `set_back_gesture_enabled`
 
 Enable or disable delivery of the "Back" gesture to your app.
 
@@ -275,6 +275,9 @@ Enable or disable delivery of the "Back" gesture to your app.
 
 ```c
 jpp_sdk_status_t jpp_sdk_set_back_gesture_enabled(jpp_sdk_context_t *ctx, bool enabled);
+```
+```python
+jppsdk.set_back_gesture_enabled(enabled: bool) -> None
 ```
 
 **Parameters:**
@@ -287,7 +290,7 @@ jpp_sdk_status_t jpp_sdk_set_back_gesture_enabled(jpp_sdk_context_t *ctx, bool e
 
 ---
 
-### `set_force_hold_back_gesture` (C only)
+### `set_force_hold_back_gesture`
 
 Force CENTER's "Back" trigger to always be a hold for your app, regardless of the system-wide Settings > Controls preference.
 
@@ -295,6 +298,9 @@ Force CENTER's "Back" trigger to always be a hold for your app, regardless of th
 
 ```c
 jpp_sdk_status_t jpp_sdk_set_force_hold_back_gesture(jpp_sdk_context_t *ctx, bool force);
+```
+```python
+jppsdk.set_force_hold_back_gesture(force: bool) -> None
 ```
 
 **Parameters:**

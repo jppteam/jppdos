@@ -588,8 +588,23 @@ def test_background_register(sdk):
         _show_result(sdk, "background_register", False, str(e))
 
 
+def test_back_gesture(sdk):
+    try:
+        sdk.set_back_gesture_enabled(False)
+        _show_result(sdk, "set_back_gesture_enabled", True, "disabled")
+        sdk.set_back_gesture_enabled(True)
+        _show_result(sdk, "set_back_gesture_enabled", True, "re-enabled")
+        sdk.set_force_hold_back_gesture(True)
+        _show_result(sdk, "set_force_hold_back_gesture", True, "forced")
+        sdk.set_force_hold_back_gesture(False)
+        _show_result(sdk, "set_force_hold_back_gesture", True, "released")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "back_gesture", False, str(e))
+
+
 def menu_system(sdk):
-    items = ["Wakelock acq/rel", "Log event", "Background register"]
+    items = ["Wakelock acq/rel", "Log event", "Background register",
+             "Back gesture toggle"]
     while True:
         sel = _pick(sdk, "System Tests", items)
         if sel is None:
@@ -598,8 +613,10 @@ def menu_system(sdk):
             test_wakelock(sdk)
         elif sel == 1:
             test_log(sdk)
-        else:
+        elif sel == 2:
             test_background_register(sdk)
+        else:
+            test_back_gesture(sdk)
 
 
 # --------------------------------------------------------------------------- #

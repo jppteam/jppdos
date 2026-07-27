@@ -364,6 +364,30 @@ STATIC mp_obj_t mp_sdk_wait_key(mp_obj_t timeout_obj)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_wait_key_obj, mp_sdk_wait_key);
 
+/* set_back_gesture_enabled(enabled) → None */
+STATIC mp_obj_t mp_sdk_set_back_gesture_enabled(mp_obj_t enabled_obj)
+{
+    bool enabled = mp_obj_is_true(enabled_obj);
+    jpp_sdk_status_t st = jpp_sdk_set_back_gesture_enabled(get_ctx(), enabled);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_set_back_gesture_enabled_obj, mp_sdk_set_back_gesture_enabled);
+
+/* set_force_hold_back_gesture(force) → None */
+STATIC mp_obj_t mp_sdk_set_force_hold_back_gesture(mp_obj_t force_obj)
+{
+    bool force = mp_obj_is_true(force_obj);
+    jpp_sdk_status_t st = jpp_sdk_set_force_hold_back_gesture(get_ctx(), force);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_set_force_hold_back_gesture_obj, mp_sdk_set_force_hold_back_gesture);
+
 /* -------------------------------------------------------------------------- */
 /* BLE — scan  (requires: ble.scan)                                           */
 /* -------------------------------------------------------------------------- */
@@ -1127,6 +1151,8 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* Input */
     { MP_ROM_QSTR(MP_QSTR_poll_key),        MP_ROM_PTR(&mp_sdk_poll_key_obj) },
     { MP_ROM_QSTR(MP_QSTR_wait_key),        MP_ROM_PTR(&mp_sdk_wait_key_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_back_gesture_enabled),    MP_ROM_PTR(&mp_sdk_set_back_gesture_enabled_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_force_hold_back_gesture), MP_ROM_PTR(&mp_sdk_set_force_hold_back_gesture_obj) },
 
     /* High-level UI */
     { MP_ROM_QSTR(MP_QSTR_dialog),          MP_ROM_PTR(&mp_sdk_dialog_obj) },
