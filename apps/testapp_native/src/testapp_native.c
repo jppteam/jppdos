@@ -776,17 +776,27 @@ static void test_background_register(jpp_sdk_context_t *ctx)
                                         : r.code);
 }
 
+static void test_back_gesture(jpp_sdk_context_t *ctx)
+{
+    jpp_sdk_status_t st = jpp_sdk_set_back_gesture_enabled(ctx, false);
+    show_result(ctx, "set_back_gesture_enabled", st, "disabled");
+    if (st != JPP_SDK_STATUS_OK) return;
+    st = jpp_sdk_set_back_gesture_enabled(ctx, true);
+    show_result(ctx, "set_back_gesture_enabled", st, "re-enabled");
+}
+
 static void menu_system(jpp_sdk_context_t *ctx)
 {
     static const char *items[] = {
-        "Wakelock acq/rel", "Log event", "Background register"
+        "Wakelock acq/rel", "Log event", "Background register", "Back gesture toggle"
     };
     for (;;) {
-        int sel = pick(ctx, "System Tests", items, 3);
+        int sel = pick(ctx, "System Tests", items, 4);
         if (sel < 0) return;
         if (sel == 0)      test_wakelock(ctx);
         else if (sel == 1) test_log(ctx);
-        else               test_background_register(ctx);
+        else if (sel == 2) test_background_register(ctx);
+        else               test_back_gesture(ctx);
     }
 }
 

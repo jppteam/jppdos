@@ -516,6 +516,8 @@ typedef struct {
     bool bound;
     bool wakelock_held;  /* prevents screen dim / deep sleep when true */
     bool dummy_mode;     /* set when the app is launched as the dummy-mode locked app */
+    bool back_gesture_enabled;  /* true by default; see jpp_sdk_set_back_gesture_enabled() */
+    bool force_hold_back_gesture;  /* false by default; see jpp_sdk_set_force_hold_back_gesture() */
     QueueHandle_t key_queue;  /* FreeRTOS queue, capacity 8, element jpp_sdk_key_event_t */
     /* Pixel canvas — row-major, MSB = leftmost pixel. Rows 0–47 in windowed
        mode (pages 2–7); all 64 rows when canvas_fullscreen is set. */
@@ -972,6 +974,29 @@ jpp_sdk_status_t jpp_sdk_wait_key(jpp_sdk_context_t *context, uint32_t timeout_m
 
 /* Called by the main loop to push a key event into the active app's queue. */
 void jpp_sdk_push_key(jpp_sdk_context_t *context, jpp_sdk_key_event_t event);
+
+/* Ungated — when enabled (the default), a CENTER long-press or double-click
+   (whichever gesture Settings > Controls has selected) is delivered to the
+   app as JPP_SDK_KEY_CENTER_LONG. When disabled, that gesture is dropped
+   silently: the app receives nothing for it. Use this to stop an accidental
+   long hold/double-click on a primary action button (e.g. a shoot button)
+   from being misread as "Back" during fast gameplay — disable while the
+   button means something else, re-enable before/while showing your own
+   pause or exit-confirmation screen. Does not affect UP/DOWN/LEFT/RIGHT/OK,
+   and has no effect on the launcher/Settings navigation outside your app. */
+jpp_sdk_status_t jpp_sdk_set_back_gesture_enabled(jpp_sdk_context_t *context, bool enabled);
+
+/* Ungated — while forced (the default is off), CENTER's "Back" trigger is
+   always evaluated as a hold (JPP_KEYPAD_BACK_GESTURE_HOLD) for this app's
+   key stream, regardless of the system-wide Settings > Controls preference
+   (Hold vs Double-click), which keeps governing the launcher and every other
+   app. Use this when your app overloads CENTER as a primary action button
+   (e.g. "fire"): it removes the double-click window's inherent delay on the
+   short-click ("OK"/fire) delivery, and guarantees a long hold — never a
+   double-tap — is what reaches you as JPP_SDK_KEY_CENTER_LONG. Reverts to
+   the system preference automatically when your app exits. Has no effect
+   outside your app. */
+jpp_sdk_status_t jpp_sdk_set_force_hold_back_gesture(jpp_sdk_context_t *context, bool force);
 
 /* ---- High-level UI helpers (no capability required) ---------------------- */
 

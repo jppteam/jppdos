@@ -199,6 +199,8 @@ typedef struct {
     jpp_keypad_state_t        state;
 } keypad_task_ctx_t;
 
+static keypad_task_ctx_t s_kpad_ctx;
+
 static void keypad_task(void *arg)
 {
     keypad_task_ctx_t *ctx = (keypad_task_ctx_t *)arg;
@@ -223,7 +225,14 @@ static void keypad_task(void *arg)
 
         jpp_keypad_event_t events[8];
         size_t event_count = 0u;
-        jpp_keypad_poll(&ctx->state, &ctx->cfg, sample_uv, true,
+        jpp_keypad_config_t poll_cfg = ctx->cfg;
+        if (s_active_sdk_context != NULL && s_active_sdk_context->force_hold_back_gesture) {
+            /* The foreground app wants CENTER's Back trigger to always be a
+               hold, regardless of the user's Settings > Controls preference
+               (which keeps governing the launcher once this app exits). */
+            poll_cfg.back_gesture = JPP_KEYPAD_BACK_GESTURE_HOLD;
+        }
+        jpp_keypad_poll(&ctx->state, &poll_cfg, sample_uv, true,
                         events, 8u, &event_count);
 
         for (size_t i = 0u; i < event_count; i++) {
@@ -247,7 +256,13 @@ static void keypad_task(void *arg)
                     case JPP_UI_ACTION_BACK:  sdk_key = JPP_SDK_KEY_NONE;   break;
                     case JPP_UI_ACTION_NONE:  sdk_key = JPP_SDK_KEY_NONE;   break;
                     }
-                    if (events[i].kind == JPP_KEYPAD_KIND_CENTER_LONG) {
+                    if ((events[i].kind == JPP_KEYPAD_KIND_CENTER_LONG ||
+                         events[i].kind == JPP_KEYPAD_KIND_CENTER_DOUBLE) &&
+                        s_active_sdk_context->back_gesture_enabled) {
+                        /* Apps only care that Back happened, not which
+                           gesture triggered it — reuse the existing key.
+                           Dropped entirely (sdk_key stays NONE) when the app
+                           has suppressed it via jpp_sdk_set_back_gesture_enabled. */
                         sdk_key = JPP_SDK_KEY_CENTER_LONG;
                     }
                     if (sdk_key != JPP_SDK_KEY_NONE) {
@@ -342,6 +357,7 @@ static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 #define JPP_NVS_SOUND_NS  "jpp_sound"
 #define JPP_NVS_USER_NS   "jpp_user"
 #define JPP_NVS_DUMMY_NS  "jpp_dummy"
+#define JPP_NVS_INPUT_NS  "jpp_input"
 
 typedef struct {
     bool enabled;
@@ -610,6 +626,14 @@ static void settings_do_backup(jpp_settings_state_t *state)
         cJSON_AddStringToObject(nvs_user, "username", uname);
     }
 
+    cJSON *nvs_input = cJSON_CreateObject();
+    if (nvs_open(JPP_NVS_INPUT_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t back_gesture = JPP_KEYPAD_BACK_GESTURE_HOLD;
+        nvs_get_u8(h, "back_gesture", &back_gesture);
+        nvs_close(h);
+        cJSON_AddNumberToObject(nvs_input, "back_gesture", (double)back_gesture);
+    }
+
     /* Assemble the backup JSON. */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "jppdos_backup", 1.0);
@@ -619,6 +643,7 @@ static void settings_do_backup(jpp_settings_state_t *state)
     cJSON_AddItemToObject(root, "nvs_webdav", nvs_webdav);
     cJSON_AddItemToObject(root, "nvs_sound",  nvs_sound);
     cJSON_AddItemToObject(root, "nvs_user",   nvs_user);
+    cJSON_AddItemToObject(root, "nvs_input",  nvs_input);
 
     /* LRV identity is intentionally NOT included in backups: it lives on the
        AT24C32 EEPROM (bound to the RTC module) and is neither user-backupable
@@ -945,6 +970,33 @@ static void settings_do_jingle_change(uint8_t jingle)
              jingle, jpp_startup_jingle_name((jpp_startup_jingle_t)jingle));
 }
 
+/* ---- Back button gesture ------------------------------------------------- */
+
+static uint8_t s_back_gesture_mode = JPP_KEYPAD_BACK_GESTURE_HOLD;
+
+static void load_back_gesture(void)
+{
+    uint8_t mode = jpp_nvs_get_u8(JPP_NVS_INPUT_NS, "back_gesture", s_back_gesture_mode);
+    if (mode == JPP_KEYPAD_BACK_GESTURE_HOLD || mode == JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK) {
+        s_back_gesture_mode = mode;
+    }
+    ESP_LOGI(TAG, "INPUT: back_gesture=%u", s_back_gesture_mode);
+}
+
+/* Applied live: s_kpad_ctx is file-scope and the keypad task re-reads
+   ctx->cfg every poll, so this takes effect on the next 20ms tick with no
+   task restart. */
+static void settings_do_back_gesture_change(uint8_t mode)
+{
+    if (mode != JPP_KEYPAD_BACK_GESTURE_HOLD && mode != JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK) {
+        return;
+    }
+    s_back_gesture_mode = mode;
+    s_kpad_ctx.cfg.back_gesture = (jpp_keypad_back_gesture_t)mode;
+    jpp_nvs_set_u8(JPP_NVS_INPUT_NS, "back_gesture", mode);
+    ESP_LOGI(TAG, "INPUT: back_gesture changed to %u", mode);
+}
+
 /* ---- Dummy mode (single-app lock) --------------------------------------- */
 
 static bool s_dummy_enabled        = false;
@@ -1090,10 +1142,9 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     jpp_native_services_set_battery_state(&bat_state);
 
     /* Keypad task */
-    static keypad_task_ctx_t kpad_ctx;
-    kpad_ctx.adc       = adc;
-    kpad_ctx.adc_mutex = xSemaphoreCreateMutex();
-    kpad_ctx.cfg = (jpp_keypad_config_t){
+    s_kpad_ctx.adc       = adc;
+    s_kpad_ctx.adc_mutex = xSemaphoreCreateMutex();
+    s_kpad_ctx.cfg = (jpp_keypad_config_t){
         .enabled            = true,
         .calibration_uv     = 0,
         .hysteresis_uv      = JPP_KEYPAD_DEFAULT_HYSTERESIS_UV,
@@ -1103,13 +1154,15 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .repeat_enabled     = true,
         .repeat_delay_ms    = JPP_KEYPAD_DEFAULT_REPEAT_DELAY_MS,
         .repeat_interval_ms = JPP_KEYPAD_DEFAULT_REPEAT_INTERVAL_MS,
+        .back_gesture       = (jpp_keypad_back_gesture_t)s_back_gesture_mode,
+        .double_click_ms    = JPP_KEYPAD_DEFAULT_DOUBLE_CLICK_MS,
         .bands              = KEYPAD_BANDS,
         .band_count         = sizeof(KEYPAD_BANDS) / sizeof(KEYPAD_BANDS[0]),
     };
-    jpp_keypad_state_init(&kpad_ctx.state, &kpad_ctx.cfg);
+    jpp_keypad_state_init(&s_kpad_ctx.state, &s_kpad_ctx.cfg);
 
     s_action_queue = xQueueCreate(JPP_ACTION_QUEUE_DEPTH, sizeof(jpp_ui_action_t));
-    xTaskCreate(keypad_task, "keypad", 4096, &kpad_ctx,
+    xTaskCreate(keypad_task, "keypad", 4096, &s_kpad_ctx,
                 configMAX_PRIORITIES - 1, NULL);
 
     /* Settings screen state */
@@ -1134,6 +1187,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .do_text_input          = settings_do_text_input,
         .do_volume_change       = settings_do_volume_change,
         .do_jingle_change       = settings_do_jingle_change,
+        .do_back_gesture_change = settings_do_back_gesture_change,
         .do_settings_backup     = settings_do_backup,
         .do_settings_restore    = settings_do_restore,
         .do_lrv_verify          = settings_do_lrv_verify,
@@ -1185,6 +1239,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     /* Populate Sound section staging from values already loaded at boot. */
     settings_state.sound_volume_pct = s_buzzer_volume_pct;
     settings_state.sound_jingle     = s_startup_jingle;
+    settings_state.back_gesture_mode = s_back_gesture_mode;
 
     /* Load persisted NTP / timezone config and populate settings staging state. */
     ntp_cfg_load();
@@ -1308,9 +1363,9 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
         /* Battery read every 5 seconds */
         if (ui_tick % (5000u / JPP_UI_REFRESH_MS) == 0u) {
-            xSemaphoreTake(kpad_ctx.adc_mutex, portMAX_DELAY);
+            xSemaphoreTake(s_kpad_ctx.adc_mutex, portMAX_DELAY);
             jpp_battery_read(adc, &bat_cfg, &bat_state);
-            xSemaphoreGive(kpad_ctx.adc_mutex);
+            xSemaphoreGive(s_kpad_ctx.adc_mutex);
             int pct = bat_state.valid ? bat_state.percent : -1;
             /* Log only when the percentage changes — the 5 s poll otherwise
                floods the console with the same value. */
@@ -1933,6 +1988,7 @@ void app_main(void)
 
     /* Apply persisted buzzer volume before the startup chime. */
     load_buzzer_volume();
+    load_back_gesture();
 
     /* Step 7 */
     jpp_ui_shell_t shell;

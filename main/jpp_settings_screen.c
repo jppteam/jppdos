@@ -123,7 +123,7 @@ static size_t volume_step_index(uint8_t pct)
 
 static const char *SECTION_NAMES[JPP_SETTINGS_SECTION_COUNT] = {
     "Shutdown/Reboot", "Wi-Fi", "Time", "Sleep timers",
-    "Sound", "SD card", "Backup settings", "Factory Reset",
+    "Sound", "Controls", "SD card", "Backup settings", "Factory Reset",
     "* Device Info *", "User's name", "Dummy Mode", "About",
 };
 
@@ -450,6 +450,14 @@ static void render_sound(const jpp_settings_state_t *state)
     draw_list_item   (4, state->sound_cursor == 2u, "Test");
     ssd1306_draw_string(6, 0, "L/R: change", false);
     ssd1306_draw_string(7, 0, "OK on Test: play", false);
+}
+
+static void render_controls(const jpp_settings_state_t *state)
+{
+    draw_section_heading("Controls");
+    const char *back_label = state->back_gesture_mode ? "2x Click" : "Hold";
+    draw_list_item_kv(2, true, "Back", back_label);
+    ssd1306_draw_string(6, 0, "L/R: change", false);
 }
 
 /* ---- Shutdown/Reboot 32×32 icons --------------------------------------- */
@@ -882,6 +890,7 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
         case JPP_SETTINGS_SECTION_TIME:          render_time(state, deps);       break;
         case JPP_SETTINGS_SECTION_SLEEP_TIMERS:  render_sleep_timers_section(state, deps); break;
         case JPP_SETTINGS_SECTION_SOUND:         render_sound(state);                  break;
+        case JPP_SETTINGS_SECTION_CONTROLS:      render_controls(state);               break;
         case JPP_SETTINGS_SECTION_SD_CARD:       render_storage(deps);                 break;
         case JPP_SETTINGS_SECTION_BACKUP:        render_backup_settings(state);        break;
         case JPP_SETTINGS_SECTION_FACTORY_RESET: render_factory_reset(state);          break;
@@ -1356,6 +1365,24 @@ static bool handle_sound(jpp_settings_state_t *state,
     return false;
 }
 
+static bool handle_controls(jpp_settings_state_t *state,
+                             const jpp_settings_deps_t *deps,
+                             jpp_ui_action_t action)
+{
+    switch (action) {
+    case JPP_UI_ACTION_LEFT:
+    case JPP_UI_ACTION_RIGHT:
+        state->back_gesture_mode = state->back_gesture_mode ? 0u : 1u;
+        if (deps->do_back_gesture_change) { deps->do_back_gesture_change(state->back_gesture_mode); }
+        jpp_buzzer_play(JPP_BUZZER_SOUND_CLICK);
+        break;
+    case JPP_UI_ACTION_BACK:
+        return true;
+    default: break;
+    }
+    return false;
+}
+
 static bool handle_username(jpp_settings_state_t *state,
                              const jpp_settings_deps_t *deps,
                              jpp_ui_action_t action)
@@ -1438,6 +1465,8 @@ bool jpp_settings_screen_handle_action(jpp_settings_state_t *state,
         close_section = handle_sleep_timers(state, deps, action); break;
     case JPP_SETTINGS_SECTION_SOUND:
         close_section = handle_sound(state, deps, action); break;
+    case JPP_SETTINGS_SECTION_CONTROLS:
+        close_section = handle_controls(state, deps, action); break;
     case JPP_SETTINGS_SECTION_SD_CARD:
         close_section = (action == JPP_UI_ACTION_BACK);  break;
     case JPP_SETTINGS_SECTION_BACKUP:

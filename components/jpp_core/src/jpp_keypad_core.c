@@ -68,6 +68,53 @@ static int jpp_keypad_config_repeat_interval_ms(const jpp_keypad_config_t *confi
     return config->repeat_interval_ms;
 }
 
+static jpp_keypad_back_gesture_t jpp_keypad_config_back_gesture(const jpp_keypad_config_t *config)
+{
+    if (config == NULL) {
+        return JPP_KEYPAD_BACK_GESTURE_HOLD;
+    }
+    return config->back_gesture;
+}
+
+static int jpp_keypad_config_double_click_ms(const jpp_keypad_config_t *config)
+{
+    if (config == NULL || config->double_click_ms < 1) {
+        return JPP_KEYPAD_DEFAULT_DOUBLE_CLICK_MS;
+    }
+    return config->double_click_ms;
+}
+
+/* Emits the deferred OK for a short click once double_click_ms has passed
+   with no second click. Called once per poll, before any other event logic,
+   so a click that finally times out resolves before a later click in the
+   same poll can start a fresh pending cycle. */
+static int jpp_keypad_check_pending_ok(
+    jpp_keypad_state_t *state,
+    const jpp_keypad_config_t *config,
+    int now_ms,
+    jpp_keypad_event_t *events,
+    size_t event_capacity,
+    size_t *event_count
+)
+{
+    if (state == NULL || !state->ok_pending) {
+        return 0;
+    }
+    if (now_ms - state->pending_release_ms < jpp_keypad_config_double_click_ms(config)) {
+        return 0;
+    }
+    if (*event_count >= event_capacity) {
+        return -1;
+    }
+    state->ok_pending = false;
+    events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_SHORT;
+    events[*event_count].key = "CENTER";
+    events[*event_count].mapped = "OK";
+    events[*event_count].duration_ms = 0;
+    *event_count += 1u;
+    return 0;
+}
+
 static const jpp_keypad_band_t *jpp_keypad_band_by_key(const jpp_keypad_config_t *config, const char *key)
 {
     size_t band_count = 0u;
@@ -206,6 +253,28 @@ static int jpp_keypad_finalize_release(
         duration_ms = 0;
     }
     if (strcmp(previous_key, "CENTER") == 0) {
+        if (jpp_keypad_config_back_gesture(config) == JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK) {
+            /* Long hold: the live branch in jpp_keypad_poll() never fires
+               CENTER_LONG in this mode, so there is nothing to finalize. */
+            if (duration_ms < jpp_keypad_config_long_press_ms(config)) {
+                if (state->ok_pending &&
+                    now_ms - state->pending_release_ms <= jpp_keypad_config_double_click_ms(config)) {
+                    if (*event_count >= event_capacity) {
+                        return -1;
+                    }
+                    state->ok_pending = false;
+                    events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_DOUBLE;
+                    events[*event_count].key = previous_key;
+                    events[*event_count].mapped = "BACK";
+                    events[*event_count].duration_ms = duration_ms;
+                    *event_count += 1u;
+                } else {
+                    state->ok_pending = true;
+                    state->pending_release_ms = now_ms;
+                }
+            }
+            return 0;
+        }
         if (duration_ms >= jpp_keypad_config_long_press_ms(config) && !state->center_long_emitted) {
             if (*event_count >= event_capacity) {
                 return -1;
@@ -265,6 +334,8 @@ void jpp_keypad_state_init(jpp_keypad_state_t *state, const jpp_keypad_config_t 
     state->repeat_interval_ms = config == NULL ? 150 : config->repeat_interval_ms;
     state->press_started_ms = -1;
     state->last_repeat_ms = -1;
+    state->ok_pending = false;
+    state->pending_release_ms = -1;
     state->ready = state->enabled;
 }
 
@@ -283,6 +354,8 @@ const char *jpp_keypad_event_kind_name(jpp_keypad_event_kind_t kind)
         return "CENTER_SHORT";
     case JPP_KEYPAD_KIND_CENTER_LONG:
         return "CENTER_LONG";
+    case JPP_KEYPAD_KIND_CENTER_DOUBLE:
+        return "CENTER_DOUBLE";
     }
     return "UNKNOWN";
 }
@@ -311,6 +384,9 @@ int jpp_keypad_poll(
         return 0;
     }
     now_ms = (int)state->sample_index * jpp_keypad_config_poll_interval_ms(config);
+    if (jpp_keypad_check_pending_ok(state, config, now_ms, events, event_capacity, event_count) != 0) {
+        return -1;
+    }
     if (!sample_present) {
         if (state->stable_key != NULL) {
             previous_key = state->stable_key;
@@ -334,31 +410,35 @@ int jpp_keypad_poll(
                 state->press_started_ms = now_ms;
             }
             if (strcmp(candidate_key, "CENTER") == 0) {
-                int duration_ms = now_ms - state->press_started_ms;
-                if (duration_ms >= jpp_keypad_config_long_press_ms(config) && !state->center_long_emitted) {
-                    if (*event_count >= event_capacity) {
-                        return -1;
+                /* Double-click mode has no live-hold gesture: CENTER_DOUBLE
+                   is decided on release in jpp_keypad_finalize_release(). */
+                if (jpp_keypad_config_back_gesture(config) == JPP_KEYPAD_BACK_GESTURE_HOLD) {
+                    int duration_ms = now_ms - state->press_started_ms;
+                    if (duration_ms >= jpp_keypad_config_long_press_ms(config) && !state->center_long_emitted) {
+                        if (*event_count >= event_capacity) {
+                            return -1;
+                        }
+                        state->center_long_emitted = true;
+                        events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_LONG;
+                        events[*event_count].key = candidate_key;
+                        events[*event_count].mapped = "BACK";
+                        events[*event_count].duration_ms = duration_ms;
+                        *event_count += 1u;
+                    } else if (state->center_long_emitted &&
+                               now_ms - state->press_started_ms >=
+                                   jpp_keypad_config_long_press_ms(config) +
+                                   jpp_keypad_config_repeat_delay_ms(config) &&
+                               now_ms - state->last_repeat_ms >= jpp_keypad_config_repeat_interval_ms(config)) {
+                        if (*event_count >= event_capacity) {
+                            return -1;
+                        }
+                        state->last_repeat_ms = now_ms;
+                        events[*event_count].kind = JPP_KEYPAD_KIND_REPEAT;
+                        events[*event_count].key = candidate_key;
+                        events[*event_count].mapped = "BACK";
+                        events[*event_count].duration_ms = 0;
+                        *event_count += 1u;
                     }
-                    state->center_long_emitted = true;
-                    events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_LONG;
-                    events[*event_count].key = candidate_key;
-                    events[*event_count].mapped = "BACK";
-                    events[*event_count].duration_ms = duration_ms;
-                    *event_count += 1u;
-                } else if (state->center_long_emitted &&
-                           now_ms - state->press_started_ms >=
-                               jpp_keypad_config_long_press_ms(config) +
-                               jpp_keypad_config_repeat_delay_ms(config) &&
-                           now_ms - state->last_repeat_ms >= jpp_keypad_config_repeat_interval_ms(config)) {
-                    if (*event_count >= event_capacity) {
-                        return -1;
-                    }
-                    state->last_repeat_ms = now_ms;
-                    events[*event_count].kind = JPP_KEYPAD_KIND_REPEAT;
-                    events[*event_count].key = candidate_key;
-                    events[*event_count].mapped = "BACK";
-                    events[*event_count].duration_ms = 0;
-                    *event_count += 1u;
                 }
             } else if (jpp_keypad_emit_repeat_if_needed(state, config, candidate_key, now_ms, events, event_capacity, event_count) != 0) {
                 return -1;

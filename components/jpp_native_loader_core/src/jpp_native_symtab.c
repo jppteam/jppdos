@@ -64,12 +64,15 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_dialog",                (void *)jpp_sdk_dialog                },
     { "jpp_sdk_list",                  (void *)jpp_sdk_list                  },
     { "jpp_sdk_input",                 (void *)jpp_sdk_input                 },
+    { "jpp_sdk_confirm",               (void *)jpp_sdk_confirm               },
     { "jpp_sdk_file_pick",             (void *)jpp_sdk_file_pick             },
 
     /* Key input */
     { "jpp_sdk_poll_key",              (void *)jpp_sdk_poll_key              },
     { "jpp_sdk_wait_key",              (void *)jpp_sdk_wait_key              },
     { "jpp_sdk_push_key",              (void *)jpp_sdk_push_key              },
+    { "jpp_sdk_set_back_gesture_enabled", (void *)jpp_sdk_set_back_gesture_enabled },
+    { "jpp_sdk_set_force_hold_back_gesture", (void *)jpp_sdk_set_force_hold_back_gesture },
 
     /* Canvas */
     { "jpp_sdk_canvas_clear",          (void *)jpp_sdk_canvas_clear          },

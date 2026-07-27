@@ -335,6 +335,7 @@ void jpp_sdk_context_init(jpp_sdk_context_t *context)
     }
     memset(context, 0, sizeof(*context));
     context->key_queue = xQueueCreate(8u, sizeof(jpp_sdk_key_event_t));
+    context->back_gesture_enabled = true;
 }
 
 jpp_sdk_status_t jpp_sdk_bind(
@@ -2547,6 +2548,22 @@ void jpp_sdk_push_key(jpp_sdk_context_t *context, jpp_sdk_key_event_t event)
     }
     /* Non-blocking: drop if full — the main loop never blocks on this. */
     xQueueSendToBack(context->key_queue, &event, 0);
+}
+
+jpp_sdk_status_t jpp_sdk_set_back_gesture_enabled(jpp_sdk_context_t *context, bool enabled)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    context->back_gesture_enabled = enabled;
+    return JPP_SDK_STATUS_OK;
+}
+
+jpp_sdk_status_t jpp_sdk_set_force_hold_back_gesture(jpp_sdk_context_t *context, bool force)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    context->force_hold_back_gesture = force;
+    return JPP_SDK_STATUS_OK;
 }
 
 /* -------------------------------------------------------------------------- */

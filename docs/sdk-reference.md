@@ -6,7 +6,7 @@
 |----------|-----------|
 | [Types and constants](#types-and-constants) | [`jpp_sdk_status_t`](#c--jpp_sdk_status_t) · [`jpp_sdk_key_event_t`](#c--jpp_sdk_key_event_t) · [Python constants](#python--jppsdk-constants) · [`jpp_broker_result_t`](#c--jpp_broker_result_t) |
 | [App control](#app-control) | [`set_frame`](#set_frame) · [`request_close`](#request_close) · [`log`](#log) · [`request_cap`](#request_cap-c-only) |
-| [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) |
+| [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) · [`set_back_gesture_enabled`](#set_back_gesture_enabled) · [`set_force_hold_back_gesture`](#set_force_hold_back_gesture) |
 | [Canvas](#canvas) | [`canvas_write`](#canvas_write) · [`canvas_draw_pixel`](#canvas_draw_pixel) · [`canvas_clear`](#canvas_clear) · [`canvas_fullscreen`](#canvas_fullscreen) |
 | [UI helpers](#ui-helpers) | [`dialog`](#dialog) · [`list`](#list) · [`input`](#input) · [`confirm`](#confirm) · [`file_pick`](#file_pick) · [`wrap_text`](#wrap_text-c-only) |
 | [Wakelock](#wakelock) | [`wakelock_acquire`](#wakelock_acquire) · [`wakelock_release`](#wakelock_release) |
@@ -264,6 +264,48 @@ Injects a synthetic key event into the queue. Useful for testing and for UI help
 ```c
 void jpp_sdk_push_key(jpp_sdk_context_t *ctx, jpp_sdk_key_event_t event);
 ```
+
+---
+
+### `set_back_gesture_enabled` (C only)
+
+Enable or disable delivery of the "Back" gesture to your app.
+
+**Capability:** None
+
+```c
+jpp_sdk_status_t jpp_sdk_set_back_gesture_enabled(jpp_sdk_context_t *ctx, bool enabled);
+```
+
+**Parameters:**
+
+| Name | Description |
+|------|-------------|
+| `enabled` | `true` (the default) delivers the gesture as `JPP_SDK_KEY_CENTER_LONG`; `false` drops it silently — your app receives nothing for it. |
+
+**Notes:** CENTER's "Back" trigger — a long hold or a double-click, whichever Settings > Controls has selected — always arrives as `JPP_SDK_KEY_CENTER_LONG`, same as today. If your app uses CENTER as a primary action button (e.g. "fire" in a shooter), an excited player can easily hold or double-tap it by accident and get yanked into a pause/exit screen mid-action. Call `set_back_gesture_enabled(ctx, false)` while that would be disruptive, and re-enable it before or while showing your own pause menu or exit confirmation, so there's still an explicit, discoverable way out. Disabling it does not affect `UP`/`DOWN`/`LEFT`/`RIGHT`/`OK`, and has no effect outside your app (the launcher and Settings are unaffected). Resets to enabled the next time your app is (re)bound.
+
+---
+
+### `set_force_hold_back_gesture` (C only)
+
+Force CENTER's "Back" trigger to always be a hold for your app, regardless of the system-wide Settings > Controls preference.
+
+**Capability:** None
+
+```c
+jpp_sdk_status_t jpp_sdk_set_force_hold_back_gesture(jpp_sdk_context_t *ctx, bool force);
+```
+
+**Parameters:**
+
+| Name | Description |
+|------|-------------|
+| `force` | `true` evaluates CENTER as a hold (`JPP_KEYPAD_BACK_GESTURE_HOLD`) for your app's key stream no matter what Settings > Controls says; `false` (the default) follows the system-wide preference like any other app. |
+
+**Notes:** If your app overloads CENTER as a primary action button, the system's Double-click preference is actively harmful to it in two ways: every short click ("OK"/fire) is deferred a few hundred ms waiting to see if a second click follows, and two rapid taps of your action button can pair up into an accidental "Back". Forcing Hold mode removes both problems — fire is instant, and only a deliberate hold ever reaches you as `JPP_SDK_KEY_CENTER_LONG`. This changes what the shared keypad detector does while your app is foregrounded; it has no effect on the launcher or any other app, and reverts to the system preference automatically the moment your app exits. See also `set_back_gesture_enabled`, which controls delivery rather than the underlying gesture detection — the two can be combined.
+
+---
 
 ---
 
