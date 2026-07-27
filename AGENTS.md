@@ -26,10 +26,10 @@ JPPDOS is an ESP-IDF C/C++ firmware repo for ESP32-C6-class hardware. Native boo
 jppdos/
 ├── components/jpp_core/   # native core implementation
 ├── main/                  # ESP-IDF app entrypoint + settings screen
-├── apps/                  # example/reference app packages (meetapp, testapp_native, testapp_mp); apps/common/ holds shared app-side helpers compiled into each app (e.g. jpp_ble_msg)
+├── apps/                  # example/reference app packages (meetapp, games, demoscene); apps/common/ holds shared app-side helpers compiled into each app (e.g. jpp_ble_msg)
 ├── docs/                  # human-facing app developer documentation (index, guides, SDK reference)
 ├── scripts/               # flash and helper scripts
-├── tools/                 # developer tooling (app-sdk: self-contained Docker app-build toolchain)
+├── tools/                 # developer tooling (docs: MkDocs site image)
 ├── tests/                 # host-side checks and fixtures
 └── wokwi/                 # simulator assets and reference topology
 ```
@@ -39,7 +39,7 @@ jppdos/
 |---|---|---|
 | Core boot and services | `components/jpp_core/` | startup, settings, broker, storage, UI, and device policy |
 | Build flow | `idf.py`, Dockerfiles/scripts | native build, target selection, and reproducible container runs |
-| App build toolchain | `tools/app-sdk/` | `jppd-app-sdk` Docker image + `jppd-build` entrypoint: builds a single native-C or MicroPython app against a baked SDK sysroot (no firmware checkout needed), validates the manifest, optionally uploads to a device. Version-locked to a firmware release. Generic native builder globs `src/**/*.c`; per-app `jppd-app.json` adds extra sources/includes/defines. **Multi-stage**: builder stage runs a full firmware build, `capture_sysroot.py` distills the compiler + 135 `-I` dirs into `sdk-flags.json` + `sysroot.tar` (absolute paths preserved), final stage is `python:3.12-slim` + pruned toolchain — ~340 MB instead of ~12.5 GB. Toolchain prune drops multilib `*.a`/`cc1plus`/`lto1`, safe because apps link `-nostdlib` and resolve libc at load time via `jpp_native_symtab.c` |
+| App build toolchain | **separate `jppdos-apps` repo** (`toolchain/`) | The `jppd-app-sdk` Docker image + `jppd-build` entrypoint no longer live here — they moved to the sibling apps repo, which vendors this repo as the `vendor/jppdos` submodule (tracking `master`) purely to build the image. That image bakes a firmware build as an SDK sysroot, so app developers need no firmware checkout at all. `capture_sysroot.py` still reads **this** repo's `build/compile_commands.json` + generated headers, so any change to the SDK surface, component include dirs, or `apps/common/` means the image must be rebuilt over there. The App SDK test apps (`testapp_native`, `testapp_mp`) moved with it |
 | Docs site | `mkdocs.yml` (root) + `tools/docs/` | MkDocs + `mkdocs-shadcn` theme renders `docs/` in place as a searchable static site (Python-only, no Node). `docs/` stays the single source of truth — the site adds nav/theme/search only. `docs/sdk-expansion.md` is excluded (firmware-internal). Build/preview via the `jppd-docs` Docker image; publishing not yet wired up |
 | Flashing | `scripts/flash.sh`, `scripts/jpp_deploy.sh` | `flash.sh` wraps `idf.py flash monitor`; `jpp_deploy.sh` flashes via esptool directly (reading `build/flasher_args.json` for offsets/flash settings) and then uploads app artifacts over JPPD-SMP in one step |
 | Storage / settings | `components/jpp_core/` | `/data` state, schema migration, temp-file recovery; app data roots are `/sd/apps/<app_id>/` (scoped) and `/sd/shared/<app_id>/` (shared) |
@@ -104,7 +104,7 @@ jppdos/
 - `main/` hosts firmware-specific modules that drive hardware directly (SSD1306, settings screen).
 - Use `idf.py set-target esp32c6`, `idf.py build`, and `idf.py flash` for native workflow.
 - Prefer Docker-based commands for reproducible builds and environment parity.
-- **Agents: do NOT hunt for a local ESP-IDF installation.** There is no expectation that ESP-IDF is installed on the host, and you should not probe for one (searching for `idf.py`, `IDF_PATH`, `export.sh`, a toolchain, etc.) or try to install it. Build through the Docker flow instead (`docker compose run --rm build idf.py build`, or the `tools/app-sdk`/`tools/docs` images) — the `idf.py` commands above are what runs *inside* those containers. For ESP-IDF / library / API / CLI documentation, reach for external tools (Context7 or WebSearch) rather than assuming local SDK sources or docs are present on disk.
+- **Agents: do NOT hunt for a local ESP-IDF installation.** There is no expectation that ESP-IDF is installed on the host, and you should not probe for one (searching for `idf.py`, `IDF_PATH`, `export.sh`, a toolchain, etc.) or try to install it. Build through the Docker flow instead (`docker compose run --rm build idf.py build`, or the `tools/docs` image) — the `idf.py` commands above are what runs *inside* those containers. For ESP-IDF / library / API / CLI documentation, reach for external tools (Context7 or WebSearch) rather than assuming local SDK sources or docs are present on disk.
 - Keep hardware-facing docs aligned with the repo's reference pin map and Wokwi topology.
 - Settings live under `/data/settings.json` and should preserve schema migration and recovery behavior.
 - **Flash budget (2 MB, tight):** the target board has 2 MB flash (`CONFIG_ESPTOOLPY_FLASHSIZE_2MB`). `partitions.csv` maximizes the `factory` app partition (`0x1D8000` = 1933312 B) at the expense of `data_fs`/`runtime_fs` SPIFFS (64 KB / 32 KB); coredump-to-flash is off so there is no coredump partition. The image fits **only** because of `-Os` (`CONFIG_COMPILER_OPTIMIZATION_SIZE`) — `-Og` overflows the partition. There is ~70 KB of app headroom; watch the "free" number after `idf.py build` when adding code, and reach for more size cuts (newlib-nano, `CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT`, dropping unused components) before enlarging `factory` past what a 2 MB flash allows.
@@ -145,8 +145,7 @@ jppdos/
 | `settings` | Settings | Full settings screen; Shutdown/Reboot, Wi-Fi, Time, Sleep timers, Sound (buzzer volume 0/25/50/75/100% + startup test), SD card, Backup settings, Factory Reset, \* Device Info \* (LRV only), User's name, Dummy Mode (single-app lock; hold CENTER at boot to disable), About |
 | `webdav` | WebDAV server | WebDAV file transfer screen; password settings submenu (random or static); dim clock suppressed while server is running |
 | SD apps | (discovered) | `/sd/apps/<id>/manifest.json` — MicroPython or native C binary |
-| `testapp_native` | SDK Test (C) | Native C test app; exercises every SDK capability via a menu; `apps/testapp_native/` |
-| `testapp_mp` | SDK Test (MP) | MicroPython test app; exercises every SDK capability exposed by `jppsdk`; `apps/testapp_mp/` |
+| `testapp_native` / `testapp_mp` | SDK Test (C) / (MP) | The two App SDK test apps — menu-driven exercises of every SDK capability, in C and MicroPython. **No longer in this repo**: they live in the sibling `jppdos-apps` repo (`apps/`) and are built with `jppd-build`, not `idf.py`. Still the reference for SDK behaviour when changing `jpp_sdk_bridge` |
 | `games` | Games | Native hub app + 9 dynamically loaded game modules (`<name>.mod.bin`, loaded one at a time via `jpp_sdk_module_load`): Tetris (90°-rotated UI by default, toggle in Settings), Pong (single-player vs CPU + BLE two-device multiplayer with host-authoritative physics + paddle anti-cheat), Snake, Breakout, 2048, Flappy, Racer, Connect-4 (BLE), Battleship (BLE, SHA-512 board commit/reveal). Fullscreen 128×64 canvas; per-game high scores in the hub's KV (`/sd/apps/games/.kv.json`, keys `tetris_hs`/`pong_sp_hs`/`pong_mp_hs`/`snake_hs`/`breakout_hs`/`g2048_hs`/`g2048_tile`/`flappy_hs`/`racer_hs`/`c4_mp_wins`/`bship_mp_wins`/`tetris_rot`/`sound_on`); discovery via manufacturer AD (company 0x4A50, magic 'G', game id). Caps: `ble.scan`/`ble.advertise`/`ble.connect`/`ble.host` (only prompted when entering a multiplayer game). `apps/games/` |
 | `demoscene` | DemoScene | Native oldskool megademo: 8 auto-cycling scenes (title card, 3D starfield, plasma, rotozoomer, tunnel, wireframe cube, doom fire, credits with raster bars) on the fullscreen 128×64 canvas, plus a sine-wave scrolltext overlay and a looping square-wave chiptune (async buzzer, one bar re-armed at a time). All integer math — 256-step sine LUT + 4×4 Bayer ordered dithering; plasma/tunnel/fire render half-res 2×2 blocks. No capabilities (canvas/buzzer/keys/wakelock are ungated). LEFT/RIGHT change scene, UP toggles music, DOWN toggles auto-advance, long CENTER exits. `apps/demoscene/` |
 | `meetapp` | MeetApp | Native BLE contact-exchange app: Ed25519 identity (`meetapp_identity.c`, `identity.bin` in scoped storage), BLE scan/advertise/connect/host exchange (`meetapp_ble.c`), and a proof/verification module (`meetapp_proof.c`). The leader may add an optional free-text comment (max `MEETAPP_COMMENT_MAX` = 100 chars, prompted after confirming the peer set) that is rendered as a "Comment:" line at the top of the proof document; because it is part of the MuSig2-signed message, it is forwarded to every peer in the round-1.5 payload (alongside the nicknames + timestamp) so each rebuilt proof hashes to what was signed. Identity nickname defaults to the device's `Settings > User's name` on first run (`jpp_sdk_device_status()`'s `username` field) instead of prompting, truncated to `MEETAPP_NICKNAME_MAX` (16 chars); falls back to the nickname prompt only if no device username is set. "Reset identity" always prompts, for a nickname different from the device username. Caps: `ble.scan`/`ble.advertise`/`ble.connect`/`ble.host`. `apps/meetapp/` |
@@ -164,11 +163,11 @@ idf.py flash
 docker compose run --rm build idf.py build
 scripts/flash.sh
 python3 -m pytest tests          # host-side checks (docs, contract, manifests)
-# --- Single-app build toolchain (tools/app-sdk/) — no firmware checkout needed by app devs ---
-docker build -f tools/app-sdk/Dockerfile -t jppd-app-sdk .   # build the SDK image (bakes a firmware build as sysroot; run from repo root)
+# --- Single-app build toolchain — MOVED to the sibling jppdos-apps repo ---
+# (run these from a jppdos-apps checkout, not from here)
+docker build -f toolchain/Dockerfile -t jppd-app-sdk .       # build the SDK image (bakes a firmware build as sysroot; needs the vendor/jppdos submodule)
 docker run --rm -v "$PWD:/app" jppd-app-sdk                  # build the app in the current dir → ./dist/<app_id>/
-docker run --rm -v "$PWD:/app" --device /dev/ttyACM0 jppd-app-sdk --upload /dev/ttyACM0   # build + upload to device
-JPPD_SDK_ROOT=. JPPD_SDK_BUILD=./build tools/app-sdk/jppd-build --app-dir apps/meetapp --dry-run  # run entrypoint on host (no Docker)
+./deploy.py                                                  # pick apps + serial port in a TUI, upload over JPPD-SMP
 
 # --- Docs site (tools/docs/) — MkDocs + shadcn theme, renders docs/ in place ---
 docker build -f tools/docs/Dockerfile -t jppd-docs .            # build the docs image (from repo root)
@@ -194,11 +193,11 @@ App artefacts after `idf.py build` — copy directory contents to `/sd/apps/<id>
 ```
 build/apps/demoscene/        demoscene.bin + manifest.json
 build/apps/meetapp/          meetapp.bin + manifest.json
-build/apps/testapp_native/   testapp_native.bin + manifest.json
-build/apps/testapp_mp/       main.mpy + manifest.json
 build/apps/games/            games.bin + <name>.mod.bin (×9) + manifest.json
 ```
-`testapp_mp_bin` requires `mpy-cross` 1.28.0 on PATH: `pip install mpy-cross==1.28.0`.
+The App SDK test apps (`testapp_native`, `testapp_mp`) are **not** built here any
+more — they live in the sibling `jppdos-apps` repo and are built with `jppd-build`,
+which is also where the only remaining `mpy-cross` 1.28.0 dependency now sits.
 Native `.bin` files are ELF32 shared objects; the `.bin` extension is what the firmware expects.
 The Games app (`apps/games/`) builds the hub `games.bin` **plus** one `<name>.mod.bin` per game; copy the **whole** `build/apps/games/` directory to `/sd/apps/games/` (the modules are the app's own data files, loaded on demand by the hub via `jpp_sdk_module_load`).
 **Adding a new app component under `apps/` requires `idf.py reconfigure` (or a clean build) before `idf.py build` picks it up** — ESP-IDF caches the component list.
