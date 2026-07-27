@@ -4,6 +4,18 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
+## Unreleased
+
+- **App development split out into its own repository.** The `jppd-app-sdk`
+  Docker toolchain (`tools/app-sdk/`) and the two App SDK test apps
+  (`apps/testapp_native`, `apps/testapp_mp`) moved to
+  [`jppdos-apps`](https://github.com/jppteam/jppdos-apps), which also gains a
+  JPPD-SMP deploy tool with serial-port autodiscovery and a multiselect app
+  picker. That repo vendors this one as a submodule tracking `master`, purely
+  to build the SDK image — app developers need no firmware checkout at all.
+  Nothing about the on-device app format, the SDK surface, or the manifest
+  schema changed; `docs/` here remains the source of truth for all three.
+
 ## v1.0-RTM — 2026-07-18
 
 First tagged release. This build is the RTM (release to manufacturing)
