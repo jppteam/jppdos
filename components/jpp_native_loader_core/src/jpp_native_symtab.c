@@ -146,6 +146,7 @@ static const jpp_native_sym_t s_symtab[] = {
 
     /* HTTP */
     { "jpp_sdk_http_request",          (void *)jpp_sdk_http_request          },
+    { "jpp_sdk_https_request",         (void *)jpp_sdk_https_request         },
     { "jpp_sdk_net_bind",              (void *)jpp_sdk_net_bind              },
     { "jpp_sdk_net_accept",            (void *)jpp_sdk_net_accept            },
     { "jpp_sdk_net_connect",           (void *)jpp_sdk_net_connect           },

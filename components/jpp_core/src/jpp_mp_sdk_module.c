@@ -628,6 +628,24 @@ STATIC mp_obj_t mp_sdk_http_request(size_t n_args, const mp_obj_t *args)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_sdk_http_request_obj, 2, 3, mp_sdk_http_request);
 
+/* https_request(method, url) → dict  or  https_request(method, url, body) → dict
+   Requires https.request; the URL must be https:// and the first request to a
+   given origin raises a per-origin consent prompt. */
+STATIC mp_obj_t mp_sdk_https_request(size_t n_args, const mp_obj_t *args)
+{
+    jpp_broker_result_t result;
+    const char *method = mp_obj_str_get_str(args[0]);
+    const char *url    = mp_obj_str_get_str(args[1]);
+    const char *body   = (n_args >= 3 && args[2] != mp_const_none)
+                         ? mp_obj_str_get_str(args[2]) : NULL;
+    jpp_sdk_status_t st = jpp_sdk_https_request(get_ctx(), method, url, body, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return broker_result_to_dict(&result);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_sdk_https_request_obj, 2, 3, mp_sdk_https_request);
+
 /* -------------------------------------------------------------------------- */
 /* Network  (requires: network.bind)                                          */
 /* -------------------------------------------------------------------------- */
@@ -1205,6 +1223,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
 
     /* HTTP */
     { MP_ROM_QSTR(MP_QSTR_http_request),        MP_ROM_PTR(&mp_sdk_http_request_obj) },
+    { MP_ROM_QSTR(MP_QSTR_https_request),       MP_ROM_PTR(&mp_sdk_https_request_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_bind),            MP_ROM_PTR(&mp_sdk_net_bind_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_accept),          MP_ROM_PTR(&mp_sdk_net_accept_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_recv),            MP_ROM_PTR(&mp_sdk_net_recv_obj) },

@@ -20,8 +20,9 @@ extern "C" {
  *   1 — initial release
  *   2 — adds network.connect (outbound TCP) + crypto primitives
  *       (sha256/sha1, aes256-ige, modexp/rsa_encrypt/dh_compute)
+ *   3 — adds https.request (TLS-verified HTTP client, per-origin consent)
  */
-#define JPP_SDK_VERSION 2
+#define JPP_SDK_VERSION 3
 
 typedef enum {
     JPP_APP_TYPE_MICROPYTHON = 0,

@@ -36,6 +36,7 @@ int jpp_manifest_v2_is_allowed_capability(const char *capability)
      */
     /* Tier 1 — one-time user grant, persisted */
     if (jpp_str_eq(capability, "http.request") ||
+        jpp_str_eq(capability, "https.request") ||
         jpp_str_eq(capability, "ble.scan") ||
         jpp_str_eq(capability, "ble.advertise") ||
         jpp_str_eq(capability, "background.register") ||
@@ -45,6 +46,7 @@ int jpp_manifest_v2_is_allowed_capability(const char *capability)
     /* Tier 2 — per-session user grant */
     if (jpp_str_eq(capability, "files.full") ||
         jpp_str_eq(capability, "network.bind") ||
+        jpp_str_eq(capability, "network.connect") ||
         jpp_str_eq(capability, "ble.connect") ||
         jpp_str_eq(capability, "ble.host")) {
         return 1;

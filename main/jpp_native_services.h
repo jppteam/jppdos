@@ -15,6 +15,9 @@ extern "C" {
  * state are ready.
  */
 extern jpp_sdk_native_services_t s_native_services;
+/* Service callbacks added after SDK v1 — installed with jpp_sdk_set_services_v2()
+   after each bind, kept separate so s_native_services stays ABI-frozen. */
+extern jpp_sdk_services_v2_t     s_native_services_v2;
 extern jpp_broker_lock_set_t     s_broker_locks;
 
 void jpp_native_services_init(jpp_rtc_state_t *rtc_state);

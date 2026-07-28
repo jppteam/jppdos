@@ -89,6 +89,15 @@ void jpp_app_bg_teardown(void);
  */
 bool jpp_app_consent_prompt(jpp_sdk_context_t *sdk_ctx, const char *cap, int tier);
 
+/*
+ * jpp_app_origin_prompt — per-origin consent for https.request.  Returns true
+ * immediately for an origin already persisted in /data/grants/<app_id>.origins,
+ * otherwise shows an interactive dialog naming the origin and persists an
+ * allow.  Called from the origin_prompt callback in jpp_native_services when
+ * jpp_sdk_https_request() is about to issue a request.
+ */
+bool jpp_app_origin_prompt(jpp_sdk_context_t *sdk_ctx, const char *origin);
+
 #ifdef JPP_WOKWI_EMBED_APP
 bool launch_wokwi_embed_app(const char *app_id, const jpp_boot_context_t *boot);
 #endif

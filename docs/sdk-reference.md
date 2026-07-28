@@ -19,6 +19,7 @@
 | [Key-value store](#key-value-store) | [`kv_get`](#kv_get) · [`kv_set`](#kv_set) · [`kv_delete`](#kv_delete) |
 | [IPC](#ipc) | [`ipc_send`](#ipc_send) · [`ipc_recv`](#ipc_recv) |
 | [HTTP](#http) ⚠ `http.request` | [`http_request`](#http_request) |
+| [HTTPS](#https) ⚠ `https.request` | [`https_request`](#https_request) |
 | [Network / TCP server](#network-tcp-server) ⚠ `network.bind` | [`net_bind`](#net_bind) · [`net_accept`](#net_accept) · [`net_recv`](#net_recv) · [`net_send`](#net_send) · [`net_close`](#net_close) |
 | [Network / TCP client](#network-tcp-client) ⚠ `network.connect` | [`net_connect`](#net_connect) · (shares `net_recv`/`net_send`/`net_close`) |
 | [Crypto primitives](#crypto-primitives) | [`sha256`](#jpp_crypto_sha256) · [`sha1`](#jpp_crypto_sha1) · [`aes256_ige_encrypt`/`_decrypt`](#jpp_crypto_aes256_ige_encrypt--jpp_crypto_aes256_ige_decrypt) · [`modexp`](#jpp_crypto_modexp) · [`rsa_encrypt`](#jpp_crypto_rsa_encrypt) · [`dh_compute`](#jpp_crypto_dh_compute) |
@@ -114,8 +115,8 @@ Several SDK calls return results through a `jpp_broker_result_t *result` output 
 | Field | Set by | Description |
 |-------|--------|-------------|
 | `text` | File I/O, `get_time`, directory listing | The primary text payload |
-| `status_code` | `http_request` | HTTP response status code (int as string) |
-| `body` | `http_request` | HTTP response body |
+| `status_code` | `http_request`, `https_request` | HTTP response status code (int as string) |
+| `body` | `http_request`, `https_request` | HTTP response body |
 | `port` | `net_bind` | The bound port number |
 | `closed` | `net_recv` | Set to `"1"` if the peer closed the connection |
 | `sender` | `ipc_recv` | The sender's `app_id` |
@@ -211,6 +212,7 @@ jpp_sdk_status_t jpp_sdk_request_cap(jpp_sdk_context_t *ctx,
 **Notes:**
 - This only changes *when* the prompt appears, never the policy. Tier-1 caps (e.g. `ble.scan`, `ble.advertise`, `http.request`, `background.register`) persist once granted; tier-2 caps (e.g. `files.full`, `ble.connect`, `ble.host`, `network.bind`) are granted for the session only and re-prompt on the next launch — identical to first-use consent.
 - Requesting an already-granted cap is a cheap no-op that returns `JPP_SDK_OK` without prompting, so it is safe to call on every entry to a screen.
+- `https.request` is a partial exception: requesting it front-loads the capability prompt, but the [per-origin prompt](#per-origin-consent) still fires on the first request to each new host, because the origin is not known until the call.
 - During a headless background run every request is denied (`JPP_SDK_ACCESS_DENIED`), matching the first-use rule.
 - MeetApp is the reference user: it requests `ble.scan`/`ble.advertise` at startup and the mode-specific `ble.connect`/`ble.host` the moment the user picks "Initiate" or "Join".
 
@@ -1220,7 +1222,63 @@ jppsdk.http_request(method: str, url: str, body: str | None = None) -> dict
 
 **Notes:**
 - HTTP requests are serialized through the broker — only one can be in flight at a time.
-- HTTPS is not supported in the current firmware.
+- Cleartext only. For `https://` URLs use [`https_request`](#https_request), which is a separate capability.
+- Wi-Fi must be connected; the request fails with a broker error if the network is unavailable.
+
+---
+
+## HTTPS
+
+**Capability:** `https.request` (Tier 1 — one-time grant, persisted) **plus a one-time prompt per origin**
+
+**Requires:** `sdk_min: 3`
+
+### `https_request`
+
+Make a synchronous HTTPS GET or POST request, with the server's certificate verified against the CA roots built into the firmware.
+
+```c
+jpp_sdk_status_t jpp_sdk_https_request(jpp_sdk_context_t *ctx,
+                                        const char *method,
+                                        const char *url,
+                                        const char *body,
+                                        jpp_broker_result_t *result);
+```
+```python
+jppsdk.https_request(method: str, url: str, body: str | None = None) -> dict
+```
+
+**Parameters:**
+
+| Name | Description |
+|------|-------------|
+| `method` | `"GET"` or `"POST"`. |
+| `url` | Full URL, which **must** start with `https://` — e.g. `"https://api.example.com/v1/status"`. |
+| `body` | Request body for POST, up to 2048 bytes. Pass `NULL`/`None` for GET. |
+
+**Returns:**
+- C: `JPP_SDK_OK`; `result->status_code` is the HTTP status (e.g. `"200"`) and `result->body` is the response body.
+- Python: `{"status_code": int, "body": str}`.
+
+#### Per-origin consent
+
+The capability grant alone does not let an app reach the whole web. Consent is scoped to an **origin** — the `scheme://host[:port]` part of the URL — and the user approves each one separately:
+
+1. First ever `https_request` call: the usual capability prompt (*"make secure (HTTPS) web requests"*), persisted like any tier-1 grant.
+2. First call to each **new origin**: a second prompt naming that origin (*"Connect securely to: api.example.com"*). An allowed origin is appended to `/data/grants/<app_id>.origins` and never asked about again.
+3. Every later call to an already-approved origin goes straight through with no prompt.
+
+So an app that talks to one server prompts twice, once, and is then silent; an app that starts contacting a *different* host has to ask the user again. Denial returns `JPP_SDK_ACCESS_DENIED` and no request is sent.
+
+Origins are normalised before comparison: the host is lowercased and an explicit `:443` is dropped, so `https://API.Example.com` and `https://api.example.com:443` are the same grant.
+
+**Notes:**
+- Shares the broker's HTTP lock with `http_request` — one outbound request in flight at a time, whichever transport.
+- Certificate verification cannot be disabled. There is no "insecure" flag in the SDK, and a chain that does not validate fails the request.
+- A failure before the first response byte — DNS, TCP, TLS handshake, or a rejected certificate — all surface as the same `HTTPS_CONNECT_FAILED` error, because `esp_http_client` does not distinguish them to its caller. The specific cause is on the serial log as `HTTPS_FAILED <esp_err_name>` under tag `native_svc`; check there when a URL that works in a browser fails here.
+- The trust store is the ESP-IDF *common* CA bundle: 43 roots covering Amazon, DigiCert, GlobalSign, GoDaddy, Google Trust Services, IdenTrust, ISRG (Let's Encrypt) and Sectigo. A server whose chain roots elsewhere will fail even though it works in a desktop browser.
+- URLs are rejected (`JPP_SDK_INVALID_ARGUMENT`, `BAD_URL`) if the scheme is not `https`, if they carry userinfo (`https://user@host/`), or if the host is an IPv6 literal. Userinfo is refused specifically because `https://trusted.example@evil.example/` reads as one host and contacts another.
+- TLS costs roughly 20 KB of heap for the handshake. During background (headless) runs there is no way to show a prompt, so only origins already approved interactively will work.
 - Wi-Fi must be connected; the request fails with a broker error if the network is unavailable.
 
 ---

@@ -530,7 +530,8 @@ static void sd_app_task_fn(void *arg)
  */
 static int cap_tier(const char *cap)
 {
-    if (strcmp(cap, "http.request") == 0 || strcmp(cap, "ble.scan") == 0 ||
+    if (strcmp(cap, "http.request") == 0 || strcmp(cap, "https.request") == 0 ||
+        strcmp(cap, "ble.scan") == 0 ||
         strcmp(cap, "ble.advertise") == 0 ||
         strcmp(cap, "background.register") == 0 ||
         strcmp(cap, "esp_now") == 0) {
@@ -542,6 +543,9 @@ static int cap_tier(const char *cap)
 static const char *cap_description(const char *cap)
 {
     if (strcmp(cap, "http.request") == 0)  return "make requests over the network";
+    /* Deliberately vague about *which* site: the per-origin prompt that follows
+       names the actual server, and that is the prompt worth reading. */
+    if (strcmp(cap, "https.request") == 0) return "make secure (HTTPS) web requests";
     if (strcmp(cap, "ble.scan") == 0)      return "scan for nearby Bluetooth devices";
     if (strcmp(cap, "ble.advertise") == 0) return "broadcast over Bluetooth";
     if (strcmp(cap, "background.register") == 0)
@@ -549,13 +553,16 @@ static const char *cap_description(const char *cap)
     if (strcmp(cap, "esp_now") == 0)       return "send and receive ESP-NOW messages";
     if (strcmp(cap, "files.full") == 0)    return "open any file on the SD card";
     if (strcmp(cap, "network.bind") == 0)  return "open network servers and sockets";
+    if (strcmp(cap, "network.connect") == 0)
+        return "open outbound network connections";
     if (strcmp(cap, "ble.connect") == 0)   return "connect to Bluetooth devices";
     if (strcmp(cap, "ble.host") == 0)      return "host a Bluetooth service";
     return "use an extra device feature";
 }
 
 static const char *const TIER1_CAPS[] = {
-    "http.request", "ble.scan", "ble.advertise", "background.register", "esp_now",
+    "http.request", "https.request", "ble.scan", "ble.advertise",
+    "background.register", "esp_now",
 };
 #define TIER1_CAP_COUNT (sizeof(TIER1_CAPS) / sizeof(TIER1_CAPS[0]))
 
@@ -663,6 +670,127 @@ static void apply_consent(const char *app_id,
     }
     *out_count         = n;
     *out_pending_count = p;
+}
+
+/* ---- Per-origin consent for https.request -------------------------------- */
+
+/*
+ * Origin grants live in a sibling file to the capability grants rather than in
+ * <app_id>.json, because grant_persist() rebuilds that file from the fixed
+ * TIER1_CAPS array and would silently drop anything else stored there.
+ * Format is one origin per line; a missing or unreadable file simply means
+ * "nothing granted yet", which costs a re-prompt and never a false allow.
+ */
+#define ORIGIN_GRANTS_MAX_BYTES 1024u
+
+static void origin_grants_path(const char *app_id, char *out, size_t out_len)
+{
+    snprintf(out, out_len, "/data/grants/%s.origins", app_id);
+}
+
+static bool origin_is_persisted(const char *app_id, const char *origin)
+{
+    char path[96];
+    origin_grants_path(app_id, path, sizeof(path));
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return false;
+    }
+    char line[JPP_SDK_ORIGIN_MAX + 2u];
+    bool found = false;
+    while (!found && fgets(line, sizeof(line), f) != NULL) {
+        size_t len = strlen(line);
+        while (len > 0u && (line[len - 1u] == '\n' || line[len - 1u] == '\r')) {
+            line[--len] = '\0';
+        }
+        /* Whole-line compare: a substring match would let "https://evil.com"
+           be satisfied by a stored "https://evil.com.trusted.net". */
+        found = (strcmp(line, origin) == 0);
+    }
+    fclose(f);
+    return found;
+}
+
+static void origin_persist(const char *app_id, const char *origin)
+{
+    if (origin_is_persisted(app_id, origin)) {
+        return;
+    }
+    char path[96];
+    origin_grants_path(app_id, path, sizeof(path));
+    struct stat st;
+    /* Bounded so a misbehaving app cannot grow the file without limit; at the
+       cap the user simply gets asked again for further origins. */
+    if (stat(path, &st) == 0 &&
+        (size_t)st.st_size + strlen(origin) + 1u > ORIGIN_GRANTS_MAX_BYTES) {
+        ESP_LOGW(TAG, "ORIGIN_GRANTS_FULL %s", app_id);
+        return;
+    }
+    mkdir("/data/grants", 0755);
+    FILE *f = fopen(path, "a");
+    if (f == NULL) {
+        ESP_LOGW(TAG, "ORIGIN_PERSIST_FAILED %s", app_id);
+        return;
+    }
+    fprintf(f, "%s\n", origin);
+    fclose(f);
+}
+
+/*
+ * Renders the origin across up to three rows — jpp_sdk_confirm does not
+ * word-wrap, and a hostname is exactly the string the user must be able to read
+ * in full to make this decision, so it is chunked rather than truncated.
+ */
+static bool prompt_origin(jpp_sdk_context_t *sdk_ctx, const char *origin)
+{
+    char chunk[3][24];
+    const char *body[4];
+    size_t bn = 0u;
+    body[bn++] = "Connect securely to:";
+
+    /* The scheme is constant for this capability and costs a row, so show the
+       host[:port] only. */
+    const char *shown = origin;
+    if (strncmp(shown, "https://", 8) == 0) {
+        shown += 8;
+    }
+    size_t olen = strlen(shown);
+    size_t off  = 0u;
+    for (size_t i = 0u; i < 3u && off < olen; i++) {
+        size_t take = olen - off;
+        if (take > 21u) take = 21u;
+        memcpy(chunk[i], shown + off, take);
+        chunk[i][take] = '\0';
+        body[bn++] = chunk[i];
+        off += take;
+    }
+
+    bool allow = false;
+    jpp_sdk_confirm(sdk_ctx, "Web request", body, bn, false, &allow);
+    return allow;
+}
+
+bool jpp_app_origin_prompt(jpp_sdk_context_t *sdk_ctx, const char *origin)
+{
+    if (sdk_ctx == NULL || origin == NULL || origin[0] == '\0') {
+        return false;
+    }
+    if (origin_is_persisted(sdk_ctx->app_id, origin)) {
+        return true;
+    }
+    if (s_bg_run_active) {
+        /* Same rule as capability consent: a headless run has no way to ask, so
+           only origins already approved interactively are usable. */
+        ESP_LOGW(TAG, "ORIGIN_HEADLESS_DENY %s %s", sdk_ctx->app_id, origin);
+        return false;
+    }
+    bool granted = prompt_origin(sdk_ctx, origin);
+    if (granted) {
+        origin_persist(sdk_ctx->app_id, origin);
+    }
+    ESP_LOGI(TAG, "ORIGIN_CONSENT %s %s -> %s",
+             sdk_ctx->app_id, origin, granted ? "GRANT" : "DENY");
+    return granted;
 }
 
 bool jpp_app_consent_prompt(jpp_sdk_context_t *sdk_ctx, const char *cap, int tier)
@@ -786,9 +914,11 @@ static bool launch_app_from(const char *app_root,
 
         jpp_sdk_bind(&s_sd_ctx, &s_sd_vm, "sd_app", app_id,
                      &caller, &s_native_services);
+        jpp_sdk_set_services_v2(&s_sd_ctx, &s_native_services_v2);
         jpp_sdk_set_pending_caps(&s_sd_ctx, pending_caps, pending_tiers, pending_count);
     } else {
         jpp_sdk_bind_native(&s_sd_ctx, app_id, &caller, &s_native_services);
+        jpp_sdk_set_services_v2(&s_sd_ctx, &s_native_services_v2);
         jpp_sdk_set_pending_caps(&s_sd_ctx, pending_caps, pending_tiers, pending_count);
     }
 
