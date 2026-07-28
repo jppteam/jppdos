@@ -68,12 +68,12 @@ static int jpp_keypad_config_repeat_interval_ms(const jpp_keypad_config_t *confi
     return config->repeat_interval_ms;
 }
 
-static jpp_keypad_back_gesture_t jpp_keypad_config_back_gesture(const jpp_keypad_config_t *config)
+static bool jpp_keypad_config_detect_double_click(const jpp_keypad_config_t *config)
 {
     if (config == NULL) {
-        return JPP_KEYPAD_BACK_GESTURE_HOLD;
+        return false;
     }
-    return config->back_gesture;
+    return config->detect_double_click;
 }
 
 static int jpp_keypad_config_double_click_ms(const jpp_keypad_config_t *config)
@@ -84,11 +84,17 @@ static int jpp_keypad_config_double_click_ms(const jpp_keypad_config_t *config)
     return config->double_click_ms;
 }
 
-/* Emits the deferred OK for a short click once double_click_ms has passed
-   with no second click. Called once per poll, before any other event logic,
-   so a click that finally times out resolves before a later click in the
-   same poll can start a fresh pending cycle. */
-static int jpp_keypad_check_pending_ok(
+/* Releases a deferred short click once double_click_ms has passed with no
+   second click. Called once per poll, before any other event logic, so a
+   click that finally times out resolves before a later click in the same
+   poll can start a fresh pending cycle.
+
+   Also flushes immediately when double-click detection has been switched off
+   underneath a click that is still in flight — the mode can change between
+   polls (the user toggling Settings > Controls, or an app being foregrounded
+   that claims CENTER differently), and neither dropping the click nor
+   replaying it later would be correct. */
+static int jpp_keypad_check_pending_short(
     jpp_keypad_state_t *state,
     const jpp_keypad_config_t *config,
     int now_ms,
@@ -97,16 +103,17 @@ static int jpp_keypad_check_pending_ok(
     size_t *event_count
 )
 {
-    if (state == NULL || !state->ok_pending) {
+    if (state == NULL || !state->short_pending) {
         return 0;
     }
-    if (now_ms - state->pending_release_ms < jpp_keypad_config_double_click_ms(config)) {
+    if (jpp_keypad_config_detect_double_click(config) &&
+        now_ms - state->pending_release_ms < jpp_keypad_config_double_click_ms(config)) {
         return 0;
     }
     if (*event_count >= event_capacity) {
         return -1;
     }
-    state->ok_pending = false;
+    state->short_pending = false;
     events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_SHORT;
     events[*event_count].key = "CENTER";
     events[*event_count].mapped = "OK";
@@ -253,38 +260,26 @@ static int jpp_keypad_finalize_release(
         duration_ms = 0;
     }
     if (strcmp(previous_key, "CENTER") == 0) {
-        if (jpp_keypad_config_back_gesture(config) == JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK) {
-            /* Long hold: the live branch in jpp_keypad_poll() never fires
-               CENTER_LONG in this mode, so there is nothing to finalize. */
-            if (duration_ms < jpp_keypad_config_long_press_ms(config)) {
-                if (state->ok_pending &&
-                    now_ms - state->pending_release_ms <= jpp_keypad_config_double_click_ms(config)) {
-                    if (*event_count >= event_capacity) {
-                        return -1;
-                    }
-                    state->ok_pending = false;
-                    events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_DOUBLE;
-                    events[*event_count].key = previous_key;
-                    events[*event_count].mapped = "BACK";
-                    events[*event_count].duration_ms = duration_ms;
-                    *event_count += 1u;
-                } else {
-                    state->ok_pending = true;
-                    state->pending_release_ms = now_ms;
+        if (duration_ms >= jpp_keypad_config_long_press_ms(config)) {
+            /* A hold. jpp_keypad_poll() normally emits CENTER_LONG live the
+               moment the threshold is crossed; finalize only has work to do
+               when the release landed in the same poll as the crossing. */
+            if (!state->center_long_emitted) {
+                if (*event_count >= event_capacity) {
+                    return -1;
                 }
+                events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_LONG;
+                events[*event_count].key = previous_key;
+                events[*event_count].mapped = "HOLD";
+                events[*event_count].duration_ms = duration_ms;
+                *event_count += 1u;
             }
             return 0;
         }
-        if (duration_ms >= jpp_keypad_config_long_press_ms(config) && !state->center_long_emitted) {
-            if (*event_count >= event_capacity) {
-                return -1;
-            }
-            events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_LONG;
-            events[*event_count].key = previous_key;
-            events[*event_count].mapped = "BACK";
-            events[*event_count].duration_ms = duration_ms;
-            *event_count += 1u;
-        } else if (duration_ms < jpp_keypad_config_long_press_ms(config)) {
+        /* A short click. Report it straight away unless someone needs to be
+           able to tell a double-click apart, in which case hold it back until
+           the window closes (jpp_keypad_check_pending_short). */
+        if (!jpp_keypad_config_detect_double_click(config)) {
             if (*event_count >= event_capacity) {
                 return -1;
             }
@@ -293,6 +288,22 @@ static int jpp_keypad_finalize_release(
             events[*event_count].mapped = "OK";
             events[*event_count].duration_ms = duration_ms;
             *event_count += 1u;
+            return 0;
+        }
+        if (state->short_pending &&
+            now_ms - state->pending_release_ms <= jpp_keypad_config_double_click_ms(config)) {
+            if (*event_count >= event_capacity) {
+                return -1;
+            }
+            state->short_pending = false;
+            events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_DOUBLE;
+            events[*event_count].key = previous_key;
+            events[*event_count].mapped = "DOUBLE";
+            events[*event_count].duration_ms = duration_ms;
+            *event_count += 1u;
+        } else {
+            state->short_pending = true;
+            state->pending_release_ms = now_ms;
         }
         return 0;
     }
@@ -334,7 +345,7 @@ void jpp_keypad_state_init(jpp_keypad_state_t *state, const jpp_keypad_config_t 
     state->repeat_interval_ms = config == NULL ? 150 : config->repeat_interval_ms;
     state->press_started_ms = -1;
     state->last_repeat_ms = -1;
-    state->ok_pending = false;
+    state->short_pending = false;
     state->pending_release_ms = -1;
     state->ready = state->enabled;
 }
@@ -384,7 +395,7 @@ int jpp_keypad_poll(
         return 0;
     }
     now_ms = (int)state->sample_index * jpp_keypad_config_poll_interval_ms(config);
-    if (jpp_keypad_check_pending_ok(state, config, now_ms, events, event_capacity, event_count) != 0) {
+    if (jpp_keypad_check_pending_short(state, config, now_ms, events, event_capacity, event_count) != 0) {
         return -1;
     }
     if (!sample_present) {
@@ -410,35 +421,34 @@ int jpp_keypad_poll(
                 state->press_started_ms = now_ms;
             }
             if (strcmp(candidate_key, "CENTER") == 0) {
-                /* Double-click mode has no live-hold gesture: CENTER_DOUBLE
-                   is decided on release in jpp_keypad_finalize_release(). */
-                if (jpp_keypad_config_back_gesture(config) == JPP_KEYPAD_BACK_GESTURE_HOLD) {
-                    int duration_ms = now_ms - state->press_started_ms;
-                    if (duration_ms >= jpp_keypad_config_long_press_ms(config) && !state->center_long_emitted) {
-                        if (*event_count >= event_capacity) {
-                            return -1;
-                        }
-                        state->center_long_emitted = true;
-                        events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_LONG;
-                        events[*event_count].key = candidate_key;
-                        events[*event_count].mapped = "BACK";
-                        events[*event_count].duration_ms = duration_ms;
-                        *event_count += 1u;
-                    } else if (state->center_long_emitted &&
-                               now_ms - state->press_started_ms >=
-                                   jpp_keypad_config_long_press_ms(config) +
-                                   jpp_keypad_config_repeat_delay_ms(config) &&
-                               now_ms - state->last_repeat_ms >= jpp_keypad_config_repeat_interval_ms(config)) {
-                        if (*event_count >= event_capacity) {
-                            return -1;
-                        }
-                        state->last_repeat_ms = now_ms;
-                        events[*event_count].kind = JPP_KEYPAD_KIND_REPEAT;
-                        events[*event_count].key = candidate_key;
-                        events[*event_count].mapped = "BACK";
-                        events[*event_count].duration_ms = 0;
-                        *event_count += 1u;
+                /* A hold is always detected, whatever it ends up meaning —
+                   the policy layer decides whether CENTER_LONG is "Back",
+                   an app's own gesture, or nothing at all. */
+                int duration_ms = now_ms - state->press_started_ms;
+                if (duration_ms >= jpp_keypad_config_long_press_ms(config) && !state->center_long_emitted) {
+                    if (*event_count >= event_capacity) {
+                        return -1;
                     }
+                    state->center_long_emitted = true;
+                    events[*event_count].kind = JPP_KEYPAD_KIND_CENTER_LONG;
+                    events[*event_count].key = candidate_key;
+                    events[*event_count].mapped = "HOLD";
+                    events[*event_count].duration_ms = duration_ms;
+                    *event_count += 1u;
+                } else if (state->center_long_emitted &&
+                           now_ms - state->press_started_ms >=
+                               jpp_keypad_config_long_press_ms(config) +
+                               jpp_keypad_config_repeat_delay_ms(config) &&
+                           now_ms - state->last_repeat_ms >= jpp_keypad_config_repeat_interval_ms(config)) {
+                    if (*event_count >= event_capacity) {
+                        return -1;
+                    }
+                    state->last_repeat_ms = now_ms;
+                    events[*event_count].kind = JPP_KEYPAD_KIND_REPEAT;
+                    events[*event_count].key = candidate_key;
+                    events[*event_count].mapped = "HOLD";
+                    events[*event_count].duration_ms = 0;
+                    *event_count += 1u;
                 }
             } else if (jpp_keypad_emit_repeat_if_needed(state, config, candidate_key, now_ms, events, event_capacity, event_count) != 0) {
                 return -1;

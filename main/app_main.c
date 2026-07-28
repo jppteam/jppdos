@@ -201,6 +201,94 @@ typedef struct {
 
 static keypad_task_ctx_t s_kpad_ctx;
 
+/* Which CENTER gesture the user has picked to mean "Back" (Settings >
+   Controls, persisted in NVS jpp_input/back_gesture). Only ever consulted
+   here in the policy layer — neither the detector nor any app sees it. */
+static uint8_t s_back_gesture_mode = JPP_KEYPAD_BACK_GESTURE_HOLD;
+
+/* What the foreground app, if any, has taken over via jpp_sdk_claim_center(). */
+static uint8_t center_claim_now(void)
+{
+    if (s_active_sdk_context != NULL) {
+        return s_active_sdk_context->center_claim;
+    }
+    return JPP_SDK_CENTER_CLAIM_NONE;
+}
+
+/* Double-click discrimination costs the short click a double_click_ms delay,
+   so ask for it only when something actually needs to tell the two apart:
+   an app that claimed the double-click, or — when nothing is claimed — a user
+   who chose it as their Back gesture. */
+static bool center_needs_double_click(void)
+{
+    uint8_t claim = center_claim_now();
+    if (claim != JPP_SDK_CENTER_CLAIM_NONE) {
+        return (claim & JPP_SDK_CENTER_CLAIM_DOUBLE) != 0u;
+    }
+    return s_back_gesture_mode == JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK;
+}
+
+/* Hand a key to the foreground app (and, for MicroPython apps, wake the VM). */
+static void keypad_push_app_key(jpp_sdk_key_event_t sdk_key)
+{
+    if (sdk_key == JPP_SDK_KEY_NONE || s_active_sdk_context == NULL) {
+        return;
+    }
+    jpp_sdk_push_key(s_active_sdk_context, sdk_key);
+    if (s_sd_task != NULL && s_sd_is_mp && s_active_sdk_context == &s_sd_ctx) {
+        jpp_vm_request_t act_req;
+        memset(&act_req, 0, sizeof(act_req));
+        act_req.kind = JPP_VM_REQUEST_ACTION;
+        act_req.action_payload = (uint32_t)sdk_key;
+        strncpy(act_req.app_id, s_sd_ctx.app_id, sizeof(act_req.app_id) - 1u);
+        jpp_vm_schedule_request(&s_sd_vm, "keypad", &act_req);
+    }
+}
+
+/* Resolves one raw CENTER gesture into whatever it means right now. Returns
+   true if the event was a CENTER gesture and has been fully handled. */
+static bool keypad_handle_center_gesture(const jpp_keypad_event_t *ev)
+{
+    bool is_hold   = (ev->kind == JPP_KEYPAD_KIND_CENTER_LONG) ||
+                     (ev->kind == JPP_KEYPAD_KIND_REPEAT &&
+                      ev->key != NULL && strcmp(ev->key, "CENTER") == 0);
+    bool is_double = (ev->kind == JPP_KEYPAD_KIND_CENTER_DOUBLE);
+    if (!is_hold && !is_double) {
+        return false;
+    }
+
+    uint8_t claim = center_claim_now();
+    uint8_t bit   = is_hold ? JPP_SDK_CENTER_CLAIM_HOLD : JPP_SDK_CENTER_CLAIM_DOUBLE;
+
+    if ((claim & bit) != 0u) {
+        /* The app took this gesture over as its own input. The auto-repeat of
+           a hold is not forwarded: it exists so Back can pop several screens
+           at once, not to make an app's pause gesture fire over and over. */
+        if (ev->kind != JPP_KEYPAD_KIND_REPEAT) {
+            keypad_push_app_key(is_hold ? JPP_SDK_KEY_CENTER_HOLD
+                                        : JPP_SDK_KEY_CENTER_DOUBLE);
+        }
+        return true;
+    }
+    if (claim != JPP_SDK_CENTER_CLAIM_NONE) {
+        /* Claiming anything means the app owns its own way out, so the
+           unclaimed gesture is not repurposed as Back behind its back. */
+        return true;
+    }
+
+    bool is_back = is_hold ? (s_back_gesture_mode == JPP_KEYPAD_BACK_GESTURE_HOLD)
+                           : (s_back_gesture_mode == JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK);
+    if (!is_back) {
+        return true;
+    }
+    jpp_ui_action_t back = JPP_UI_ACTION_BACK;
+    xQueueSend(s_action_queue, &back, 0);
+    if (ev->kind != JPP_KEYPAD_KIND_REPEAT) {
+        keypad_push_app_key(JPP_SDK_KEY_BACK);
+    }
+    return true;
+}
+
 static void keypad_task(void *arg)
 {
     keypad_task_ctx_t *ctx = (keypad_task_ctx_t *)arg;
@@ -226,12 +314,7 @@ static void keypad_task(void *arg)
         jpp_keypad_event_t events[8];
         size_t event_count = 0u;
         jpp_keypad_config_t poll_cfg = ctx->cfg;
-        if (s_active_sdk_context != NULL && s_active_sdk_context->force_hold_back_gesture) {
-            /* The foreground app wants CENTER's Back trigger to always be a
-               hold, regardless of the user's Settings > Controls preference
-               (which keeps governing the launcher once this app exits). */
-            poll_cfg.back_gesture = JPP_KEYPAD_BACK_GESTURE_HOLD;
-        }
+        poll_cfg.detect_double_click = center_needs_double_click();
         jpp_keypad_poll(&ctx->state, &poll_cfg, sample_uv, true,
                         events, 8u, &event_count);
 
@@ -241,45 +324,27 @@ static void keypad_task(void *arg)
                      events[i].key    ? events[i].key    : "(null)",
                      events[i].mapped ? events[i].mapped : "(null)");
 
-            jpp_ui_action_t action = jpp_ui_normalize_action(&events[i]);
-            if (action != JPP_UI_ACTION_NONE) {
-                xQueueSend(s_action_queue, &action, 0);
-
-                if (s_active_sdk_context != NULL) {
-                    jpp_sdk_key_event_t sdk_key = JPP_SDK_KEY_NONE;
-                    switch (action) {
-                    case JPP_UI_ACTION_UP:    sdk_key = JPP_SDK_KEY_UP;     break;
-                    case JPP_UI_ACTION_DOWN:  sdk_key = JPP_SDK_KEY_DOWN;   break;
-                    case JPP_UI_ACTION_LEFT:  sdk_key = JPP_SDK_KEY_LEFT;   break;
-                    case JPP_UI_ACTION_RIGHT: sdk_key = JPP_SDK_KEY_RIGHT;  break;
-                    case JPP_UI_ACTION_OK:    sdk_key = JPP_SDK_KEY_CENTER; break;
-                    case JPP_UI_ACTION_BACK:  sdk_key = JPP_SDK_KEY_NONE;   break;
-                    case JPP_UI_ACTION_NONE:  sdk_key = JPP_SDK_KEY_NONE;   break;
-                    }
-                    if ((events[i].kind == JPP_KEYPAD_KIND_CENTER_LONG ||
-                         events[i].kind == JPP_KEYPAD_KIND_CENTER_DOUBLE) &&
-                        s_active_sdk_context->back_gesture_enabled) {
-                        /* Apps only care that Back happened, not which
-                           gesture triggered it — reuse the existing key.
-                           Dropped entirely (sdk_key stays NONE) when the app
-                           has suppressed it via jpp_sdk_set_back_gesture_enabled. */
-                        sdk_key = JPP_SDK_KEY_CENTER_LONG;
-                    }
-                    if (sdk_key != JPP_SDK_KEY_NONE) {
-                        jpp_sdk_push_key(s_active_sdk_context, sdk_key);
-                        if (s_sd_task != NULL && s_sd_is_mp &&
-                            s_active_sdk_context == &s_sd_ctx) {
-                            jpp_vm_request_t act_req;
-                            memset(&act_req, 0, sizeof(act_req));
-                            act_req.kind = JPP_VM_REQUEST_ACTION;
-                            act_req.action_payload = (uint32_t)sdk_key;
-                            strncpy(act_req.app_id, s_sd_ctx.app_id,
-                                    sizeof(act_req.app_id) - 1u);
-                            jpp_vm_schedule_request(&s_sd_vm, "keypad", &act_req);
-                        }
-                    }
-                }
+            if (keypad_handle_center_gesture(&events[i])) {
+                continue;
             }
+
+            jpp_ui_action_t action = jpp_ui_normalize_action(&events[i]);
+            if (action == JPP_UI_ACTION_NONE) {
+                continue;
+            }
+            xQueueSend(s_action_queue, &action, 0);
+
+            jpp_sdk_key_event_t sdk_key = JPP_SDK_KEY_NONE;
+            switch (action) {
+            case JPP_UI_ACTION_UP:    sdk_key = JPP_SDK_KEY_UP;     break;
+            case JPP_UI_ACTION_DOWN:  sdk_key = JPP_SDK_KEY_DOWN;   break;
+            case JPP_UI_ACTION_LEFT:  sdk_key = JPP_SDK_KEY_LEFT;   break;
+            case JPP_UI_ACTION_RIGHT: sdk_key = JPP_SDK_KEY_RIGHT;  break;
+            case JPP_UI_ACTION_OK:    sdk_key = JPP_SDK_KEY_CENTER; break;
+            case JPP_UI_ACTION_BACK:  sdk_key = JPP_SDK_KEY_NONE;   break;
+            case JPP_UI_ACTION_NONE:  sdk_key = JPP_SDK_KEY_NONE;   break;
+            }
+            keypad_push_app_key(sdk_key);
         }
 
         vTaskDelay(pdMS_TO_TICKS(JPP_KEYPAD_POLL_MS));
@@ -971,8 +1036,8 @@ static void settings_do_jingle_change(uint8_t jingle)
 }
 
 /* ---- Back button gesture ------------------------------------------------- */
-
-static uint8_t s_back_gesture_mode = JPP_KEYPAD_BACK_GESTURE_HOLD;
+/* s_back_gesture_mode itself lives up beside keypad_task, which is its only
+   consumer. */
 
 static void load_back_gesture(void)
 {
@@ -983,16 +1048,16 @@ static void load_back_gesture(void)
     ESP_LOGI(TAG, "INPUT: back_gesture=%u", s_back_gesture_mode);
 }
 
-/* Applied live: s_kpad_ctx is file-scope and the keypad task re-reads
-   ctx->cfg every poll, so this takes effect on the next 20ms tick with no
-   task restart. */
+/* Applied live: keypad_task re-derives the poll config from
+   s_back_gesture_mode every 20 ms tick, so this needs no task restart. A
+   short click already in flight is flushed rather than stranded — see
+   jpp_keypad_check_pending_short(). */
 static void settings_do_back_gesture_change(uint8_t mode)
 {
     if (mode != JPP_KEYPAD_BACK_GESTURE_HOLD && mode != JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK) {
         return;
     }
     s_back_gesture_mode = mode;
-    s_kpad_ctx.cfg.back_gesture = (jpp_keypad_back_gesture_t)mode;
     jpp_nvs_set_u8(JPP_NVS_INPUT_NS, "back_gesture", mode);
     ESP_LOGI(TAG, "INPUT: back_gesture changed to %u", mode);
 }
@@ -1154,7 +1219,8 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .repeat_enabled     = true,
         .repeat_delay_ms    = JPP_KEYPAD_DEFAULT_REPEAT_DELAY_MS,
         .repeat_interval_ms = JPP_KEYPAD_DEFAULT_REPEAT_INTERVAL_MS,
-        .back_gesture       = (jpp_keypad_back_gesture_t)s_back_gesture_mode,
+        /* detect_double_click is re-derived per poll by keypad_task from the
+           user preference and the foreground app's claim. */
         .double_click_ms    = JPP_KEYPAD_DEFAULT_DOUBLE_CLICK_MS,
         .bands              = KEYPAD_BANDS,
         .band_count         = sizeof(KEYPAD_BANDS) / sizeof(KEYPAD_BANDS[0]),
