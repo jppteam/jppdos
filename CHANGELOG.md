@@ -23,10 +23,13 @@ each build, not an API diff.
   Docker toolchain (`tools/app-sdk/`) moved to
   [`jppdos-apps`](https://github.com/jppteam/jppdos-apps), which also gains a
   JPPD-SMP deploy tool with serial-port autodiscovery and a multiselect app
-  picker. That repo vendors this one as a submodule tracking `master`, purely
-  to build the SDK image — app developers need no firmware checkout at all.
-  Nothing about the on-device app format, the SDK surface, or the manifest
-  schema changed; `docs/` here remains the source of truth for all three.
+  picker. That repo does not vendor this one: its image build clones the
+  firmware itself, always at the current tip of `master` unless told otherwise,
+  so there is no submodule pointer to keep moving by hand and no way for the
+  SDK image to quietly lag the firmware it is built from. App developers need
+  no firmware checkout at all. Nothing about the on-device app format, the SDK
+  surface, or the manifest schema changed; `docs/` here remains the source of
+  truth for all three.
 - **The example apps stay with the firmware.** The two App SDK test apps
   (`apps/testapp_native`, `apps/testapp_mp`) briefly moved out with the
   toolchain and now live here again, alongside Games, DemoScene and MeetApp.
