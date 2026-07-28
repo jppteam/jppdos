@@ -1231,7 +1231,7 @@ jppsdk.http_request(method: str, url: str, body: str | None = None) -> dict
 
 **Capability:** `https.request` (Tier 1 — one-time grant, persisted) **plus a one-time prompt per origin**
 
-**Requires:** `sdk_min: 3`
+**Requires:** `sdk_min: 2`
 
 ### `https_request`
 

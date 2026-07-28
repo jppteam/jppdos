@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Pinned values from components/jpp_core/include/jpp_manifest_core.h
 SCHEMA_VERSION = 2
-SDK_VERSION = 3  # native SDK API level exported by the firmware (JPP_SDK_VERSION)
+SDK_VERSION = 2  # native SDK API level exported by the firmware (JPP_SDK_VERSION)
 RUNTIME_VERSION = "v1.28.0"
 CROSS_VERSION = "1.28.0"
 BYTECODE_ABI = 6

@@ -78,8 +78,7 @@ capability your app uses:
 | `sdk_min` | Requires firmware providing |
 |-----------|-----------------------------|
 | `1` | the original SDK surface |
-| `2` | outbound TCP (`net_connect`, capability `network.connect`) and the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) |
-| `3` | TLS-verified HTTP (`https_request`, capability `https.request`) |
+| `2` | outbound TCP (`net_connect`, capability `network.connect`), the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`), and TLS-verified HTTP (`https_request`, capability `https.request`) |
 
 ### `app_type`
 
@@ -162,7 +161,7 @@ There are **two tiers** of consent:
 | Capability | Tier | What it unlocks |
 |------------|------|-----------------|
 | `http.request` | 1 | Broker-serialized HTTP GET and POST requests via `http_request` (cleartext only) |
-| `https.request` | 1 | TLS-verified HTTPS requests via `https_request` (SDK v3). **Additionally prompts once per origin** — see below |
+| `https.request` | 1 | TLS-verified HTTPS requests via `https_request` (SDK v2). **Additionally prompts once per origin** — see below |
 | `ble.scan` | 1 | Passive BLE scan — discover nearby devices, read advertisement payloads and RSSI |
 | `ble.advertise` | 1 | Broadcast a raw BLE advertisement payload; also enables `ble_set_connectable` |
 | `background.register` | 1 | Enroll the manifest's `background.tasks` schedule for headless background execution |

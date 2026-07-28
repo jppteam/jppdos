@@ -508,7 +508,7 @@ typedef struct {
 typedef struct {
     /* network.connect — outbound TCP (SDK v2) */
     jpp_sdk_net_connect_fn_t net_connect;
-    /* https.request — TLS HTTP client (SDK v3) */
+    /* https.request — TLS HTTP client (SDK v2) */
     jpp_sdk_https_request_fn_t https_request;
     void *https_request_context;
     /* per-origin consent for https.request; may block */
@@ -939,7 +939,7 @@ jpp_sdk_status_t jpp_sdk_http_request(
 );
 
 /*
- * Requires: https.request (SDK v3) — TLS-verified HTTP over port 443.
+ * Requires: https.request (SDK v2) — TLS-verified HTTP over port 443.
  *
  * `url` must start with "https://"; a plain http:// URL is rejected with
  * INVALID_ARGUMENT rather than silently downgraded. The server certificate is
