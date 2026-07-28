@@ -1,0 +1,145 @@
+# =============================================================================
+# Builds the App Developer Guide (docs/ via MkDocs) and publishes it to the
+# sdk-docs/ prefix of the docs bucket — https://jppdevice.by.m4l3vi.ch/sdk-docs/
+#
+# The credentials need only s3:ListBucket on the bucket and
+# s3:PutObject / s3:DeleteObject under the sdk-docs/* prefix.
+# =============================================================================
+name: docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'tools/docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'tools/docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+concurrency:
+  # Never let two syncs to the same prefix overlap. Deliberately NOT
+  # cancel-in-progress: killing a run mid-sync would leave the published site
+  # half-updated. A queued newer run supersedes the result anyway.
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  S3_PREFIX: sdk-docs
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # The shadcn theme derives per-page "last updated" timestamps from git
+          # history (shadcn/plugins/mixins/git.py). The default shallow clone
+          # would give every page the same commit, so fetch the full history.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/docs/requirements.txt
+
+      - name: Install MkDocs toolchain
+        run: python3 -m pip install --upgrade pip -r tools/docs/requirements.txt
+
+      # --strict turns MkDocs warnings into errors. The docs currently carry
+      # known-broken anchors (documented in tools/docs/README.md), which are
+      # warnings — so this stays non-strict until those are fixed, and a build
+      # failure here means something genuinely broke.
+      - name: Build site
+        run: mkdocs build
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-docs
+          path: site/
+          retention-days: 7
+
+  publish:
+    # Pull requests build (so a docs change is checked) but never publish.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-docs
+          path: site
+
+      # Credentials go straight into the environment for the AWS CLI rather than
+      # through aws-actions/configure-aws-credentials: that action always
+      # validates by calling sts:GetCallerIdentity against *AWS* STS, with no
+      # opt-out, which non-AWS keys cannot satisfy (and ru-central-1 is not an
+      # AWS region). The CLI itself is happy talking to any S3-compatible
+      # endpoint with these three variables set.
+      - name: Check configuration
+        env:
+          BUCKET: ${{ vars.S3_BUCKET }}
+        run: |
+          if [ -z "$BUCKET" ]; then
+            echo "::error::Repository variable S3_BUCKET is not set." \
+                 "Set it to the docs bucket name (Settings → Secrets and" \
+                 "variables → Actions → Variables)."
+            exit 1
+          fi
+
+      # Two passes because the theme's asset filenames are NOT content-hashed
+      # (css/base.css, js/sidebar.js …): a long cache on those would serve stale
+      # CSS after a theme bump, and a long cache on HTML would hide doc edits.
+      # Assets get a day, everything else a minute. Both passes carry --delete,
+      # each scoped by its own filters, so stale assets are cleaned up too —
+      # and both are confined to the sdk-docs/ prefix, so nothing else in the
+      # bucket can be touched.
+      - name: Sync to S3
+        env:
+          BUCKET: ${{ vars.S3_BUCKET }}
+          ENDPOINT: ${{ vars.S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ru-central-1' }}
+        run: |
+          set -euo pipefail
+          DEST="s3://${BUCKET}/${S3_PREFIX}"
+
+          # Only pass --endpoint-url when one is configured; an empty value is
+          # not the same as unset and the CLI rejects it.
+          EP=()
+          if [ -n "$ENDPOINT" ]; then
+            EP=(--endpoint-url "$ENDPOINT")
+            echo "Using S3-compatible endpoint $ENDPOINT"
+          fi
+
+          # Long-lived assets first, so a page fetched mid-deploy finds them.
+          aws s3 sync site/ "$DEST" "${EP[@]}" \
+            --no-progress --delete \
+            --exclude '*' \
+            --include 'css/*' --include 'js/*' --include 'fonts/*' \
+            --include 'icons/*' --include 'img/*' \
+            --cache-control 'public, max-age=86400'
+
+          # Then the pages themselves.
+          aws s3 sync site/ "$DEST" "${EP[@]}" \
+            --no-progress --delete \
+            --exclude 'css/*' --exclude 'js/*' --exclude 'fonts/*' \
+            --exclude 'icons/*' --exclude 'img/*' \
+            --cache-control 'public, max-age=60, must-revalidate'
+
+      - name: Summary
+        run: |
+          echo "Published to https://jppdevice.by.m4l3vi.ch/${S3_PREFIX}/" \
+            >> "$GITHUB_STEP_SUMMARY"

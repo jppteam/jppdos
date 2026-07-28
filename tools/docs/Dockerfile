@@ -15,6 +15,15 @@
 # =============================================================================
 FROM python:3.12-slim
 
+# git is a hard runtime dependency, not a build tool: the shadcn theme's search
+# plugin imports GitPython at module load (shadcn/plugins/mixins/git.py) to
+# derive per-page timestamps, and GitPython raises ImportError on import when no
+# git executable is on PATH. Without this, `mkdocs serve` dies before binding
+# the port. python:3.12-slim ships no git.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY tools/docs/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 

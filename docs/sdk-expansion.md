@@ -973,7 +973,8 @@ jppsdk.http_server_stop() -> None
 | **G5** | 11–12 | New components; `http.server` is the most complex (queue-bridge) |
 
 Within each group, commit the MicroPython bindings (`jpp_mp_sdk_module.c`)
-last — only after the C bridge function is testable with `testapp_native`.
+last — only after the C bridge function is testable with `testapp_native` (in the
+sibling `jppdos-apps` repo).
 
 ---
 

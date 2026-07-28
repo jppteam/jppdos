@@ -2,8 +2,6 @@
 
 #include <sys/stat.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
@@ -11,14 +9,6 @@
 #include "driver/sdspi_host.h"
 
 static const char *TAG = "hw_init";
-
-/* Some units are marginal on the SD 3.3V/GND path: the card answers CMD0 but
- * browns out during the op_cond init inrush, so the first mount times out while
- * a second, warmer attempt succeeds. Retry a few times before falling into
- * recovery mode, and log the attempt count so QA can flag units that ever needed
- * more than one try. */
-#define JPP_SD_MOUNT_ATTEMPTS    3
-#define JPP_SD_MOUNT_RETRY_MS    100
 
 static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static sdmmc_card_t           *s_sd_card = NULL;
@@ -100,20 +90,9 @@ bool mount_sd(const jpp_sd_config_t *cfg)
         .max_files              = 5,
         .allocation_unit_size   = 16 * 1024,
     };
-    for (int attempt = 1; attempt <= JPP_SD_MOUNT_ATTEMPTS; attempt++) {
-        err = esp_vfs_fat_sdspi_mount("/sd", &host, &dev, &mcfg, &s_sd_card);
-        if (err == ESP_OK) {
-            if (attempt > 1) {
-                ESP_LOGW(TAG, "SD mount OK on attempt %d/%d (marginal unit?)",
-                         attempt, JPP_SD_MOUNT_ATTEMPTS);
-            }
-            return true;
-        }
-        ESP_LOGW(TAG, "SD mount attempt %d/%d: %s", attempt,
-                 JPP_SD_MOUNT_ATTEMPTS, esp_err_to_name(err));
-        if (attempt < JPP_SD_MOUNT_ATTEMPTS) {
-            vTaskDelay(pdMS_TO_TICKS(JPP_SD_MOUNT_RETRY_MS));
-        }
+    err = esp_vfs_fat_sdspi_mount("/sd", &host, &dev, &mcfg, &s_sd_card);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SD mount: %s", esp_err_to_name(err));
     }
-    return false;
+    return err == ESP_OK;
 }
