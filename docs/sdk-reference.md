@@ -6,7 +6,7 @@
 |----------|-----------|
 | [Types and constants](#types-and-constants) | [`jpp_sdk_status_t`](#c--jpp_sdk_status_t) · [`jpp_sdk_key_event_t`](#c--jpp_sdk_key_event_t) · [Python constants](#python--jppsdk-constants) · [`jpp_broker_result_t`](#c--jpp_broker_result_t) |
 | [App control](#app-control) | [`set_frame`](#set_frame) · [`request_close`](#request_close) · [`log`](#log) · [`request_cap`](#request_cap-c-only) |
-| [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) · [`set_back_gesture_enabled`](#set_back_gesture_enabled) · [`set_force_hold_back_gesture`](#set_force_hold_back_gesture) |
+| [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) · [`claim_center`](#claim_center) |
 | [Canvas](#canvas) | [`canvas_write`](#canvas_write) · [`canvas_draw_pixel`](#canvas_draw_pixel) · [`canvas_clear`](#canvas_clear) · [`canvas_fullscreen`](#canvas_fullscreen) |
 | [UI helpers](#ui-helpers) | [`dialog`](#dialog) · [`list`](#list) · [`input`](#input) · [`confirm`](#confirm) · [`file_pick`](#file_pick) · [`wrap_text`](#wrap_text-c-only) |
 | [Wakelock](#wakelock) | [`wakelock_acquire`](#wakelock_acquire) · [`wakelock_release`](#wakelock_release) |
@@ -73,13 +73,23 @@ Unless otherwise noted, a Python binding raises `jppsdk.SdkError` on any non-OK 
 | `JPP_SDK_KEY_LEFT` | D-pad left |
 | `JPP_SDK_KEY_RIGHT` | D-pad right |
 | `JPP_SDK_KEY_CENTER` | D-pad center (short press) |
-| `JPP_SDK_KEY_CENTER_LONG` | D-pad center long-press — the universal "back/cancel" gesture |
+| `JPP_SDK_KEY_BACK` | The user asked to go back. Which physical gesture produced it (hold or double-click) depends on Settings > Controls and is not your app's concern. |
+| `JPP_SDK_KEY_CENTER_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value — kept so existing apps are unaffected |
+| `JPP_SDK_KEY_CENTER_HOLD` | Raw CENTER hold. Delivered only if claimed via [`claim_center`](#claim_center) |
+| `JPP_SDK_KEY_CENTER_DOUBLE` | Raw CENTER double-click. Delivered only if claimed via [`claim_center`](#claim_center) |
 
 ### Python — `jppsdk` constants
 
 ```python
 # Key events (match C enum values)
-KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_CENTER, KEY_CENTER_LONG
+KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_CENTER
+KEY_BACK, KEY_CENTER_LONG          # same value; KEY_BACK is preferred
+KEY_CENTER_HOLD, KEY_CENTER_DOUBLE # raw gestures, only if claimed
+
+# CENTER gesture claims (see claim_center)
+CENTER_CLAIM_NONE = 0
+CENTER_CLAIM_HOLD = 1
+CENTER_CLAIM_DOUBLE = 2
 
 # File open modes
 OPEN_READ = 0
@@ -267,51 +277,52 @@ void jpp_sdk_push_key(jpp_sdk_context_t *ctx, jpp_sdk_key_event_t event);
 
 ---
 
-### `set_back_gesture_enabled`
+### `claim_center`
 
-Enable or disable delivery of the "Back" gesture to your app.
+Take over CENTER gestures as your own input.
 
 **Capability:** None
 
 ```c
-jpp_sdk_status_t jpp_sdk_set_back_gesture_enabled(jpp_sdk_context_t *ctx, bool enabled);
+jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *ctx, uint8_t mask);
 ```
 ```python
-jppsdk.set_back_gesture_enabled(enabled: bool) -> None
+jppsdk.claim_center(mask: int) -> None
 ```
 
 **Parameters:**
 
 | Name | Description |
 |------|-------------|
-| `enabled` | `true` (the default) delivers the gesture as `JPP_SDK_KEY_CENTER_LONG`; `false` drops it silently — your app receives nothing for it. |
+| `mask` | Bitwise OR of `JPP_SDK_CENTER_CLAIM_HOLD` and `JPP_SDK_CENTER_CLAIM_DOUBLE`, or `JPP_SDK_CENTER_CLAIM_NONE` (the default on every bind). In MicroPython: `jppsdk.CENTER_CLAIM_HOLD`, `jppsdk.CENTER_CLAIM_DOUBLE`, `jppsdk.CENTER_CLAIM_NONE`. |
 
-**Notes:** CENTER's "Back" trigger — a long hold or a double-click, whichever Settings > Controls has selected — always arrives as `JPP_SDK_KEY_CENTER_LONG`, same as today. If your app uses CENTER as a primary action button (e.g. "fire" in a shooter), an excited player can easily hold or double-tap it by accident and get yanked into a pause/exit screen mid-action. Call `set_back_gesture_enabled(ctx, false)` while that would be disruptive, and re-enable it before or while showing your own pause menu or exit confirmation, so there's still an explicit, discoverable way out. Disabling it does not affect `UP`/`DOWN`/`LEFT`/`RIGHT`/`OK`, and has no effect outside your app (the launcher and Settings are unaffected). Resets to enabled the next time your app is (re)bound.
+**Behaviour:**
 
----
+| Claim | Your app receives | Back |
+|---|---|---|
+| *(nothing — the default)* | `KEY_CENTER` | `KEY_BACK` |
+| `HOLD` | `KEY_CENTER` + `KEY_CENTER_HOLD` | your own |
+| `DOUBLE` | `KEY_CENTER` + `KEY_CENTER_DOUBLE` | your own |
+| `HOLD \| DOUBLE` | `KEY_CENTER` + both | your own |
 
-### `set_force_hold_back_gesture`
+**Notes:** The device has a user preference (Settings > Controls) for whether a long hold or a double-click means "Back". **Your app never needs to read it.** Claim nothing and you get `JPP_SDK_KEY_BACK` whenever the user asks to go back, with the firmware deciding which physical gesture that was — settings-agnostic by construction.
 
-Force CENTER's "Back" trigger to always be a hold for your app, regardless of the system-wide Settings > Controls preference.
+Claim a gesture and it becomes yours: it arrives as `JPP_SDK_KEY_CENTER_HOLD` / `JPP_SDK_KEY_CENTER_DOUBLE`, `JPP_SDK_KEY_BACK` stops being delivered, and **your app is responsible for its own way out** (a pause menu, an on-screen Exit item). That is the trade for owning the gesture, and it applies whichever gesture you claimed.
 
-**Capability:** None
+Claiming *only* `HOLD` additionally keeps `JPP_SDK_KEY_CENTER` instant. Telling a double-click apart requires withholding the first click for a few hundred milliseconds; when nobody needs that distinction, nothing is withheld. This is the combination for an app where CENTER is a rapid action button and hold opens a pause menu:
 
 ```c
-jpp_sdk_status_t jpp_sdk_set_force_hold_back_gesture(jpp_sdk_context_t *ctx, bool force);
+jpp_sdk_claim_center(ctx, JPP_SDK_CENTER_CLAIM_HOLD);
+/* ... */
+switch (key) {
+case JPP_SDK_KEY_CENTER:      fire();       break;
+case JPP_SDK_KEY_CENTER_HOLD: pause_menu(); break;
+}
 ```
-```python
-jppsdk.set_force_hold_back_gesture(force: bool) -> None
-```
 
-**Parameters:**
+Never affects `UP`/`DOWN`/`LEFT`/`RIGHT`, and never affects the launcher or Settings. The claim lives on your context and is dropped when your app exits.
 
-| Name | Description |
-|------|-------------|
-| `force` | `true` evaluates CENTER as a hold (`JPP_KEYPAD_BACK_GESTURE_HOLD`) for your app's key stream no matter what Settings > Controls says; `false` (the default) follows the system-wide preference like any other app. |
-
-**Notes:** If your app overloads CENTER as a primary action button, the system's Double-click preference is actively harmful to it in two ways: every short click ("OK"/fire) is deferred a few hundred ms waiting to see if a second click follows, and two rapid taps of your action button can pair up into an accidental "Back". Forcing Hold mode removes both problems — fire is instant, and only a deliberate hold ever reaches you as `JPP_SDK_KEY_CENTER_LONG`. This changes what the shared keypad detector does while your app is foregrounded; it has no effect on the launcher or any other app, and reverts to the system preference automatically the moment your app exits. See also `set_back_gesture_enabled`, which controls delivery rather than the underlying gesture detection — the two can be combined.
-
----
+`JPP_SDK_KEY_BACK` is the preferred spelling of `JPP_SDK_KEY_CENTER_LONG` — the same value under a name that no longer implies a particular gesture. Existing code using `JPP_SDK_KEY_CENTER_LONG` is unaffected.
 
 ---
 
