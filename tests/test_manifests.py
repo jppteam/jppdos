@@ -39,7 +39,7 @@ def test_repo_app_manifests_are_valid():
         APPS_ROOT, check_entry_file=False, exclude=frozenset({"common"})
     )
     assert rejected == []
-    assert {app_id for app_id, _ in valid} == {"demoscene", "games", "meetapp", "mtproto", "testapp_mp", "testapp_native"}
+    assert {app_id for app_id, _ in valid} == {"demoscene", "games", "meetapp", "mtproto"}
 
 
 def test_sdcard_fixture_corpus_is_valid():

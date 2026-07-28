@@ -16,6 +16,7 @@ static const char *TAG = "backup_restore";
 #define NS_WEBDAV "jpp_webdav"
 #define NS_SOUND  "jpp_sound"
 #define NS_USER   "jpp_user"
+#define NS_INPUT  "jpp_input"
 
 bool jpp_backup_apply_json(const char *json_buf, char *msg, size_t msg_len)
 {
@@ -101,6 +102,17 @@ bool jpp_backup_apply_json(const char *json_buf, char *msg, size_t msg_len)
         nvs_open(NS_USER, NVS_READWRITE, &h) == ESP_OK) {
         cJSON *v = cJSON_GetObjectItem(nvs_user, "username");
         if (cJSON_IsString(v) && v->valuestring) { nvs_set_str(h, "username", v->valuestring); }
+        nvs_commit(h); nvs_close(h);
+    }
+
+    /* jpp_input */
+    cJSON *nvs_input = cJSON_GetObjectItem(root, "nvs_input");
+    if (cJSON_IsObject(nvs_input) &&
+        nvs_open(NS_INPUT, NVS_READWRITE, &h) == ESP_OK) {
+        cJSON *v = cJSON_GetObjectItem(nvs_input, "back_gesture");
+        if (cJSON_IsNumber(v) && ((int)v->valuedouble == 0 || (int)v->valuedouble == 1)) {
+            nvs_set_u8(h, "back_gesture", (uint8_t)(int)v->valuedouble);
+        }
         nvs_commit(h); nvs_close(h);
     }
 

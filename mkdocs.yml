@@ -12,6 +12,11 @@
 #     docker run --rm -v "$PWD:/project" jppd-docs build               # → ./site/
 # =============================================================================
 site_name: JPPDOS App Developer Guide
+# Where the built site is published (see .github/workflows/docs.yml, which
+# syncs it to the sdk-docs/ prefix of the docs bucket). Page links are relative,
+# so the site also works when served from anywhere else — but sitemap.xml is
+# generated empty without this, and canonical URLs depend on it.
+site_url: https://jppdevice.by.m4l3vi.ch/sdk-docs/
 site_description: >-
   Write apps for the J++Device — sandbox model, permission system, manifest
   schema, and a complete App SDK reference.

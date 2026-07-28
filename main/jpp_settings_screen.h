@@ -31,6 +31,7 @@ typedef enum {
     JPP_SETTINGS_SECTION_TIME,
     JPP_SETTINGS_SECTION_SLEEP_TIMERS,
     JPP_SETTINGS_SECTION_SOUND,       /* buzzer volume, startup jingle, test */
+    JPP_SETTINGS_SECTION_CONTROLS,    /* back button gesture: Hold / Double-click */
     JPP_SETTINGS_SECTION_SD_CARD,
     JPP_SETTINGS_SECTION_BACKUP,
     JPP_SETTINGS_SECTION_FACTORY_RESET,
@@ -122,6 +123,9 @@ typedef struct {
     uint8_t sound_volume_pct;       /* active volume: 0 / 25 / 50 / 75 / 100 */
     uint8_t sound_jingle;           /* selected startup jingle (jpp_startup_jingle_t) */
 
+    /* Controls section */
+    uint8_t back_gesture_mode;      /* jpp_keypad_back_gesture_t: 0=Hold, 1=Double-click */
+
     /* Device Info / LRV section */
     bool               lrv_has_data;
     jpp_lrv_subscreen_t lrv_ss;
@@ -172,6 +176,9 @@ typedef struct {
     /* Called when the user changes the startup jingle.  Persists to NVS.
        The new jingle is played immediately as a preview. */
     void (*do_jingle_change)(uint8_t jingle);
+    /* Called when the user changes the Back button gesture (Hold/Double-click
+       in the Controls section). Applies live and persists to NVS. */
+    void (*do_back_gesture_change)(uint8_t mode);
 
     /* Backup all settings (settings.json + NVS) to the SD card.
        Writes a human-readable result into state->backup_result_msg on return. */

@@ -14,6 +14,17 @@ extern "C" {
 #define JPP_KEYPAD_DEFAULT_POLL_INTERVAL_MS   100
 #define JPP_KEYPAD_DEFAULT_REPEAT_DELAY_MS    500
 #define JPP_KEYPAD_DEFAULT_REPEAT_INTERVAL_MS 500
+#define JPP_KEYPAD_DEFAULT_DOUBLE_CLICK_MS    300
+
+/* Which physical CENTER gesture the user has chosen to mean "Back".
+   This is a *policy* type: the detector below never reads it. It is owned by
+   the settings layer and resolved into a Back action by keypad_task in
+   main/app_main.c, which is the only place that knows both the user
+   preference and what the foreground app has claimed. */
+typedef enum {
+    JPP_KEYPAD_BACK_GESTURE_HOLD = 0,
+    JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK,
+} jpp_keypad_back_gesture_t;
 
 typedef enum {
     JPP_KEYPAD_KIND_NO_EVENT = 0,
@@ -22,6 +33,7 @@ typedef enum {
     JPP_KEYPAD_KIND_REPEAT,
     JPP_KEYPAD_KIND_CENTER_SHORT,
     JPP_KEYPAD_KIND_CENTER_LONG,
+    JPP_KEYPAD_KIND_CENTER_DOUBLE,
 } jpp_keypad_event_kind_t;
 
 typedef struct {
@@ -41,6 +53,13 @@ typedef struct {
     bool repeat_enabled;
     int repeat_delay_ms;
     int repeat_interval_ms;
+    /* When set, a short CENTER click is withheld for double_click_ms so a
+       second click can be reported as CENTER_DOUBLE instead. When clear,
+       CENTER_SHORT is emitted the moment the button is released and
+       CENTER_DOUBLE never fires. This is the only latency knob: pay for
+       double-click discrimination exactly when something needs it. */
+    bool detect_double_click;
+    int double_click_ms;
     const jpp_keypad_band_t *bands;
     size_t band_count;
 } jpp_keypad_config_t;
@@ -70,6 +89,14 @@ typedef struct {
     int last_repeat_ms;
     bool center_long_emitted;
     size_t sample_index;
+    /* A deferred short click waiting to see if a second click follows within
+       double_click_ms. Survives across the idle gap between two separate
+       press/release cycles, unlike press_started_ms above which
+       jpp_keypad_reset_hold_state() clears on every release. Flushed
+       immediately if detect_double_click is cleared while one is in flight,
+       so a mode change can never strand or replay a click. */
+    bool short_pending;
+    int pending_release_ms;
 } jpp_keypad_state_t;
 
 void jpp_keypad_state_init(jpp_keypad_state_t *state, const jpp_keypad_config_t *config);

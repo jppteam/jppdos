@@ -16,6 +16,7 @@ void meetapp_proof_build_message(
     const meetapp_proof_participant_t *participants,
     const uint8_t                      session_nonce[8],
     const char                        *timestamp,
+    const char                        *comment,
     char                              *out_msg,
     size_t                             out_msg_size,
     uint8_t                            out_hash[64]
@@ -30,7 +31,16 @@ void meetapp_proof_build_message(
     size_t off = 0u;
     off += snprintf(out_msg + off, out_msg_size - off,
                     "J++DEVICE PROOF OF MEETUP\n"
-                    "-----BEGIN MESSAGE-----\n"
+                    "-----BEGIN MESSAGE-----\n");
+
+    /* Optional leader note, rendered at the very top of the message body. */
+    if (comment != NULL && comment[0] != '\0' && off < out_msg_size) {
+        off += snprintf(out_msg + off, out_msg_size - off,
+                        "Comment: %s\n\n", comment);
+    }
+
+    if (off < out_msg_size) {
+        off += snprintf(out_msg + off, out_msg_size - off,
                     "This verifies that %zu devices' holders have met up in person on %s. "
                     "Message is signed by participants' J++Devices using MuSig2 algorithm.\n"
                     "Session nonce: %s\n\n"
@@ -38,6 +48,7 @@ void meetapp_proof_build_message(
                     n_participants,
                     timestamp,
                     nonce_hex);
+    }
 
     for (size_t i = 0u; i < n_participants && off < out_msg_size; i++) {
         char pk_hex[65];
@@ -63,12 +74,13 @@ bool meetapp_proof_save(jpp_sdk_context_t                 *ctx,
                         const meetapp_proof_participant_t *participants,
                         const uint8_t                      session_nonce[8],
                         const char                        *timestamp,
+                        const char                        *comment,
                         const uint8_t                      final_sig[JPP_CRYPTO_SIG_BYTES])
 {
     static char msg[MEETAPP_PROOF_MSG_MAX];
     uint8_t msg_hash[64];
     meetapp_proof_build_message(n_participants, participants,
-                                session_nonce, timestamp,
+                                session_nonce, timestamp, comment,
                                 msg, sizeof(msg), msg_hash);
 
     char sig_hex[129];

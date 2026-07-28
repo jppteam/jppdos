@@ -364,6 +364,21 @@ STATIC mp_obj_t mp_sdk_wait_key(mp_obj_t timeout_obj)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_wait_key_obj, mp_sdk_wait_key);
 
+/* claim_center(mask) → None */
+STATIC mp_obj_t mp_sdk_claim_center(mp_obj_t mask_obj)
+{
+    mp_int_t mask = mp_obj_get_int(mask_obj);
+    if (mask < 0 || mask > 0xFF) {
+        raise_sdk_error(JPP_SDK_STATUS_INVALID_ARGUMENT, NULL);
+    }
+    jpp_sdk_status_t st = jpp_sdk_claim_center(get_ctx(), (uint8_t)mask);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_claim_center_obj, mp_sdk_claim_center);
+
 /* -------------------------------------------------------------------------- */
 /* BLE — scan  (requires: ble.scan)                                           */
 /* -------------------------------------------------------------------------- */
@@ -1096,6 +1111,12 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_KEY_RIGHT),        MP_ROM_INT(JPP_SDK_KEY_RIGHT) },
     { MP_ROM_QSTR(MP_QSTR_KEY_CENTER),       MP_ROM_INT(JPP_SDK_KEY_CENTER) },
     { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_LONG),  MP_ROM_INT(JPP_SDK_KEY_CENTER_LONG) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_BACK),         MP_ROM_INT(JPP_SDK_KEY_BACK) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_HOLD),  MP_ROM_INT(JPP_SDK_KEY_CENTER_HOLD) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_DOUBLE), MP_ROM_INT(JPP_SDK_KEY_CENTER_DOUBLE) },
+    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_NONE),   MP_ROM_INT(JPP_SDK_CENTER_CLAIM_NONE) },
+    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_HOLD),   MP_ROM_INT(JPP_SDK_CENTER_CLAIM_HOLD) },
+    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_DOUBLE), MP_ROM_INT(JPP_SDK_CENTER_CLAIM_DOUBLE) },
 
     /* Core */
     { MP_ROM_QSTR(MP_QSTR_set_frame),       MP_ROM_PTR(&mp_sdk_set_frame_obj) },
@@ -1127,6 +1148,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* Input */
     { MP_ROM_QSTR(MP_QSTR_poll_key),        MP_ROM_PTR(&mp_sdk_poll_key_obj) },
     { MP_ROM_QSTR(MP_QSTR_wait_key),        MP_ROM_PTR(&mp_sdk_wait_key_obj) },
+    { MP_ROM_QSTR(MP_QSTR_claim_center),    MP_ROM_PTR(&mp_sdk_claim_center_obj) },
 
     /* High-level UI */
     { MP_ROM_QSTR(MP_QSTR_dialog),          MP_ROM_PTR(&mp_sdk_dialog_obj) },

@@ -189,19 +189,21 @@ bool meetapp_ble_exchange_sigs(jpp_sdk_context_t *ctx,
                                 const uint8_t *all_pubkeys,
                                 size_t n_total,
                                 const char *timestamp,
+                                const char *comment,
                                 const meetapp_proof_participant_t *participants)
 {
     jpp_broker_result_t result;
 
     /* Round-1.5 binary payload:
        [MEETAPP_RX_ROUND15][msg_hash[64]][agg_pubnonce[64]][n[1]][pubkeys[n*32]]
-       [timestamp[20]][nick[17] * n]
-       The nicknames+timestamp let each participant rebuild (and save) the exact
-       message the leader signed. Sent via jpp_ble_msg (auto-chunked), so it is
-       not bound by the 512-byte ATT attribute-value limit on a single write. */
+       [timestamp[20]][nick[17] * n][comment[101]]
+       The nicknames+timestamp+comment let each participant rebuild (and save) the
+       exact message the leader signed. Sent via jpp_ble_msg (auto-chunked), so it
+       is not bound by the 512-byte ATT attribute-value limit on a single write. */
     static uint8_t r15_bin[1u + 64u + 64u + 1u + MEETAPP_MAX_TOTAL * 32u
                            + MEETAPP_TS_FIELD_LEN
-                           + MEETAPP_MAX_TOTAL * MEETAPP_NICK_FIELD_LEN];
+                           + MEETAPP_MAX_TOTAL * MEETAPP_NICK_FIELD_LEN
+                           + MEETAPP_COMMENT_FIELD_LEN];
     r15_bin[0] = MEETAPP_RX_ROUND15;
     memcpy(&r15_bin[1],    msg_hash,    64u);
     memcpy(&r15_bin[65],   agg_pubnonce, 64u);
@@ -219,6 +221,13 @@ bool meetapp_ble_exchange_sigs(jpp_sdk_context_t *ctx,
                 MEETAPP_NICK_FIELD_LEN - 1u);
         off += MEETAPP_NICK_FIELD_LEN;
     }
+
+    memset(&r15_bin[off], 0, MEETAPP_COMMENT_FIELD_LEN);
+    if (comment != NULL) {
+        strncpy((char *)&r15_bin[off], comment, MEETAPP_COMMENT_FIELD_LEN - 1u);
+    }
+    off += MEETAPP_COMMENT_FIELD_LEN;
+
     size_t payload_len = off;
 
     for (size_t i = 0u; i < session->peer_count; i++) {
@@ -341,6 +350,7 @@ bool meetapp_ble_wait_round15(jpp_sdk_context_t *ctx,
                                size_t *n_total,
                                char out_timestamp[MEETAPP_TS_FIELD_LEN],
                                char out_nicknames[][MEETAPP_NICK_FIELD_LEN],
+                               char out_comment[MEETAPP_COMMENT_FIELD_LEN],
                                uint32_t timeout_ms)
 {
     static uint8_t rx_buf[JPP_SDK_BLE_HOST_RX_MAX];
@@ -353,16 +363,17 @@ bool meetapp_ble_wait_round15(jpp_sdk_context_t *ctx,
     }
 
     /* Expected: [MEETAPP_RX_ROUND15][msg_hash[64]][agg_pubnonce[64]][n][pubkeys]
-       [timestamp[20]][nick[17] * n]. */
+       [timestamp[20]][nick[17] * n][comment[101]]. */
     if (rx_len < 130u || rx_buf[0] != MEETAPP_RX_ROUND15) return false;
 
     size_t n = rx_buf[129];
     if (n == 0u || n > MEETAPP_MAX_TOTAL) return false;
 
     size_t pk_end = 130u + n * 32u;
-    size_t ts_start   = pk_end;
-    size_t nick_start = ts_start + MEETAPP_TS_FIELD_LEN;
-    size_t need       = nick_start + n * MEETAPP_NICK_FIELD_LEN;
+    size_t ts_start      = pk_end;
+    size_t nick_start    = ts_start + MEETAPP_TS_FIELD_LEN;
+    size_t comment_start = nick_start + n * MEETAPP_NICK_FIELD_LEN;
+    size_t need          = comment_start + MEETAPP_COMMENT_FIELD_LEN;
     if (rx_len < need) return false;
 
     memcpy(msg_hash,    &rx_buf[1],   64u);
@@ -378,6 +389,9 @@ bool meetapp_ble_wait_round15(jpp_sdk_context_t *ctx,
         memcpy(out_nicknames[i], src, MEETAPP_NICK_FIELD_LEN);
         out_nicknames[i][MEETAPP_NICK_FIELD_LEN - 1u] = '\0';
     }
+
+    memcpy(out_comment, &rx_buf[comment_start], MEETAPP_COMMENT_FIELD_LEN);
+    out_comment[MEETAPP_COMMENT_FIELD_LEN - 1u] = '\0';
     return true;
 }
 

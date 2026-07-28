@@ -10,6 +10,9 @@
 
 #define MEETAPP_PROOF_MSG_MAX 2048u
 
+/* Max length of the optional leader comment shown at the top of the proof. */
+#define MEETAPP_COMMENT_MAX 100u
+
 /*
  * A single participant entry for the proof, listed in all_pubkeys order.
  * The order must match the order used for MuSig2 key aggregation so that
@@ -26,12 +29,18 @@ typedef struct {
  * participants[] must be in the SAME order as the all_pubkeys array used for
  * MuSig2 operations (leader at index 0, then peers in discovery order).
  * out_msg must be at least MEETAPP_PROOF_MSG_MAX bytes.
+ *
+ * comment is the leader's optional free-text note rendered at the top of the
+ * proof; pass NULL or "" to omit the line. It is part of the signed message, so
+ * (like the nicknames and timestamp) it MUST be the leader's value on every
+ * participant — forwarded over round-1.5 — for the rebuilt hash to match.
  */
 void meetapp_proof_build_message(
     size_t                             n_participants,
     const meetapp_proof_participant_t *participants,
     const uint8_t                      session_nonce[8],
     const char                        *timestamp,
+    const char                        *comment,
     char                              *out_msg,
     size_t                             out_msg_size,
     uint8_t                            out_hash[64]
@@ -52,4 +61,5 @@ bool meetapp_proof_save(jpp_sdk_context_t                 *ctx,
                         const meetapp_proof_participant_t *participants,
                         const uint8_t                      session_nonce[8],
                         const char                        *timestamp,
+                        const char                        *comment,
                         const uint8_t                      final_sig[JPP_CRYPTO_SIG_BYTES]);

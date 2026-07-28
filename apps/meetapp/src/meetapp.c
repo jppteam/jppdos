@@ -768,6 +768,20 @@ static void run_leader(jpp_sdk_context_t *ctx,
         }
     }
 
+    /* Optional leader comment shown at the top of the proof. It is part of the
+       signed message and forwarded to every peer in round-1.5, so all rebuilt
+       proofs hash to what was signed. BACK or an empty entry means "no comment". */
+    char comment[MEETAPP_COMMENT_MAX + 1u];
+    comment[0] = '\0';
+    {
+        jpp_sdk_ui_result_t res = JPP_SDK_UI_BACK;
+        jpp_sdk_input(ctx, "Add comment?", NULL, JPP_SDK_INPUT_TEXT,
+                      comment, sizeof(comment), &res);
+        if (res == JPP_SDK_UI_BACK) {
+            comment[0] = '\0';
+        }
+    }
+
     /* Generate own MuSig2 nonce. */
     uint8_t my_secnonce[JPP_CRYPTO_MUSIG2_SECNONCE_BYTES];
     uint8_t my_pubnonce[JPP_CRYPTO_MUSIG2_PUBNONCE_BYTES];
@@ -824,7 +838,8 @@ static void run_leader(jpp_sdk_context_t *ctx,
     static char msg_text[MEETAPP_PROOF_MSG_MAX];
     uint8_t msg_hash[64];
     meetapp_proof_build_message(n_parts, participants, session.session_nonce,
-                                timestamp, msg_text, sizeof(msg_text), msg_hash);
+                                timestamp, comment, msg_text, sizeof(msg_text),
+                                msg_hash);
 
     /* Leader partial sig. */
     uint8_t my_partial_sig[JPP_CRYPTO_MUSIG2_PARTIAL_SIG_BYTES];
@@ -842,7 +857,7 @@ static void run_leader(jpp_sdk_context_t *ctx,
     sanim_h = bar_anim_start(&sanim, ctx);
     meetapp_ble_exchange_sigs(ctx, &session, msg_hash, agg_pubnonce,
                                all_pubkeys, n_total,
-                               timestamp, participants);
+                               timestamp, comment, participants);
     bar_anim_stop(&sanim, sanim_h);
 
     /* Aggregate all partial sigs: [leader, peer0, peer1, ...] */
@@ -869,7 +884,8 @@ static void run_leader(jpp_sdk_context_t *ctx,
     /* Save proof locally. */
     render_stepper(ctx, "SIGNING", identity->nickname, L_STEPS, 3u);
     bool saved = meetapp_proof_save(ctx, n_parts, participants,
-                                     session.session_nonce, timestamp, final_sig);
+                                     session.session_nonce, timestamp, comment,
+                                     final_sig);
 
     char ts_short[12];
     strncpy(ts_short, timestamp, 11u);
@@ -1010,12 +1026,13 @@ static void run_participant(jpp_sdk_context_t *ctx,
     size_t  n_total = 0u;
     char        leader_timestamp[MEETAPP_TS_FIELD_LEN];
     static char peer_nicknames[MEETAPP_MAX_TOTAL][MEETAPP_NICK_FIELD_LEN];
+    char        leader_comment[MEETAPP_COMMENT_FIELD_LEN];
 
     sanim_h = bar_anim_start(&sanim, ctx);
     bool got_round15 = meetapp_ble_wait_round15(ctx, msg_hash, agg_pubnonce,
                                                 all_pubkeys, &n_total,
                                                 leader_timestamp, peer_nicknames,
-                                                120000u);
+                                                leader_comment, 120000u);
     bar_anim_stop(&sanim, sanim_h);
     if (!got_round15) {
         jpp_sdk_ble_advertise_stop(ctx, &br);
@@ -1074,7 +1091,8 @@ static void run_participant(jpp_sdk_context_t *ctx,
     }
 
     bool saved = meetapp_proof_save(ctx, n_total, participants,
-                                    session_nonce, leader_timestamp, final_sig);
+                                    session_nonce, leader_timestamp,
+                                    leader_comment, final_sig);
 
     char ts_short[12];
     strncpy(ts_short, leader_timestamp, 11u);

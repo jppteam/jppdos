@@ -4,6 +4,31 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
+## Unreleased
+
+- **Choose how the Back button works.** `Settings > Controls` now offers a
+  device-wide choice between holding CENTER and double-clicking it to go back.
+  Hold stays the default and behaves exactly as before, including the instant
+  OK on a short click. Picking Double-click trades a short delay on OK (the
+  device has to wait and see whether a second click is coming) for a Back
+  gesture that doesn't require holding a button down.
+- **Apps can take CENTER over as a game button.** An app may now claim the
+  hold and/or double-click gesture as its own input, in which case it becomes
+  responsible for its own way out — useful for games where CENTER is a
+  rapid-fire action button and a stray double-tap shouldn't drop you out to
+  the launcher. Apps that don't claim anything keep receiving a single "back"
+  event and never have to care which gesture the user picked.
+
+- **App development split out into its own repository.** The `jppd-app-sdk`
+  Docker toolchain (`tools/app-sdk/`) and the two App SDK test apps
+  (`apps/testapp_native`, `apps/testapp_mp`) moved to
+  [`jppdos-apps`](https://github.com/jppteam/jppdos-apps), which also gains a
+  JPPD-SMP deploy tool with serial-port autodiscovery and a multiselect app
+  picker. That repo vendors this one as a submodule tracking `master`, purely
+  to build the SDK image — app developers need no firmware checkout at all.
+  Nothing about the on-device app format, the SDK surface, or the manifest
+  schema changed; `docs/` here remains the source of truth for all three.
+
 ## v1.0-RTM — 2026-07-18
 
 First tagged release. This build is the RTM (release to manufacturing)
