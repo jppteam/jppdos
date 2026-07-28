@@ -129,7 +129,7 @@ The alternative is to build your app *inside* the firmware tree (this is how the
 in-repo example apps build, and what you want when developing the firmware
 itself).
 
-Create `apps/my_app/CMakeLists.txt` following the pattern from an existing app (e.g. `apps/meetapp/CMakeLists.txt`). The custom target calls `build_shared.py`, which:
+Create `apps/my_app/CMakeLists.txt` following the pattern from an existing app (e.g. `apps/testapp_native/CMakeLists.txt`, the smallest single-binary example). The custom target calls `build_shared.py`, which:
 
 1. Reads `build/compile_commands.json` for the correct include paths
 2. Recompiles your sources as a RISC-V shared library (ELF32 ET_DYN)

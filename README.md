@@ -151,13 +151,20 @@ build menus from scratch.
 
 ➡️ **Start here: [App developer docs](docs/index.md)** — platform overview, MicroPython and native C guides, manifest reference, and a full SDK reference for every call.
 
-You do **not** need this repository to write an app. The build toolchain, the
-deploy tool, and the SDK test apps live in the separate
+You do **not** need this repository to write an app. The build toolchain and the
+deploy tool live in the separate
 [`jppdos-apps`](https://github.com/jppteam/jppdos-apps) repository: one
 `docker run` builds an app against a baked SDK sysroot, and `./deploy.py`
 uploads it over the serial protocol. Clone that instead — this repo is the
 firmware, and its `docs/` tree is the SDK documentation those apps are written
 against.
+
+What *does* live here is the reference app corpus under `apps/`, built by
+`idf.py build` alongside the firmware so it never drifts from the SDK surface it
+is written against: the two **SDK test apps** (`testapp_native`, `testapp_mp` —
+menu-driven exercises of every capability, in C and MicroPython), plus Games,
+DemoScene, and MeetApp. Read them for how a call is meant to be used; copy them
+as a starting point.
 
 ---
 

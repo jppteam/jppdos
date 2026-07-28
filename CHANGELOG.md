@@ -20,14 +20,20 @@ each build, not an API diff.
   event and never have to care which gesture the user picked.
 
 - **App development split out into its own repository.** The `jppd-app-sdk`
-  Docker toolchain (`tools/app-sdk/`) and the two App SDK test apps
-  (`apps/testapp_native`, `apps/testapp_mp`) moved to
+  Docker toolchain (`tools/app-sdk/`) moved to
   [`jppdos-apps`](https://github.com/jppteam/jppdos-apps), which also gains a
   JPPD-SMP deploy tool with serial-port autodiscovery and a multiselect app
   picker. That repo vendors this one as a submodule tracking `master`, purely
   to build the SDK image — app developers need no firmware checkout at all.
   Nothing about the on-device app format, the SDK surface, or the manifest
   schema changed; `docs/` here remains the source of truth for all three.
+- **The example apps stay with the firmware.** The two App SDK test apps
+  (`apps/testapp_native`, `apps/testapp_mp`) briefly moved out with the
+  toolchain and now live here again, alongside Games, DemoScene and MeetApp.
+  Keeping them in the firmware tree means they are rebuilt against the SDK on
+  every firmware build, so a showcase app cannot quietly fall behind the surface
+  it is demonstrating. Going the other way, the `mtproto` client skeleton — an
+  ordinary app rather than an SDK demonstration — now lives in `jppdos-apps`.
 
 ## v1.0-RTM — 2026-07-18
 
