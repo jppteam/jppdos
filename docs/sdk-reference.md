@@ -6,7 +6,7 @@
 |----------|-----------|
 | [Types and constants](#types-and-constants) | [`jpp_sdk_status_t`](#c--jpp_sdk_status_t) · [`jpp_sdk_key_event_t`](#c--jpp_sdk_key_event_t) · [Python constants](#python--jppsdk-constants) · [`jpp_broker_result_t`](#c--jpp_broker_result_t) |
 | [App control](#app-control) | [`set_frame`](#set_frame) · [`request_close`](#request_close) · [`log`](#log) · [`request_cap`](#request_cap-c-only) |
-| [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) |
+| [Key input](#key-input) | [`poll_key`](#poll_key) · [`wait_key`](#wait_key) · [`push_key`](#push_key-c-only) · [`claim_center`](#claim_center) |
 | [Canvas](#canvas) | [`canvas_write`](#canvas_write) · [`canvas_draw_pixel`](#canvas_draw_pixel) · [`canvas_clear`](#canvas_clear) · [`canvas_fullscreen`](#canvas_fullscreen) |
 | [UI helpers](#ui-helpers) | [`dialog`](#dialog) · [`list`](#list) · [`input`](#input) · [`confirm`](#confirm) · [`file_pick`](#file_pick) · [`wrap_text`](#wrap_text-c-only) |
 | [Wakelock](#wakelock) | [`wakelock_acquire`](#wakelock_acquire) · [`wakelock_release`](#wakelock_release) |
@@ -73,13 +73,23 @@ Unless otherwise noted, a Python binding raises `jppsdk.SdkError` on any non-OK 
 | `JPP_SDK_KEY_LEFT` | D-pad left |
 | `JPP_SDK_KEY_RIGHT` | D-pad right |
 | `JPP_SDK_KEY_CENTER` | D-pad center (short press) |
-| `JPP_SDK_KEY_CENTER_LONG` | D-pad center long-press — the universal "back/cancel" gesture |
+| `JPP_SDK_KEY_BACK` | The user asked to go back. Which physical gesture produced it (hold or double-click) depends on Settings > Controls and is not your app's concern. |
+| `JPP_SDK_KEY_CENTER_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value — kept so existing apps are unaffected |
+| `JPP_SDK_KEY_CENTER_HOLD` | Raw CENTER hold. Delivered only if claimed via [`claim_center`](#claim_center) |
+| `JPP_SDK_KEY_CENTER_DOUBLE` | Raw CENTER double-click. Delivered only if claimed via [`claim_center`](#claim_center) |
 
 ### Python — `jppsdk` constants
 
 ```python
 # Key events (match C enum values)
-KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_CENTER, KEY_CENTER_LONG
+KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_CENTER
+KEY_BACK, KEY_CENTER_LONG          # same value; KEY_BACK is preferred
+KEY_CENTER_HOLD, KEY_CENTER_DOUBLE # raw gestures, only if claimed
+
+# CENTER gesture claims (see claim_center)
+CENTER_CLAIM_NONE = 0
+CENTER_CLAIM_HOLD = 1
+CENTER_CLAIM_DOUBLE = 2
 
 # File open modes
 OPEN_READ = 0
@@ -264,6 +274,55 @@ Injects a synthetic key event into the queue. Useful for testing and for UI help
 ```c
 void jpp_sdk_push_key(jpp_sdk_context_t *ctx, jpp_sdk_key_event_t event);
 ```
+
+---
+
+### `claim_center`
+
+Take over CENTER gestures as your own input.
+
+**Capability:** None
+
+```c
+jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *ctx, uint8_t mask);
+```
+```python
+jppsdk.claim_center(mask: int) -> None
+```
+
+**Parameters:**
+
+| Name | Description |
+|------|-------------|
+| `mask` | Bitwise OR of `JPP_SDK_CENTER_CLAIM_HOLD` and `JPP_SDK_CENTER_CLAIM_DOUBLE`, or `JPP_SDK_CENTER_CLAIM_NONE` (the default on every bind). In MicroPython: `jppsdk.CENTER_CLAIM_HOLD`, `jppsdk.CENTER_CLAIM_DOUBLE`, `jppsdk.CENTER_CLAIM_NONE`. |
+
+**Behaviour:**
+
+| Claim | Your app receives | Back |
+|---|---|---|
+| *(nothing — the default)* | `KEY_CENTER` | `KEY_BACK` |
+| `HOLD` | `KEY_CENTER` + `KEY_CENTER_HOLD` | your own |
+| `DOUBLE` | `KEY_CENTER` + `KEY_CENTER_DOUBLE` | your own |
+| `HOLD \| DOUBLE` | `KEY_CENTER` + both | your own |
+
+**Notes:** The device has a user preference (Settings > Controls) for whether a long hold or a double-click means "Back". **Your app never needs to read it.** Claim nothing and you get `JPP_SDK_KEY_BACK` whenever the user asks to go back, with the firmware deciding which physical gesture that was — settings-agnostic by construction.
+
+Claim a gesture and it becomes yours: it arrives as `JPP_SDK_KEY_CENTER_HOLD` / `JPP_SDK_KEY_CENTER_DOUBLE`, `JPP_SDK_KEY_BACK` stops being delivered, and **your app is responsible for its own way out** (a pause menu, an on-screen Exit item). That is the trade for owning the gesture, and it applies whichever gesture you claimed.
+
+Claiming *only* `HOLD` additionally keeps `JPP_SDK_KEY_CENTER` instant. Telling a double-click apart requires withholding the first click for a few hundred milliseconds; when nobody needs that distinction, nothing is withheld. This is the combination for an app where CENTER is a rapid action button and hold opens a pause menu:
+
+```c
+jpp_sdk_claim_center(ctx, JPP_SDK_CENTER_CLAIM_HOLD);
+/* ... */
+switch (key) {
+case JPP_SDK_KEY_CENTER:      fire();       break;
+case JPP_SDK_KEY_CENTER_HOLD: pause_menu(); break;
+}
+```
+
+Never affects `UP`/`DOWN`/`LEFT`/`RIGHT`, and never affects the launcher or Settings. The claim lives on your context and is dropped when your app exits.
+
+`JPP_SDK_KEY_BACK` is the preferred spelling of `JPP_SDK_KEY_CENTER_LONG` — the same value under a name that no longer implies a particular gesture. Existing code using `JPP_SDK_KEY_CENTER_LONG` is unaffected.
 
 ---
 

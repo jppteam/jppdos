@@ -334,6 +334,8 @@ void jpp_sdk_context_init(jpp_sdk_context_t *context)
         return;
     }
     memset(context, 0, sizeof(*context));
+    /* memset leaves center_claim == JPP_SDK_CENTER_CLAIM_NONE, so every app
+       starts out with the system-managed Back gesture. */
     context->key_queue = xQueueCreate(8u, sizeof(jpp_sdk_key_event_t));
 }
 
@@ -2547,6 +2549,17 @@ void jpp_sdk_push_key(jpp_sdk_context_t *context, jpp_sdk_key_event_t event)
     }
     /* Non-blocking: drop if full — the main loop never blocks on this. */
     xQueueSendToBack(context->key_queue, &event, 0);
+}
+
+jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *context, uint8_t mask)
+{
+    jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
+    if (status != JPP_SDK_STATUS_OK) { return status; }
+    if ((mask & ~(JPP_SDK_CENTER_CLAIM_HOLD | JPP_SDK_CENTER_CLAIM_DOUBLE)) != 0u) {
+        return JPP_SDK_STATUS_INVALID_ARGUMENT;
+    }
+    context->center_claim = mask;
+    return JPP_SDK_STATUS_OK;
 }
 
 /* -------------------------------------------------------------------------- */

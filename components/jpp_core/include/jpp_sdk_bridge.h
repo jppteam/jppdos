@@ -465,7 +465,23 @@ typedef enum {
     JPP_SDK_KEY_RIGHT,
     JPP_SDK_KEY_CENTER,
     JPP_SDK_KEY_CENTER_LONG,
+    /* Raw CENTER gestures, delivered only to apps that claimed them via
+       jpp_sdk_claim_center(). Appended deliberately: native apps are
+       separately-built ELFs, so these values must never be renumbered. */
+    JPP_SDK_KEY_CENTER_HOLD,
+    JPP_SDK_KEY_CENTER_DOUBLE,
+    /* Preferred spelling of the semantic "user wants to go back" event. Same
+       value as JPP_SDK_KEY_CENTER_LONG, which predates the Settings > Controls
+       preference and is kept so existing apps and binaries are unaffected. */
+    JPP_SDK_KEY_BACK = JPP_SDK_KEY_CENTER_LONG,
 } jpp_sdk_key_event_t;
+
+/* Bits for jpp_sdk_claim_center(). Claiming a gesture takes it over as your
+   own input; claiming anything at all means JPP_SDK_KEY_BACK is no longer
+   delivered and your app owns its exit. */
+#define JPP_SDK_CENTER_CLAIM_NONE   0x00u
+#define JPP_SDK_CENTER_CLAIM_HOLD   0x01u
+#define JPP_SDK_CENTER_CLAIM_DOUBLE 0x02u
 
 /* ---- High-level UI abstractions ----------------------------------------- */
 /*
@@ -529,6 +545,11 @@ typedef struct {
     char pending_cap_strs[JPP_SDK_PENDING_CAP_MAX][32];
     int  pending_cap_tiers[JPP_SDK_PENDING_CAP_MAX];
     size_t pending_cap_count;
+    /* CENTER gestures this app has taken over; see jpp_sdk_claim_center().
+       New fields go here, at the tail: app binaries are built separately and
+       loaded from SD, so inserting above this point shifts every offset they
+       were compiled against. */
+    uint8_t center_claim;
 } jpp_sdk_context_t;
 
 void jpp_sdk_context_init(jpp_sdk_context_t *context);
@@ -972,6 +993,31 @@ jpp_sdk_status_t jpp_sdk_wait_key(jpp_sdk_context_t *context, uint32_t timeout_m
 
 /* Called by the main loop to push a key event into the active app's queue. */
 void jpp_sdk_push_key(jpp_sdk_context_t *context, jpp_sdk_key_event_t event);
+
+/*
+ * Ungated — take over CENTER gestures as your own input.
+ *
+ * `mask` is a bitwise OR of JPP_SDK_CENTER_CLAIM_HOLD / _DOUBLE, or
+ * JPP_SDK_CENTER_CLAIM_NONE (the default on every bind) to leave CENTER
+ * alone. The rule is:
+ *
+ *   claim nothing  →  you get JPP_SDK_KEY_CENTER and JPP_SDK_KEY_BACK.
+ *                     The firmware decides which physical gesture means Back
+ *                     from the user's Settings > Controls preference; your
+ *                     code never sees that choice.
+ *   claim anything →  the claimed gestures arrive as JPP_SDK_KEY_CENTER_HOLD
+ *                     / _DOUBLE, JPP_SDK_KEY_BACK is no longer delivered, and
+ *                     your app is responsible for its own way out.
+ *
+ * Claiming only HOLD also keeps JPP_SDK_KEY_CENTER instant: nothing then
+ * needs to tell a double-click apart, so the short click is never withheld
+ * to wait for a second one. That is the combination to use for an app where
+ * CENTER is a rapid action button ("fire") and hold opens a pause menu.
+ *
+ * Never affects UP/DOWN/LEFT/RIGHT, and never affects the launcher or
+ * Settings — the claim lives on your context and is dropped when you exit.
+ */
+jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *context, uint8_t mask);
 
 /* ---- High-level UI helpers (no capability required) ---------------------- */
 
