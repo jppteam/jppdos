@@ -37,12 +37,43 @@ narrows the set of devices that will run your app.
 |-----------|---------|-------|
 | `1` | every shipped unit | The safe default |
 | `2` | firmware v1.1 and later | Required for TLS, outbound TCP, crypto, and CENTER claims |
+| `3` | *no released firmware yet* | Required only for `wrap_text` |
+
+---
+
+## Level 3
+
+**Unreleased** · open
+
+!!! warning "No firmware has shipped this level yet."
+    An app declaring `sdk_min: 3` will be rejected with `SDK_TOO_OLD` on every
+    unit in the field, including v1.1. Do not ship one until a firmware release
+    exports level 3.
+
+### `jpp_sdk_wrap_text` became callable
+
+[`wrap_text`](sdk/display.md#wrap_text) was declared in the level-1 header and
+documented as a native SDK call from v1.0-RTM onward, but it was never listed in
+the firmware's native symbol table — so a native app that called it was rejected
+at launch with `UNRESOLVED_SYM`. It now resolves.
+
+This is the same defect that affected [`confirm`](#jpp_sdk_confirm-became-callable)
+at level 2, and it is handled the same way: the surface genuinely changed from
+an app's point of view, so it mints a level rather than being folded into a
+closed one. If your native app calls `wrap_text`, declare `sdk_min: 3` — a
+level-2 device cannot run it regardless of what the level-1 header advertised.
+
+- No capability — pure computation on caller-supplied buffers.
+- New symbol in `s_symtab`: `jpp_sdk_wrap_text`. The function itself is
+  unchanged; only its reachability from a loaded app binary is new.
+- **C only.** MicroPython apps are unaffected — they never resolve symbols
+  through `s_symtab`.
 
 ---
 
 ## Level 2
 
-**Firmware v1.1** · released 2026-07-29 · **current**
+**Firmware v1.1** · released 2026-07-29
 
 Three independent additions plus the input-gesture work landed in the same
 release, so they all share one level.
@@ -165,8 +196,23 @@ does not need a level-2 feature:
     had ever exported it — no app could have been built against a partial
     version of it. That window is now shut. Level 2 shipped in v1.1 and is
     **closed**: folding a fifth addition into it would leave `sdk_min: 2`
-    meaning two different surfaces in the field. The next addition to the
-    surface mints level 3.
+    meaning two different surfaces in the field.
+
+    **Level 3 is currently open.** No firmware has shipped it, so further
+    additions made before the next release belong in level 3 — do not mint
+    level 4 for them.
+
+Pick the number as **(last released level) + 1**, not (master + 1) and not the
+next unused integer. A level is closed by a *release*, not by being merged, so
+every branch in flight targets the same number and they converge by
+construction. Two branches that both mint level 3 merge cleanly to `3`.
+
+!!! warning "Re-target your level if a release lands while your branch is open."
+    This is the one case git cannot catch: both sides agree on the number, so
+    the merge succeeds silently and your addition ends up inside a level that
+    has already shipped — reintroducing the `UNRESOLVED_SYM` class of bug with
+    no up-front rejection. Rebasing past a release means re-checking this
+    number by hand.
 
 When you do add to the surface:
 

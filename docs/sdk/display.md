@@ -330,6 +330,11 @@ There is no direct Python equivalent; use `file_open` with a known path for Micr
 
 ### `wrap_text` (C only) { #wrap_text }
 
+!!! info "Requires SDK level 3 · C only"
+    Declared since level 1 but only callable from a loaded app binary at level
+    3. On a level-1 or level-2 device a native app calling it is rejected at
+    launch with `UNRESOLVED_SYM`, so declare `sdk_min: 3` if you use it.
+
 Word-wrap a string into fixed-width frame lines.
 
 ```c
@@ -339,12 +344,5 @@ size_t jpp_sdk_wrap_text(const char *text,
 ```
 
 **Returns:** Number of lines produced. Use this to split a long message before passing it to `set_frame` or a modal helper.
-
-!!! danger "Not callable from a loaded app binary."
-    `jpp_sdk_wrap_text` is compiled into the firmware but is **absent from the
-    native symbol table**, so a native app that calls it is rejected at launch
-    with `UNRESOLVED_SYM`. Until that is fixed, wrap text in your own code.
-    (Firmware-side: add it to `s_symtab` in
-    `components/jpp_native_loader_core/src/jpp_native_symtab.c`.)
 
 ---

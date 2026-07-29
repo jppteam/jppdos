@@ -60,7 +60,7 @@ fields are ignored, so declaring it never affects loading or capabilities.
 ### `sdk_min`
 
 **Required.** The minimum SDK API level the app needs, as an integer `≥ 1`. The
-firmware exports one SDK level (`JPP_SDK_VERSION`, currently **2**); the loader
+firmware exports one SDK level (`JPP_SDK_VERSION`, currently **3**); the loader
 rejects an app whose `sdk_min` is greater than the running level with
 `SDK_TOO_OLD`. There is no upper bound: the SDK surface only ever grows in a
 backward-compatible way, so an app built for an older level keeps running on
@@ -71,9 +71,13 @@ capability your app uses:
 |-----------|-----------------------|----------------|
 | `1` | the original SDK surface | v1.0-RTM |
 | `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · CENTER gesture claims (`claim_center`, `KEY_BACK`, `KEY_CENTER_HOLD`/`_DOUBLE`) · `jpp_sdk_confirm` from a native app | v1.1 |
+| `3` | `jpp_sdk_wrap_text` from a native app | *unreleased* |
 
 Declaring `sdk_min: 2` means the app will not load on a v1.0-RTM device. If you
 only use the original surface, leave it at `1` so the app runs on every unit.
+
+Level 3 is **not yet in any released firmware**, so an app declaring `sdk_min: 3`
+is rejected with `SDK_TOO_OLD` on every unit currently in the field.
 
 The [SDK changelog](sdk-changelog.md) documents each level in full.
 

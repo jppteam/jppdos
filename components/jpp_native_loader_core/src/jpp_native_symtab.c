@@ -66,6 +66,7 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_input",                 (void *)jpp_sdk_input                 },
     { "jpp_sdk_confirm",               (void *)jpp_sdk_confirm               },
     { "jpp_sdk_file_pick",             (void *)jpp_sdk_file_pick             },
+    { "jpp_sdk_wrap_text",             (void *)jpp_sdk_wrap_text             },
 
     /* Key input */
     { "jpp_sdk_poll_key",              (void *)jpp_sdk_poll_key              },

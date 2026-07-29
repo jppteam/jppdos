@@ -4,6 +4,25 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
+## Unreleased
+
+### App SDK & platform
+
+- **A documented SDK call that never actually worked now works.** `wrap_text`,
+  the helper that splits a long string into display-width lines, has been listed
+  in the App Developer Guide as a native-app call since v1.0-RTM — but it was
+  missing from the table the firmware uses to hand functions to apps, so any
+  native app that called it was refused at launch with `UNRESOLVED_SYM`. It now
+  loads and runs. Nothing about the function itself changed; it simply became
+  reachable. This is the same defect that affected the `confirm` dialog helper
+  in v1.1.
+
+  This raises the App SDK to level **3**. Apps that use `wrap_text` should
+  declare `sdk_min: 3` — and note that until a firmware carrying level 3 is
+  released, such an app will not load on any unit in the field. Every existing
+  app is unaffected: the surface only grows, so anything built for level 1 or 2
+  keeps running untouched.
+
 ## v1.1 — 2026-07-29
 
 The first feature release after RTM. The headline is **App SDK level 2**, which
