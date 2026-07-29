@@ -2,7 +2,10 @@
 
 **J++Device Serial Management Protocol v1** — a binary protocol over the device's native USB port for host-side tools (PC clients, the JPPD desktop app) to manage files on the SD card, query device information, and retrieve LRV verification data.
 
-This document is for authors of **host-side tooling**. It is not needed to write apps.
+!!! info "This page is for host-tooling authors."
+    You do not need any of it to write apps for the device — that's the
+    [App Developer Guide](index.md). This is the wire protocol a PC-side tool
+    speaks to the device over USB.
 
 A ready-made upload script ships with the firmware: `scripts/jppd_upload.py` uploads a built app artifact directory to the device SD card using the commands described here. Run `python3 scripts/jppd_upload.py --help` for usage.
 
@@ -53,6 +56,11 @@ Every message — in both directions — is wrapped in the same envelope:
 ```
 
 ---
+
+!!! danger "Every session needs physical consent."
+    `SESSION_START` puts a Deny/Allow dialog on the device's OLED and blocks
+    until someone presses a button. There is no way for a host tool to open a
+    session unattended, and no app may be running while one is open.
 
 ## Session lifecycle
 
@@ -276,7 +284,10 @@ Apply a JPPDOS settings backup file that already resides on the SD card. The hos
 
 Returns `ERR_NOT_FOUND` if the path does not exist, `ERR_OVERFLOW` if the file exceeds 8 KB, `ERR_INVALID` if the file is not a valid backup, `ERR_IO` if applying fails.
 
-> **Note:** backups do **not** contain LRV identity data. LRV lives on the external AT24C32 EEPROM and is provisioned once at manufacturing (see `PROVISION_LRV`).
+!!! warning "Backups do not contain LRV identity data."
+    The LRV identity lives on the external AT24C32 EEPROM and is provisioned
+    once at manufacturing (see `PROVISION_LRV`). It survives a factory reset and
+    a full reflash, and it is neither backed up nor restored.
 
 ---
 

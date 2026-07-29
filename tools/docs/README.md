@@ -32,20 +32,33 @@ mkdocs build        # → ./site/
 
 ## Notes
 
+- **The local preview lives under `/sdk-docs/`, not `/`.** `mkdocs serve` mounts
+  the site at the path component of `site_url`, so open
+  <http://localhost:8000/sdk-docs/>. A bare `http://localhost:8000/` 302s and
+  every deep link under it 404s — that is configuration, not a broken build.
 - **Nav** is defined in `mkdocs.yml`. Add a page there when you add a doc under
   `docs/`, or it won't appear in the sidebar.
 - **`docs/sdk-expansion.md`** is a firmware-internal design doc and is excluded
   from the published site (`exclude_docs` in `mkdocs.yml`).
-- **Anchors:** the docs' hand-written `#anchor` links target GitHub's slug
-  algorithm, so `mkdocs.yml` uses a GitHub-compatible `toc.slugify`. Two classes
-  of link can't be reconciled by config and land at the top of the page on the
-  site (they still work, or are already broken, on GitHub):
-  - duplicate-heading anchors (GitHub `-1`, Python-Markdown `_1`) — e.g.
-    `#capabilities-1` in `manifest.md`;
-  - links to sub-anchors that were never real headings (broken on GitHub too) —
-    e.g. `#shared_read`, `#jpp_sdk_module_load` in `sdk-reference.md`.
-  Fixing these means editing the source docs (which improves GitHub rendering
-  too); it is intentionally not done automatically here.
+- **Check your links.** `mkdocs build --strict` reports every intra-doc anchor
+  that doesn't resolve. Run it after touching `docs/`; it currently passes clean.
+  Where a heading's own text would produce an awkward slug — anything suffixed
+  `(C only)`, or a duplicate like `manifest.md`'s two `capabilities` headings —
+  the anchor is pinned explicitly with `attr_list` (`### \`foo\` (C only) { #foo }`)
+  rather than left to the slugifier.
+- **The extension list is dictated by the theme, not by preference.** See the
+  comment block above `markdown_extensions` in `mkdocs.yml` before changing it.
+  In short: `codehilite` rather than `pymdownx.highlight`/`superfences`, because
+  the theme's CSS targets the `.codehilite` wrapper class; and
+  `pymdownx.blocks.tab` *without* `alternate_style`, because the theme styles
+  only the legacy radio-input tab markup and ships no JS to drive the button
+  variant. Swapping either produces a build that succeeds and a page that looks
+  broken.
+- **Admonition titles render inline with the first body paragraph** (a theme
+  rule: `.admonition > p:first-child, .admonition > p:nth-child(2) { display: inline }`).
+  End every `!!! type "Title"` with terminal punctuation, or the title runs into
+  the body mid-sentence. Only `note`, `info`, `success`, `warning`, and `danger`
+  have real styling; other types silently fall back to a plain box.
 - **Publishing** is handled by [`.github/workflows/docs.yml`](../../.github/workflows/docs.yml):
   every push to `master` touching `docs/`, `mkdocs.yml`, or `tools/docs/` builds
   the site and syncs it to the `sdk-docs/` prefix of the docs bucket, serving

@@ -1,13 +1,5 @@
 # Manifest reference
 
-**Contents:**
-
-- [Schema v2 — field reference](#schema-v2--complete-field-reference): [`schema_version`](#schema_version) · [`app_id`](#app_id) · [`name`](#name) · [`version`](#version) · [`author`](#author) · [`sdk_min`](#sdk_min) · [`app_type`](#app_type) · [`entry`](#entry) · [`capabilities`](#capabilities) · [`background`](#background) · [`toolchain`](#toolchain)
-- [Capabilities](#capabilities-1): [Capability table](#capability-table) · [Ungated surface](#ungated-surface-no-capability-needed)
-- [Complete examples](#complete-examples)
-
----
-
 Every app package contains a `manifest.json` that tells the firmware who the app is, how to run it, what permissions it needs, and whether it can run background tasks. The firmware validates the manifest before the app appears in the launcher; invalid manifests are silently rejected.
 
 ---
@@ -68,20 +60,26 @@ fields are ignored, so declaring it never affects loading or capabilities.
 ### `sdk_min`
 
 **Required.** The minimum SDK API level the app needs, as an integer `≥ 1`. The
-firmware exports one SDK level (`JPP_SDK_VERSION`, currently **2**); the loader
+firmware exports one SDK level (`JPP_SDK_VERSION`, currently **3**); the loader
 rejects an app whose `sdk_min` is greater than the running level with
 `SDK_TOO_OLD`. There is no upper bound: the SDK surface only ever grows in a
 backward-compatible way, so an app built for an older level keeps running on
 newer firmware. Declare the lowest level that provides every SDK symbol and
 capability your app uses:
 
-| `sdk_min` | Requires firmware providing | Since firmware |
-|-----------|-----------------------------|----------------|
+| `sdk_min` | Declare it if you use | Since firmware |
+|-----------|-----------------------|----------------|
 | `1` | the original SDK surface | v1.0-RTM |
-| `2` | outbound TCP (`net_connect`, capability `network.connect`), the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`), and TLS-verified HTTP (`https_request`, capability `https.request`) | v1.1 |
+| `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · CENTER gesture claims (`claim_center`, `KEY_BACK`, `KEY_CENTER_HOLD`/`_DOUBLE`) · `jpp_sdk_confirm` from a native app | v1.1 |
+| `3` | `jpp_sdk_wrap_text` from a native app | *unreleased* |
 
 Declaring `sdk_min: 2` means the app will not load on a v1.0-RTM device. If you
 only use the original surface, leave it at `1` so the app runs on every unit.
+
+Level 3 is **not yet in any released firmware**, so an app declaring `sdk_min: 3`
+is rejected with `SDK_TOO_OLD` on every unit currently in the field.
+
+The [SDK changelog](sdk-changelog.md) documents each level in full.
 
 ### `app_type`
 
@@ -98,11 +96,11 @@ only use the original surface, leave it at `1` so the app runs on every unit.
 - MicroPython: usually `"main.mpy"`
 - Native: usually `"<app_id>.bin"`
 
-### `capabilities`
+### `capabilities` { #field-capabilities }
 
 **Optional.** Array of capability strings the app may use. Only declared capabilities can be granted. An app may declare up to 16 capabilities.
 
-See the [Capabilities](#capabilities-1) section below for the full list.
+See [Capabilities](#capabilities) below for the full list.
 
 ### `background`
 
@@ -155,25 +153,37 @@ Capabilities are declared in the `capabilities` array. The user is prompted for 
 
 There are **two tiers** of consent:
 
-**Tier 1 — one-time grant, persisted.** The user sees the prompt once. If they allow it, the grant is saved to `/data/grants/<app_id>.json` and the app will not be asked again on future launches. If denied, the SDK call returns an error and the app keeps running.
+!!! info "Tier 1 — one-time grant, persisted."
+    The user sees the prompt once. If they allow it, the grant is saved to
+    `/data/grants/<app_id>.json` and the app is not asked again on future
+    launches. If denied, the SDK call returns an error and the app keeps
+    running.
 
-**Tier 2 — per-session grant, not persisted.** The user sees the prompt once per launch. If denied, the SDK call errors; if allowed, it stays allowed until the app exits.
+!!! warning "Tier 2 — per-session grant, never persisted."
+    The user sees the prompt once per launch. If denied, the SDK call errors; if
+    allowed, it stays allowed until the app exits — and is asked again next
+    time.
+
+!!! danger "A denied capability is a normal outcome."
+    The user can say no to anything, at any time, and your app keeps running.
+    Handle `ACCESS_DENIED` / `SdkPermissionError` by degrading — showing a
+    message, disabling a feature — never by crashing.
 
 ### Capability table
 
-| Capability | Tier | What it unlocks |
-|------------|------|-----------------|
-| `http.request` | 1 | Broker-serialized HTTP GET and POST requests via `http_request` (cleartext only) |
-| `https.request` | 1 | TLS-verified HTTPS requests via `https_request` (SDK v2). **Additionally prompts once per origin** — see below |
-| `ble.scan` | 1 | Passive BLE scan — discover nearby devices, read advertisement payloads and RSSI |
-| `ble.advertise` | 1 | Broadcast a raw BLE advertisement payload; also enables `ble_set_connectable` |
-| `background.register` | 1 | Enroll the manifest's `background.tasks` schedule for headless background execution |
-| `esp_now` | 1 | Send and receive ESP-NOW packets (`espnow_send`/`espnow_recv`) |
-| `files.full` | 2 | Full SD card access via `file_open` — each path the app opens gets its own per-path approval prompt |
-| `network.bind` | 2 | Open a TCP server socket: one listener, up to 2 accepted connections |
-| `network.connect` | 2 | Open an outbound TCP connection via `net_connect` (SDK v2); shares the connection table with `network.bind` |
-| `ble.connect` | 2 | GATT client: connect to a BLE peripheral, read and write characteristics |
-| `ble.host` | 2 | GATT server: register one service and accept inbound BLE connections |
+| Capability | Tier | `sdk_min` | What it unlocks |
+|------------|------|-----------|-----------------|
+| `http.request` | 1 | 1 | Broker-serialized HTTP GET and POST requests via [`http_request`](sdk/network.md#http_request) (cleartext only) |
+| `https.request` | 1 | **2** | TLS-verified HTTPS requests via [`https_request`](sdk/network.md#https_request). **Additionally prompts once per origin** — see below |
+| `ble.scan` | 1 | 1 | Passive BLE scan — discover nearby devices, read advertisement payloads and RSSI |
+| `ble.advertise` | 1 | 1 | Broadcast a raw BLE advertisement payload; also enables `ble_set_connectable` |
+| `background.register` | 1 | 1 | Enroll the manifest's `background.tasks` schedule for headless background execution |
+| `esp_now` | 1 | 1 | Send and receive ESP-NOW packets ([`espnow_send`](sdk/wireless.md#espnow_send)/[`espnow_recv`](sdk/wireless.md#espnow_recv)) |
+| `files.full` | 2 | 1 | Full SD card access via [`file_open`](sdk/storage.md#file_open) — each path the app opens gets its own per-path approval prompt |
+| `network.bind` | 2 | 1 | Open a TCP server socket: one listener, up to 2 accepted connections |
+| `network.connect` | 2 | **2** | Open an outbound TCP connection via [`net_connect`](sdk/network.md#net_connect); shares the connection table with `network.bind` |
+| `ble.connect` | 2 | 1 | GATT client: connect to a BLE peripheral, read and write characteristics |
+| `ble.host` | 2 | 1 | GATT server: register one service and accept inbound BLE connections |
 
 Declaring a capability that is not in this table causes the manifest to be rejected with `INVALID_CAPABILITY`.
 
@@ -196,7 +206,9 @@ These work in every app, with no manifest declaration and no user prompt:
 - Buzzer: `buzzer_play`, `buzzer_tone`, `buzzer_play_sequence`, `buzzer_play_sequence_async`, `buzzer_stop`
 - LED: `led_set_color`, `led_off` (onboard WS2812 pixel)
 - Wakelock: `wakelock_acquire`, `wakelock_release`
-- Device info: `device_status`, `get_time`
+- Device info: `device_status`, `get_time`, `is_dummy_mode`
+- CENTER gesture claims: `claim_center` (SDK level 2)
+- Crypto primitives: `jpp_crypto_sha256`/`sha1`, `aes256_ige_*`, `modexp`/`rsa_encrypt`/`dh_compute` (SDK level 2, C only)
 - Scoped file I/O: `file_read`, `file_write`, `file_list` (sandboxed to `/sd/apps/<app_id>/`)
 - Shared file I/O: `shared_read`, `shared_write`, `shared_list` (sandboxed to `/sd/shared/<app_id>/`)
 - Key-value store: `kv_get`, `kv_set`, `kv_delete`

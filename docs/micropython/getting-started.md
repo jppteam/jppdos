@@ -1,16 +1,18 @@
 # MicroPython app development
 
-**Contents:** [Prerequisites](#prerequisites) · [App layout](#app-layout) · [App skeleton](#app-skeleton) · [Key constants](#key-constants) · [Error handling](#error-handling) · [Compiling](#compiling) · [Deploying](#deploying) · [Complete example](#complete-example-weather-display) · [Tips](#tips)
-
----
-
 MicroPython is the easiest way to build apps for the J++Device. You write Python, compile it once with `mpy-cross`, and copy the resulting file to the SD card. No Docker, no C toolchain, no firmware build step.
 
 ---
 
 ## Prerequisites
 
-Install `mpy-cross` version **1.28.0** exactly — the firmware checks the bytecode ABI version and will reject `.mpy` files compiled with a different version:
+!!! danger "The `mpy-cross` version must match exactly."
+    The firmware checks the bytecode ABI version declared in the manifest's
+    [`toolchain` block](../manifest.md#toolchain) against the `.mpy` you shipped.
+    A file compiled with any other version of `mpy-cross` fails that check and
+    the app will not load.
+
+Install `mpy-cross` version **1.28.0** exactly:
 
 ```bash
 pip install mpy-cross==1.28.0
@@ -92,7 +94,12 @@ def on_task(name):
         pass
 ```
 
-Background runs have no UI, no key events, and no consent prompts. Only Tier-1 capabilities that the user previously granted are available. Do your work and return within the 30-second quota.
+!!! danger "Background runs are headless and time-boxed."
+    No UI, no key events, and no consent prompts — every permission request is
+    denied outright, so only tier-1 capabilities the user granted in a previous
+    *foreground* launch are usable. Do your work and return within the
+    **30-second quota**; a task that overruns is killed by restarting the
+    device.
 
 ---
 
@@ -107,8 +114,17 @@ jppsdk.KEY_DOWN
 jppsdk.KEY_LEFT
 jppsdk.KEY_RIGHT
 jppsdk.KEY_CENTER        # d-pad center press
-jppsdk.KEY_CENTER_LONG   # d-pad center long-press (= BACK)
+jppsdk.KEY_BACK          # the user asked to go back
+jppsdk.KEY_CENTER_LONG   # older name for KEY_BACK, same value
 ```
+
+!!! info "`KEY_BACK`, not `KEY_CENTER_LONG`."
+    The two are the same value, so existing code is unaffected — but the name
+    matters. Which *physical* gesture means "back" is a user preference
+    (Settings → Controls: hold, or double-click), and your app never sees which
+    one it was. `KEY_BACK` says what happened; `KEY_CENTER_LONG` guesses how.
+    `KEY_BACK` needs [`sdk_min: 2`](../sdk-changelog.md); `KEY_CENTER_LONG`
+    works at every level.
 
 ---
 
@@ -121,7 +137,9 @@ The `jppsdk` module raises two exception types:
 | `jppsdk.SdkError` | Any non-OK status from the SDK (invalid argument, I/O error, etc.) |
 | `jppsdk.SdkPermissionError` | Capability not granted — a subclass of `SdkError` |
 
-Handle permission errors gracefully: show the user a message and degrade, do not crash:
+!!! warning "Handle permission errors gracefully."
+    The user can deny any capability, at any time. Show a message and degrade —
+    never let a denial crash the app.
 
 ```python
 def on_start(self):
@@ -147,12 +165,13 @@ mpy-cross -march=rv32imc -O2 main.py
 
 This produces `main.mpy` in the same directory. The `-march=rv32imc` flag is required — omitting it produces bytecode for a different architecture that the device will refuse to load.
 
-> **Alternative:** the `jppd-app-sdk` Docker toolchain, from the
-> [`jppdos-apps`](https://github.com/jppteam/jppdos-apps) repository, also
-> builds MicroPython apps — `docker run --rm -v "$PWD:/app" jppd-app-sdk` — with
-> the correct `mpy-cross` version baked in, plus manifest validation and
-> optional device upload. Handy if you don't want to manage `mpy-cross`
-> versions yourself. See that repo's `toolchain/README.md`.
+!!! info "Alternative: the `jppd-app-sdk` Docker toolchain."
+    The [`jppdos-apps`](https://github.com/jppteam/jppdos-apps) repository ships
+    a build image that does all of this for you —
+    `docker run --rm -v "$PWD:/app" jppd-app-sdk` — with the correct
+    `mpy-cross` version baked in, plus manifest validation and optional device
+    upload. Handy if you don't want to manage `mpy-cross` versions yourself.
+    See that repo's `toolchain/README.md`.
 
 If your app has helper modules, compile each one the same way:
 
@@ -184,6 +203,9 @@ If you update the app while the device is running, return to the launcher first 
 
 This app fetches a weather summary from a local endpoint, saves it to the KV store, and displays it. It refreshes every 30 minutes via a background task.
 
+It declares `"sdk_min": 2` for one reason: it uses `KEY_BACK`. Swap that for
+`KEY_CENTER_LONG` and `"sdk_min": 1` would run it on every unit ever shipped.
+
 **manifest.json:**
 
 ```json
@@ -192,7 +214,7 @@ This app fetches a weather summary from a local endpoint, saves it to the KV sto
   "app_id": "weather",
   "name": "Weather",
   "version": "1.0.0",
-  "sdk_min": 1,
+  "sdk_min": 2,
   "app_type": "micropython",
   "entry": "main.mpy",
   "capabilities": ["http.request", "background.register"],
@@ -243,9 +265,9 @@ class WeatherApp:
     def on_idle(self):
         key = self.sdk.poll_key()
         if key == jppsdk.KEY_CENTER:
-            self.sdk.request_close()
-        elif key == jppsdk.KEY_CENTER_LONG:
             self._fetch()
+        elif key == jppsdk.KEY_BACK:
+            self.sdk.request_close()
 
     def on_stop(self):
         pass
@@ -275,7 +297,7 @@ class WeatherApp:
             "",
             "Updated: " + self.updated,
             "",
-            "OK=exit  hold=refresh",
+            "OK=refresh  Back=exit",
         ])
 ```
 
@@ -295,4 +317,4 @@ cp manifest.json main.mpy /Volumes/SD/apps/weather/
 - `poll_key()` returns `KEY_NONE` immediately if nothing is in the queue. `wait_key(timeout_ms)` blocks; use `0` to wait forever. Use `poll_key()` in `on_idle` and `wait_key()` in blocking modal loops.
 - The KV store (`kv_get`/`kv_set`/`kv_delete`) is the simplest way to persist app state — no file handling needed.
 - Call `request_close()` when you want the launcher to reclaim the screen. After `on_stop` returns, the app is fully torn down.
-- Long-press center (`KEY_CENTER_LONG`) is the conventional "back" or "cancel" gesture across the whole device. Honor it in your app wherever it makes sense to exit or go up a level.
+- `KEY_BACK` is the device-wide "back" or "cancel" gesture. Honour it wherever it makes sense to exit or go up a level — and don't try to work out whether the user held or double-clicked, because that is deliberately hidden from you.

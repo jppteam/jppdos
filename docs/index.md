@@ -1,16 +1,14 @@
 # JPPDOS App Developer Guide
 
-*Firmware v1.1 · 2026-07-29*
-
-**Guides:** [MicroPython](micropython/getting-started.md) · [Native C](native/getting-started.md) · [Code modules](native/modules.md) · [Manifest reference](manifest.md) · [SDK reference](sdk-reference.md) · [Serial protocol](serial-protocol.md)
-
-**Contents:** [Hardware](#the-jdevice-at-a-glance) · [App model](#app-model) · [MicroPython vs native C](#choosing-micropython-or-native-c) · [Quick examples](#quick-examples) · [Where to go next](#where-to-go-next)
-
----
+*Firmware v1.1 · SDK level 2 · 2026-07-29*
 
 This guide covers everything you need to write apps for the **J++Device** — from the sandbox model and permission system to a complete API reference for every SDK call.
 
 You do **not** need to understand firmware internals, ESP-IDF, or embedded systems to write apps. You write code against the **App SDK**, package it with a `manifest.json`, and copy it to the SD card. The device handles the rest.
+
+!!! success "New here? Start with the [MicroPython guide](micropython/getting-started.md)."
+    Write Python, compile it once with `mpy-cross`, drop two files on the SD
+    card. No Docker, no C toolchain, no firmware build.
 
 ---
 
@@ -46,7 +44,10 @@ The security model has two layers:
 - **Scoping** — file paths are automatically prefixed to the app's own directory; an app cannot see another app's files without explicit permission.
 - **Capabilities** — operations like HTTP requests, BLE, or full SD card access must be declared in the manifest and approved by the user.
 
-Most of the SDK needs no permission at all: drawing, input, the buzzer, the onboard LED, the key-value store, IPC, and device status all work without any declaration.
+!!! success "Most of the SDK needs no permission at all."
+    Drawing, input, the buzzer, the onboard LED, the key-value store, IPC, and
+    device status all work with nothing declared and nothing prompted. Reach for
+    a [capability](manifest.md#capabilities) only when you leave the sandbox.
 
 ---
 
@@ -64,10 +65,11 @@ Both types use the same underlying SDK functions, the same capability/permission
 
 ---
 
-## Quick examples
+## A minimal app
 
-**MicroPython — minimal clock app:**
+The same app in both languages: show a line of text, exit on CENTER.
 
+/// tab | MicroPython
 ```python
 import jppsdk
 
@@ -88,9 +90,9 @@ class ClockApp:
     def on_stop(self):
         pass
 ```
+///
 
-**Native C — minimal app:**
-
+/// tab | Native C
 ```c
 #include "jpp_sdk_bridge.h"
 
@@ -108,6 +110,10 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
     jpp_sdk_request_close(ctx);
 }
 ```
+///
+
+Note the shape difference: a MicroPython app hands the firmware an object with
+lifecycle hooks, while a native app owns its own loop and returns when it's done.
 
 ---
 
@@ -120,4 +126,5 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 | [Native code modules](native/modules.md) | Loading a second `.bin` from within a native app |
 | [Manifest reference](manifest.md) | Every field in `manifest.json`, all capabilities |
 | [SDK reference](sdk-reference.md) | Complete API documentation for every SDK call |
+| [SDK changelog](sdk-changelog.md) | What each SDK level added, and how to pick `sdk_min` |
 | [Serial protocol](serial-protocol.md) | JPPD-SMP binary protocol for host-side tools (file management, device info, LRV, time sync) |

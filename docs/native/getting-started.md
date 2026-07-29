@@ -1,9 +1,5 @@
 # Native C app development
 
-**Contents:** [Prerequisites](#prerequisites) · [How native apps work](#how-native-apps-work) · [App layout](#app-layout) · [Entry point](#entry-point) · [Build system](#build-system-integration) · [Key types](#key-types) · [Deploying](#deploying) · [Complete example](#complete-example-ble-device-scanner) · [Tips](#tips)
-
----
-
 Native apps give you the full performance of the ESP32-C6 with direct access to the App SDK surface. You write C, build it alongside the firmware using the standard ESP-IDF toolchain inside Docker, and deploy the resulting `.bin` to the SD card.
 
 Native apps share the same manifest format, capability/permission model, and SDK functions as MicroPython apps — the difference is only in the entry point and build system.
@@ -28,6 +24,14 @@ All firmware functions (`jpp_sdk_*`, `esp_log_write`, standard C library functio
 - Your app binary is small — it contains only your own code
 - The app and firmware must be built from the same source tree so symbol names match
 - You cannot call any function not in the firmware's symbol table
+
+!!! danger "`UNRESOLVED_SYM` at launch means exactly one thing."
+    Your app called a function the running firmware does not export. There is no
+    link-time check to catch this — the loader is the first thing that notices.
+    Either the firmware is older than the SDK level your app needs (declare the
+    right [`sdk_min`](../manifest.md#sdk_min) so the loader rejects it with a
+    clear `SDK_TOO_OLD` instead), or the symbol was never added to the
+    firmware's export table at all.
 
 ---
 
@@ -67,7 +71,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
     while (true) {
         jpp_sdk_wait_key(ctx, 0, &key);
 
-        if (key == JPP_SDK_KEY_CENTER_LONG) {
+        if (key == JPP_SDK_KEY_BACK) {
             break;  /* exit the app */
         } else if (key == JPP_SDK_KEY_UP) {
             count++;
@@ -93,7 +97,13 @@ If your app uses background tasks, export this additional function (optional —
 void jpp_app_task_entry(jpp_sdk_context_t *ctx, const char *task_name);
 ```
 
-The firmware calls this instead of `jpp_app_entry` during headless background runs. No UI is available; only Tier-1 capabilities with persisted grants are usable. Return within the 30-second quota.
+The firmware calls this instead of `jpp_app_entry` during headless background runs.
+
+!!! danger "Background runs are headless and time-boxed."
+    No UI, no key events, and no consent prompts — every permission request is
+    denied outright, so only tier-1 capabilities the user granted in a previous
+    *foreground* launch are usable. Return within the **30-second quota**; a
+    task that overruns is killed by restarting the device.
 
 ---
 
@@ -201,7 +211,18 @@ Return type for most SDK calls:
 | `JPP_SDK_KEY_LEFT` | Left |
 | `JPP_SDK_KEY_RIGHT` | Right |
 | `JPP_SDK_KEY_CENTER` | Center press |
-| `JPP_SDK_KEY_CENTER_LONG` | Center long-press (back/cancel) |
+| `JPP_SDK_KEY_BACK` | The user asked to go back |
+| `JPP_SDK_KEY_CENTER_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value |
+| `JPP_SDK_KEY_CENTER_HOLD` | Raw CENTER hold — only if claimed |
+| `JPP_SDK_KEY_CENTER_DOUBLE` | Raw CENTER double-click — only if claimed |
+
+!!! info "Which gesture means “back” is not your app’s business."
+    The user chooses hold or double-click in Settings → Controls, and the
+    firmware translates it to `JPP_SDK_KEY_BACK` before you see it. Take a
+    gesture over as your own input only with
+    [`jpp_sdk_claim_center`](../sdk/app-control.md#claim_center) — and then your
+    app owns its own way out. `JPP_SDK_KEY_BACK` and the claim API need
+    [`sdk_min: 2`](../sdk-changelog.md).
 
 ---
 
@@ -221,6 +242,9 @@ The directory must contain `manifest.json` and the `.bin`. Any additional data f
 
 This app scans for nearby BLE devices and displays the results. The user can scroll through the list and view RSSI.
 
+`"sdk_min": 2` here is needed for `JPP_SDK_KEY_BACK` alone — `ble.scan` itself
+has been available since level 1.
+
 **manifest.json:**
 
 ```json
@@ -229,7 +253,7 @@ This app scans for nearby BLE devices and displays the results. The user can scr
   "app_id": "blescanner",
   "name": "BLE Scanner",
   "version": "1.0.0",
-  "sdk_min": 1,
+  "sdk_min": 2,
   "app_type": "native",
   "entry": "blescanner.bin",
   "capabilities": ["ble.scan"],
@@ -293,7 +317,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
     while (true) {
         jpp_sdk_wait_key(ctx, 0, &key);
 
-        if (key == JPP_SDK_KEY_CENTER_LONG) {
+        if (key == JPP_SDK_KEY_BACK) {
             break;
         } else if (key == JPP_SDK_KEY_CENTER) {
             show_scanning(ctx);
@@ -302,7 +326,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
                                                      &count, &broker);
             if (st == JPP_SDK_ACCESS_DENIED) {
                 const char *denied[] = { "BLE Scanner", "",
-                    "BLE scan denied.", "", "hold=exit" };
+                    "BLE scan denied.", "", "Back=exit" };
                 jpp_sdk_set_frame(ctx, denied, 5);
                 scanned = false;
                 continue;
@@ -333,5 +357,6 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 - Use `jpp_sdk_wait_key(ctx, 0, &key)` (timeout 0 = wait forever) as the main loop driver when you have no time-sensitive work to do between key events.
 - Use `jpp_sdk_wait_key(ctx, 100, &key)` with a short timeout when you need periodic updates (e.g. refreshing a clock display).
 - Check the return value of every SDK call. `JPP_SDK_ACCESS_DENIED` is expected and normal — handle it gracefully rather than treating it as a fatal error.
+- Honour `JPP_SDK_KEY_BACK` wherever it makes sense to exit or go up a level. Don't try to detect the physical gesture behind it unless you have deliberately claimed one.
 - The 64 KB app pool holds your entire binary. A typical app is 5–15 KB; complex apps with many data structures may approach 50 KB. If you need more, structure your code as a hub + loaded modules (see [Code modules](modules.md)).
 - `snprintf` is available from the standard C library via the symbol table. `malloc`/`free` work too, but prefer stack allocation — the device heap is shared with Wi-Fi and other firmware services.
