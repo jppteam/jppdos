@@ -149,7 +149,11 @@ d-pad, store data, and use Bluetooth/Wi-Fi through the **App SDK**, which also
 gives you ready-made `dialog`, `list`, and `input` prompts so you don't have to
 build menus from scratch.
 
-➡️ **Start here: [App developer docs](docs/index.md)** — platform overview, MicroPython and native C guides, manifest reference, and a full SDK reference for every call.
+➡️ **Start here: [App developer docs](docs/index.md)** — platform overview, MicroPython and native C guides, manifest reference, a full [SDK reference](docs/sdk-reference.md) for every call, and the [SDK changelog](docs/sdk-changelog.md) telling you which `sdk_min` to declare.
+
+Those pages are written for the rendered site at
+<https://jppdevice.by.m4l3vi.ch/sdk-docs/> and use MkDocs admonition and tab
+syntax, so read them there rather than on GitHub.
 
 You do **not** need this repository to write an app. The build toolchain and the
 deploy tool live in the separate

@@ -1,9 +1,5 @@
 # Native code modules
 
-**Contents:** [When to use modules](#when-to-use-modules) · [Pool layout](#how-the-pool-is-split) · [Module entry point](#module-entry-point) · [Module API](#module-api) · [Building binaries](#building-module-binaries) · [Complete example](#complete-example-plugin-system) · [Constraints](#constraints-and-limits)
-
----
-
 Code modules let a native app **page additional ELF binaries into the app pool on demand**, then unload and replace them. This is how the Games app ships 9 games in one 64 KB pool — the resident hub (~13 KB) loads one game module (~2–4 KB) at a time, runs it, and unloads it when the player returns to the menu.
 
 Modules are a native-only feature. MicroPython apps cannot load modules.
@@ -166,7 +162,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
     jpp_sdk_key_event_t key;
     while (true) {
         jpp_sdk_wait_key(ctx, 0, &key);
-        if (key == JPP_SDK_KEY_CENTER_LONG) break;
+        if (key == JPP_SDK_KEY_BACK) break;
 
         const char *mod_path = NULL;
         if (key == JPP_SDK_KEY_UP)   mod_path = "hello.mod.bin";
@@ -208,7 +204,7 @@ void jpp_module_entry(jpp_sdk_context_t *ctx, void *api_ptr)
     jpp_sdk_key_event_t key;
     while (true) {
         jpp_sdk_wait_key(ctx, 0, &key);
-        if (key == JPP_SDK_KEY_CENTER_LONG) break;
+        if (key == JPP_SDK_KEY_BACK) break;
     }
 }
 ```
@@ -216,6 +212,12 @@ void jpp_module_entry(jpp_sdk_context_t *ctx, void *api_ptr)
 ---
 
 ## Constraints and limits
+
+!!! warning "One module at a time, and it must be your own."
+    A module is loaded from the *host app's own* scoped directory and runs with
+    the host app's capabilities — it is your code, not a third party's, which is
+    why the SDK does not gate it. It cannot load a module of its own, and
+    loading a second one replaces the first.
 
 | Constraint | Value |
 |------------|-------|

@@ -35,14 +35,30 @@ exclude_docs: |
 
 # Python-Markdown ships most of these OFF by default. `tables` and `fenced_code`
 # are REQUIRED — without them every table and code block in the docs breaks.
+#
+# The theme only styles a specific subset; do not swap these for near-equivalents
+# without checking shadcn/css/base.css first:
+#   * `codehilite` (NOT pymdownx.highlight / pymdownx.superfences) — the theme's
+#     code and tab rules are written against the `.codehilite` wrapper class.
+#   * `pymdownx.blocks.tab` WITHOUT `alternate_style` — the theme styles the
+#     legacy radio-input markup (`input[type=radio]:checked+label+div.tabbed-content`)
+#     and ships no JS for the alternate button markup, which would render as an
+#     unstyled pile of stacked panes.
+#   * `admonition` types with real styling: note (the base box), info, success,
+#     warning, danger. Anything else (tip, example, quote…) silently falls back
+#     to the plain note box.
 markdown_extensions:
   - tables
   - fenced_code
   - codehilite
   - admonition
   - footnotes
+  # attr_list backs the `{ #anchor }` overrides that keep short, stable anchors
+  # on headings whose text carries a "(C only)" suffix.
   - attr_list
   - md_in_html
+  # C / MicroPython signature pairs throughout the SDK reference.
+  - pymdownx.blocks.tab
   - toc:
       permalink: true
       # The docs' hand-written #anchors were authored for GitHub's slug
@@ -59,5 +75,17 @@ nav:
       - Code modules: native/modules.md
   - Reference:
       - Manifest: manifest.md
-      - SDK reference: sdk-reference.md
+      - SDK reference:
+          - Index: sdk-reference.md
+          - Types and constants: sdk/types.md
+          - App control and input: sdk/app-control.md
+          - Canvas and UI helpers: sdk/display.md
+          - Buzzer, LED, device status: sdk/hardware.md
+          - Storage and IPC: sdk/storage.md
+          - Network: sdk/network.md
+          - BLE and ESP-NOW: sdk/wireless.md
+          - Crypto primitives: sdk/crypto.md
+          - Background and modules: sdk/background.md
+          - Resource limits: sdk/limits.md
+      - SDK changelog: sdk-changelog.md
       - Serial protocol: serial-protocol.md
