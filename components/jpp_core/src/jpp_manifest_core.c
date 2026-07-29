@@ -36,6 +36,7 @@ int jpp_manifest_v2_is_allowed_capability(const char *capability)
      */
     /* Tier 1 — one-time user grant, persisted */
     if (jpp_str_eq(capability, "http.request") ||
+        jpp_str_eq(capability, "https.request") ||
         jpp_str_eq(capability, "ble.scan") ||
         jpp_str_eq(capability, "ble.advertise") ||
         jpp_str_eq(capability, "background.register") ||
@@ -45,6 +46,7 @@ int jpp_manifest_v2_is_allowed_capability(const char *capability)
     /* Tier 2 — per-session user grant */
     if (jpp_str_eq(capability, "files.full") ||
         jpp_str_eq(capability, "network.bind") ||
+        jpp_str_eq(capability, "network.connect") ||
         jpp_str_eq(capability, "ble.connect") ||
         jpp_str_eq(capability, "ble.host")) {
         return 1;
@@ -207,8 +209,11 @@ jpp_manifest_result_t jpp_manifest_v2_validate(const jpp_manifest_v2_t *manifest
     if (jpp_manifest_v2_is_reserved_app_id(manifest->app_id)) {
         return JPP_MANIFEST_RESERVED_APP_ID;
     }
-    if (manifest->sdk_min > manifest->sdk_max) {
+    if (manifest->sdk_min < 1) {
         return JPP_MANIFEST_INVALID_MANIFEST;
+    }
+    if (manifest->sdk_min > JPP_SDK_VERSION) {
+        return JPP_MANIFEST_SDK_TOO_OLD;
     }
     if (!jpp_manifest_v2_is_valid_entry_path(manifest->entry)) {
         return JPP_MANIFEST_INVALID_ENTRY;
@@ -251,6 +256,8 @@ const char *jpp_manifest_result_name(jpp_manifest_result_t result)
         return "INVALID_TOOLCHAIN";
     case JPP_MANIFEST_RUNTIME_MISMATCH:
         return "RUNTIME_MISMATCH";
+    case JPP_MANIFEST_SDK_TOO_OLD:
+        return "SDK_TOO_OLD";
     default:
         return "UNKNOWN";
     }

@@ -8,13 +8,17 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "esp_tls.h"
 #include "esp_netif.h"
 #include "cJSON.h"
 
 #include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 #include "jpp_ble_native.h"
 #include "jpp_espnow_native.h"
@@ -24,12 +28,14 @@
 #include "jpp_broker_core.h"
 #include "jpp_battery_core.h"
 #include "jpp_native_loader_core.h"
+#include "jpp_heap_monitor.h"
 #include "jpp_nvs_util.h"
 #include "jpp_settings_screen.h"  /* JPP_SETTINGS_USERNAME_MAX */
 
 static const char *TAG = "native_svc";
 
 jpp_sdk_native_services_t s_native_services;
+jpp_sdk_services_v2_t     s_native_services_v2;
 jpp_broker_lock_set_t     s_broker_locks;
 volatile bool             s_sd_ejection_detected = false;
 
@@ -413,6 +419,90 @@ static jpp_broker_status_t net_accept_cb(void *context, uint32_t timeout_ms,
     return JPP_BROKER_STATUS_OK;
 }
 
+/* network.connect callback — outbound TCP client over lwIP. Uses a
+   non-blocking connect + select so timeout_ms is honoured, then restores
+   blocking mode for the shared net_recv/net_send calls. */
+static jpp_broker_status_t net_connect_cb(void *context, const char *host,
+                                          uint16_t port, uint32_t timeout_ms,
+                                          int *out_sock, jpp_broker_result_t *result)
+{
+    (void)context;
+    *out_sock = -1;
+
+    jpp_fileserver_status_t fs_status;
+    jpp_fileserver_get_status(&fs_status);
+    if (fs_status.state == JPP_FILESERVER_STATE_RUNNING ||
+        jpp_lrv_server_is_running()) {
+        jpp_broker_error_result(result, "SERVER_ACTIVE");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int slot = -1;
+    for (size_t i = 0u; i < JPP_RESOURCE_SDK_NET_SOCKET_LIMIT; i++) {
+        if (s_net_conns[i] < 0) { slot = (int)i; break; }
+    }
+    if (slot < 0) {
+        jpp_broker_error_result(result, "SOCKET_LIMIT");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || res == NULL) {
+        jpp_broker_error_result(result, "CONNECT_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) {
+        freeaddrinfo(res);
+        jpp_broker_error_result(result, "SOCKET_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+
+    if (rc != 0 && errno == EINPROGRESS) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv = {
+            .tv_sec  = (time_t)(timeout_ms / 1000u),
+            .tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u),
+        };
+        int ready = select(fd + 1, NULL, &wfds, NULL, timeout_ms ? &tv : NULL);
+        if (ready <= 0) {
+            close(fd);
+            jpp_broker_error_result(result, "CONNECT_FAILED");
+            return JPP_BROKER_STATUS_OK;
+        }
+        int so_err = 0;
+        socklen_t elen = sizeof(so_err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &elen) != 0 || so_err != 0) {
+            close(fd);
+            jpp_broker_error_result(result, "CONNECT_FAILED");
+            return JPP_BROKER_STATUS_OK;
+        }
+    } else if (rc != 0) {
+        close(fd);
+        jpp_broker_error_result(result, "CONNECT_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    fcntl(fd, F_SETFL, flags);   /* restore blocking mode */
+    s_net_conns[slot] = fd;
+    *out_sock = fd;
+    jpp_broker_ok_result(result);
+    ESP_LOGI(TAG, "NET_CONNECT %s:%u fd=%d", host, (unsigned)port, fd);
+    return JPP_BROKER_STATUS_OK;
+}
+
 static jpp_broker_status_t net_recv_cb(void *context, int sock, uint8_t *buf,
                                        size_t buf_len, size_t *out_len,
                                        uint32_t timeout_ms, jpp_broker_result_t *result)
@@ -553,6 +643,106 @@ static jpp_broker_status_t sd_http_request_cb(void *context,
     jpp_broker_result_put(result, "status_code", s_status_code_str);
     jpp_broker_result_put(result, "body", s_http_resp.body);
     return JPP_BROKER_STATUS_OK;
+}
+
+/* ---- https.request callback ----------------------------------------------- */
+
+/*
+ * TLS HTTP client. Everything below the transport is already in the image —
+ * esp_http_client pulls in esp-tls and mbedTLS regardless — so the only thing
+ * this adds over sd_http_request_cb is a trust anchor and the refusal to
+ * proceed without one.
+ *
+ * esp_crt_bundle_attach() installs the CA roots compiled into the firmware
+ * (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN — see sdkconfig.defaults).
+ * Referencing it here is also what makes the linker keep the bundle blob: with
+ * no caller it is garbage-collected out of the image entirely, which is why
+ * HTTPS did not work before this callback existed.
+ *
+ * There is deliberately no knob to skip verification: the SDK surface has no
+ * "insecure" flag, and CONFIG_ESP_TLS_INSECURE is off.
+ */
+static jpp_broker_status_t sd_https_request_cb(void *context,
+                                                const char *method,
+                                                const char *url,
+                                                const char *body,
+                                                jpp_broker_result_t *result)
+{
+    (void)context;
+    if (result == NULL || method == NULL || url == NULL) {
+        return JPP_BROKER_STATUS_INVALID_ARGUMENT;
+    }
+    /* The bridge already validated the scheme; re-check here so this callback
+       cannot be reached with a cleartext URL through some other path. */
+    if (strncmp(url, "https://", 8) != 0) {
+        jpp_broker_error_result(result, "NOT_HTTPS");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    static http_response_t s_https_resp;
+    memset(&s_https_resp, 0, sizeof(s_https_resp));
+
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .event_handler     = http_event_handler,
+        .user_data         = &s_https_resp,
+        .timeout_ms        = 15000,   /* a handshake precedes the exchange */
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .transport_type    = HTTP_TRANSPORT_OVER_SSL,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == NULL) {
+        jpp_broker_error_result(result, "HTTPS_INIT_FAILED");
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    bool is_post = (strcmp(method, "POST") == 0);
+    if (is_post && body != NULL) {
+        esp_http_client_set_method(client, HTTP_METHOD_POST);
+        esp_http_client_set_post_field(client, body, (int)strlen(body));
+    }
+
+    jpp_heap_monitor_log("https-start");
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK) {
+        s_https_resp.status_code = esp_http_client_get_status_code(client);
+    }
+    esp_http_client_cleanup(client);
+    jpp_heap_monitor_log("https-stop");
+
+    if (err != ESP_OK) {
+        /* esp_http_client_perform() collapses everything that goes wrong before
+           the first response byte — DNS, TCP, TLS handshake, certificate
+           rejection — into ESP_ERR_HTTP_CONNECT, and does not expose the
+           underlying esp-tls error handle. So the result code says only "the
+           connection did not come up"; the specific cause is left to the log
+           line below rather than invented here. */
+        const char *reason = (err == ESP_ERR_HTTP_CONNECT)
+                             ? "HTTPS_CONNECT_FAILED"
+                             : "HTTPS_PERFORM_FAILED";
+        ESP_LOGW(TAG, "HTTPS_FAILED %s -> %s", esp_err_to_name(err), reason);
+        jpp_broker_error_result(result, reason);
+        return JPP_BROKER_STATUS_OK;
+    }
+
+    static char s_https_status_str[8];
+    snprintf(s_https_status_str, sizeof(s_https_status_str), "%d",
+             s_https_resp.status_code);
+    jpp_broker_ok_result(result);
+    jpp_broker_result_put(result, "status_code", s_https_status_str);
+    jpp_broker_result_put(result, "body", s_https_resp.body);
+    return JPP_BROKER_STATUS_OK;
+}
+
+/* ---- Origin-prompt callback ----------------------------------------------- */
+
+static bool sd_origin_prompt_cb(void *context, const char *origin)
+{
+    (void)context;
+    if (s_active_sdk_context == NULL) {
+        return false;
+    }
+    return jpp_app_origin_prompt(s_active_sdk_context, origin);
 }
 
 /* ---- KV store callbacks --------------------------------------------------- */
@@ -856,6 +1046,14 @@ void jpp_native_services_init(jpp_rtc_state_t *rtc_state)
     s_native_services.module_run     = module_run_cb;
     s_native_services.module_unload  = module_unload_cb;
     s_native_services.module_context = NULL;
+
+    /* Post-v1 callbacks live in their own struct so jpp_sdk_native_services_t
+       above stays frozen — see the ABI note on it. */
+    s_native_services_v2.net_connect            = net_connect_cb;
+    s_native_services_v2.https_request          = sd_https_request_cb;
+    s_native_services_v2.https_request_context  = NULL;
+    s_native_services_v2.origin_prompt          = sd_origin_prompt_cb;
+    s_native_services_v2.origin_prompt_context  = NULL;
 
     ESP_LOGI(TAG, "BLE_NATIVE_READY");
 }

@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "app_id": "valid_native",
+  "app_id": "sdk_too_new",
   "app_type": "native",
-  "name": "Valid Native",
+  "name": "SDK Too New",
   "version": "1.0.0",
-  "sdk_min": 1,
+  "sdk_min": 99,
   "entry": "main.bin",
   "background": { "enabled": false },
-  "capabilities": ["files.full"]
+  "capabilities": []
 }

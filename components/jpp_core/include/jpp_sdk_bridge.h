@@ -252,6 +252,36 @@ typedef jpp_broker_status_t (*jpp_sdk_http_request_fn_t)(
     jpp_broker_result_t *result /* result fields: status_code, body */
 );
 
+/* "https://" + host + ":" + port, NUL-terminated — the unit of https.request
+   consent. Sized for a hostname at the DNS limit of 253 characters. */
+#define JPP_SDK_ORIGIN_MAX      270u
+/* Largest request body https.request will send. Bounded because the whole body
+   is held in RAM and the C6 shares one SRAM with the WiFi/lwIP buffers. */
+#define JPP_SDK_HTTPS_BODY_MAX 2048u
+
+/*
+ * https.request — same shape as http_request, but the URL must be https:// and
+ * the server certificate is verified against the firmware's bundled CA roots.
+ * Certificate failures are reported through `result`, never ignored.
+ */
+typedef jpp_broker_status_t (*jpp_sdk_https_request_fn_t)(
+    void *context,
+    const char *method,         /* "GET" or "POST" */
+    const char *url,
+    const char *body,           /* NULL for GET */
+    jpp_broker_result_t *result /* result fields: status_code, body */
+);
+
+/*
+ * Per-origin consent for https.request — called the first time an app requests
+ * a given origin (scheme://host[:port]) with no persisted grant for it. Runs
+ * from the app task and may block for user input. Returns true to allow.
+ */
+typedef bool (*jpp_sdk_origin_prompt_t)(
+    void *context,
+    const char *origin
+);
+
 /*
  * network.bind — TCP server sockets over lwIP. The firmware enforces
  * JPP_RESOURCE_SDK_NET_LISTENER_LIMIT listeners and
@@ -267,6 +297,20 @@ typedef jpp_broker_status_t (*jpp_sdk_net_accept_fn_t)(
     void *context,
     uint32_t timeout_ms,
     int *out_sock,                /* -1 when no connection arrived in time */
+    jpp_broker_result_t *result
+);
+/*
+ * network.connect — outbound TCP client (SDK v2). Resolves `host` (name or
+ * dotted-quad) and connects to `port`, returning a socket id usable with the
+ * shared net_recv / net_send / net_close calls. A connected socket occupies a
+ * slot in the same connection table as accepted sockets.
+ */
+typedef jpp_broker_status_t (*jpp_sdk_net_connect_fn_t)(
+    void *context,
+    const char *host,
+    uint16_t port,
+    uint32_t timeout_ms,
+    int *out_sock,                /* -1 on failure/timeout */
     jpp_broker_result_t *result
 );
 typedef jpp_broker_status_t (*jpp_sdk_net_recv_fn_t)(
@@ -371,6 +415,14 @@ typedef jpp_broker_status_t (*jpp_sdk_kv_delete_fn_t)(
     jpp_broker_result_t *result
 );
 
+/*
+ * FROZEN AT SDK v1. This struct is embedded *by value* in jpp_sdk_context_t,
+ * above every field an app reads directly (canvas_fullscreen, close_requested,
+ * key_queue, …). Growing it — even at its own tail — shifts those offsets in
+ * already-deployed app .bin files, which are separately built ELFs with no
+ * load-time layout check. Do not add fields here. New service callbacks go in
+ * jpp_sdk_services_v2_t, which hangs off the tail of jpp_sdk_context_t.
+ */
 typedef struct {
     jpp_broker_lock_set_t *locks;
     jpp_sdk_device_status_reader_t device_status;
@@ -416,7 +468,8 @@ typedef struct {
     /* http.request */
     jpp_sdk_http_request_fn_t http_request;
     void *http_request_context;
-    /* network.bind — TCP server sockets */
+    /* network.bind — TCP server sockets. network.connect (SDK v2) lives in
+       jpp_sdk_services_v2_t; see the freeze note on this struct. */
     jpp_sdk_net_bind_fn_t      net_bind;
     jpp_sdk_net_accept_fn_t    net_accept;
     jpp_sdk_net_recv_fn_t      net_recv;
@@ -444,6 +497,24 @@ typedef struct {
     jpp_sdk_consent_prompt_t consent_prompt;
     void *consent_prompt_context;
 } jpp_sdk_native_services_t;
+
+/*
+ * Service callbacks added after SDK v1. This struct lives at the *tail* of
+ * jpp_sdk_context_t, so growing it never moves a field an already-deployed app
+ * binary was compiled against — the reason jpp_sdk_native_services_t above is
+ * frozen. Append new callbacks here, at the end, and NULL-check every one at
+ * the call site: an app bound by older firmware leaves them zeroed.
+ */
+typedef struct {
+    /* network.connect — outbound TCP (SDK v2) */
+    jpp_sdk_net_connect_fn_t net_connect;
+    /* https.request — TLS HTTP client (SDK v2) */
+    jpp_sdk_https_request_fn_t https_request;
+    void *https_request_context;
+    /* per-origin consent for https.request; may block */
+    jpp_sdk_origin_prompt_t origin_prompt;
+    void *origin_prompt_context;
+} jpp_sdk_services_v2_t;
 
 typedef struct {
     char path[JPP_SDK_PATH_MAX];
@@ -550,9 +621,25 @@ typedef struct {
        loaded from SD, so inserting above this point shifts every offset they
        were compiled against. */
     uint8_t center_claim;
+    /* Post-v1 service callbacks — see jpp_sdk_services_v2_t. Kept here rather
+       than inside `services` above precisely because this is the tail. */
+    jpp_sdk_services_v2_t services_v2;
 } jpp_sdk_context_t;
 
 void jpp_sdk_context_init(jpp_sdk_context_t *context);
+
+/*
+ * Install the post-v1 service callbacks. Separate from jpp_sdk_bind() /
+ * jpp_sdk_bind_native() so that jpp_sdk_native_services_t stays frozen at its
+ * v1 shape (see the note on that struct). Call once after bind; the struct is
+ * copied, so the caller's copy need not outlive the call. Skipping it leaves
+ * every v2 callback NULL, and the SDK calls that need one return
+ * JPP_SDK_STATUS_INVALID_STATE rather than misbehaving.
+ */
+void jpp_sdk_set_services_v2(
+    jpp_sdk_context_t *context,
+    const jpp_sdk_services_v2_t *services
+);
 
 /*
  * Register capabilities that are declared in the manifest but were not
@@ -851,6 +938,31 @@ jpp_sdk_status_t jpp_sdk_http_request(
     jpp_broker_result_t *result
 );
 
+/*
+ * Requires: https.request (SDK v2) — TLS-verified HTTP over port 443.
+ *
+ * `url` must start with "https://"; a plain http:// URL is rejected with
+ * INVALID_ARGUMENT rather than silently downgraded. The server certificate is
+ * verified against the firmware's bundled CA roots, and a verification failure
+ * fails the request — there is no way for an app to disable verification.
+ *
+ * Consent is per-origin and one-time: the first request to a given
+ * scheme://host[:port] raises a prompt naming that origin, and an allowed
+ * origin is persisted to /data/grants/<app_id>.json. Later requests to the
+ * same origin do not re-prompt; a request to a *different* origin prompts
+ * again. Denial returns ACCESS_DENIED with no request sent.
+ *
+ * Body length is capped at JPP_SDK_HTTPS_BODY_MAX; the response body is
+ * truncated to the firmware's response buffer, same as http.request.
+ */
+jpp_sdk_status_t jpp_sdk_https_request(
+    jpp_sdk_context_t *context,
+    const char *method,
+    const char *url,
+    const char *body,
+    jpp_broker_result_t *result
+);
+
 /* Canvas pixel drawing — no capability required, always available */
 jpp_sdk_status_t jpp_sdk_canvas_write(
     jpp_sdk_context_t *context,
@@ -919,6 +1031,21 @@ jpp_sdk_status_t jpp_sdk_net_bind(
 );
 jpp_sdk_status_t jpp_sdk_net_accept(
     jpp_sdk_context_t *context,
+    uint32_t timeout_ms,
+    int *out_sock,
+    jpp_broker_result_t *result
+);
+/*
+ * Requires: network.connect — open an outbound TCP connection to host:port.
+ * On success *out_sock is a socket id for net_recv / net_send / net_close (the
+ * same calls used for accepted server sockets). Fails with CONNECT_FAILED on
+ * DNS/connect error or timeout, and SOCKET_LIMIT when the connection table is
+ * full. Like net_bind, refused while the WebDAV or LRV server is running.
+ */
+jpp_sdk_status_t jpp_sdk_net_connect(
+    jpp_sdk_context_t *context,
+    const char *host,
+    uint16_t port,
     uint32_t timeout_ms,
     int *out_sock,
     jpp_broker_result_t *result

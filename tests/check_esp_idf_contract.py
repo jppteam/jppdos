@@ -31,7 +31,6 @@ REQUIRED_MANIFEST_FIELDS = (
     "name",
     "version",
     "sdk_min",
-    "sdk_max",
     "entry",
     "capabilities",
     "background.enabled",

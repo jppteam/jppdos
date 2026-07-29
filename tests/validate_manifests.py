@@ -29,6 +29,7 @@ from pathlib import Path
 
 # Pinned values from components/jpp_core/include/jpp_manifest_core.h
 SCHEMA_VERSION = 2
+SDK_VERSION = 2  # native SDK API level exported by the firmware (JPP_SDK_VERSION)
 RUNTIME_VERSION = "v1.28.0"
 CROSS_VERSION = "1.28.0"
 BYTECODE_ABI = 6
@@ -51,11 +52,12 @@ RESERVED_APP_IDS = frozenset(
     )
 )
 
-# jpp_manifest_v2_is_allowed_capability — the nine prompted capabilities
+# jpp_manifest_v2_is_allowed_capability — the eleven prompted capabilities
 ALLOWED_CAPABILITIES = frozenset(
     (
         # Tier 1 — one-time user grant, persisted
         "http.request",
+        "https.request",
         "ble.scan",
         "ble.advertise",
         "background.register",
@@ -63,6 +65,7 @@ ALLOWED_CAPABILITIES = frozenset(
         # Tier 2 — per-session user grant
         "files.full",
         "network.bind",
+        "network.connect",
         "ble.connect",
         "ble.host",
     )
@@ -147,9 +150,8 @@ def validate_manifest(app_dir_name: str, manifest: dict[str, object]) -> str | N
     """Mirror jpp_manifest_v2_validate; returns the rejection reason or None.
 
     The firmware fills parse defaults (load_sd_manifest in
-    main/jpp_app_dispatch.c): schema_version/sdk_min/sdk_max default when
-    absent, app_type defaults to micropython, and the app id is the directory
-    name.
+    main/jpp_app_dispatch.c): schema_version/sdk_min default when absent,
+    app_type defaults to micropython, and the app id is the directory name.
     """
     schema_version = manifest.get("schema_version", SCHEMA_VERSION)
     if schema_version != SCHEMA_VERSION:
@@ -166,9 +168,10 @@ def validate_manifest(app_dir_name: str, manifest: dict[str, object]) -> str | N
         return "RESERVED_APP_ID"
 
     sdk_min = manifest.get("sdk_min", 1)
-    sdk_max = manifest.get("sdk_max", 1)
-    if not isinstance(sdk_min, int) or not isinstance(sdk_max, int) or sdk_min > sdk_max:
+    if not isinstance(sdk_min, int) or sdk_min < 1:
         return "INVALID_MANIFEST"
+    if sdk_min > SDK_VERSION:
+        return "SDK_TOO_OLD"
 
     if entry.startswith("/") or _has_parent_segment(entry):
         return "INVALID_ENTRY"

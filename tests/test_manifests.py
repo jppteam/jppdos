@@ -23,6 +23,7 @@ MATRIX_EXPECTED = {
     "bad_background": "INVALID_BACKGROUND",
     "missing_toolchain": "INVALID_TOOLCHAIN",
     "runtime_mismatch": "RUNTIME_MISMATCH",
+    "sdk_too_new": "SDK_TOO_OLD",
     "missing_entry": "MISSING_ENTRY",
     "empty_entry": "CORRUPT",
     "missing_manifest": "MANIFEST_MISSING",

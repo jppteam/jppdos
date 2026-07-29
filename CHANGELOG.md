@@ -6,6 +6,21 @@ each build, not an API diff.
 
 ## Unreleased
 
+- **Apps can make HTTPS requests, one website at a time.** A new `https.request`
+  capability lets an app talk to modern web APIs with the server's certificate
+  properly checked — the old `http.request` was cleartext only. Permission is
+  asked per website rather than once for the whole internet: the first time an
+  app contacts, say, `api.example.com`, the device names that host and asks. Say
+  yes and it never asks about that host again; if the app later starts
+  contacting somewhere else, it has to ask you afresh. Certificate checking
+  cannot be switched off by an app.
+- **Fixed: apps installed before this update could have misbehaved after it.**
+  An earlier change on this branch moved a field inside a structure that
+  separately-built apps read directly, which would have made already-installed
+  apps read the wrong values with no error message. The layout is restored and
+  a test now pins it, so the same mistake fails the build instead of reaching a
+  device.
+
 - **Choose how the Back button works.** `Settings > Controls` now offers a
   device-wide choice between holding CENTER and double-clicking it to go back.
   Hold stays the default and behaves exactly as before, including the instant

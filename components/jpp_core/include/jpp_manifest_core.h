@@ -11,6 +11,19 @@ extern "C" {
 #define JPP_MANIFEST_V2_CROSS_VERSION "1.28.0"
 #define JPP_MANIFEST_V2_BYTECODE_ABI 6
 
+/*
+ * Native SDK API level exported by this firmware.  An app declares the minimum
+ * level it needs via manifest `sdk_min`; the loader rejects apps that require a
+ * newer SDK than the running firmware (JPP_SDK_VERSION < sdk_min).  Bump this
+ * whenever a backward-compatible symbol/capability is ADDED to the SDK surface.
+ *
+ *   1 — initial release
+ *   2 — adds network.connect (outbound TCP), the crypto primitives
+ *       (sha256/sha1, aes256-ige, modexp/rsa_encrypt/dh_compute), and
+ *       https.request (TLS-verified HTTP client, per-origin consent)
+ */
+#define JPP_SDK_VERSION 2
+
 typedef enum {
     JPP_APP_TYPE_MICROPYTHON = 0,
     JPP_APP_TYPE_NATIVE,
@@ -27,6 +40,7 @@ typedef enum {
     JPP_MANIFEST_INVALID_BACKGROUND,
     JPP_MANIFEST_INVALID_TOOLCHAIN,
     JPP_MANIFEST_RUNTIME_MISMATCH,
+    JPP_MANIFEST_SDK_TOO_OLD,
 } jpp_manifest_result_t;
 
 #define JPP_MANIFEST_V2_BG_TASK_MAX 4u
@@ -58,7 +72,6 @@ typedef struct {
     const char *name;
     const char *version;
     int sdk_min;
-    int sdk_max;
     const char *entry;
     jpp_manifest_app_type_t app_type;
     const char *const *capabilities;
