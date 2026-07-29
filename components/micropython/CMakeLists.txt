@@ -1,30 +1,81 @@
 # MicroPython ESP-IDF component for JPPDOS.
 #
-# This component wraps MicroPython 1.28.0 as a static library consumed by
-# jpp_core's jpp_mp_runner and jpp_mp_sdk_module.
+# This component wraps MicroPython as a static library consumed by jpp_core's
+# jpp_mp_runner and jpp_mp_sdk_module.
 #
-# VENDORING
-# ---------
-# MicroPython source is expected at components/micropython/micropython/ as a
-# git submodule pinned to the v1.28.0 tag:
+# SOURCING
+# --------
+# The MicroPython source is FETCHED AT CMAKE CONFIGURE TIME, not vendored. It
+# used to be a git submodule at components/micropython/micropython/, which cost
+# 1.6 GB of checkout (1.5 GB of it MicroPython's own lib/ submodules) and 2.2 GB
+# of .git/modules to deliver the ~3.4 MB this component actually compiles: py/
+# and shared/runtime/. Nothing under lib/, extmod/, or ports/ is referenced, so
+# a source archive — which by definition contains no submodules — carries
+# everything needed in 8 MB, and `idf.py build` obtains it with no `git
+# submodule update` step to forget.
 #
-#   git submodule add https://github.com/micropython/micropython.git \
-#       components/micropython/micropython
-#   git -C components/micropython/micropython checkout v1.28.0
-#   git submodule update --init --recursive components/micropython/micropython
+# The pin is an exact commit plus its SHA-256, so this is every bit as
+# reproducible as the submodule was: MP_COMMIT is the same revision the
+# submodule pointed at, and the build fails loudly on any content mismatch
+# rather than silently compiling something else.
 #
-# After adding the submodule, run `make -C micropython/mpy-cross` once to build
-# the cross-compiler used to produce .mpy files for apps.
+# To move MicroPython: change MP_COMMIT, then update MP_ARCHIVE_SHA256 (the
+# build prints the expected/actual pair on mismatch) and MP_GIT_TAG/MP_GIT_HASH
+# to what `py/makeversionhdr.py` would derive at that commit. Keep mpy-cross in
+# step — apps ship .mpy bytecode, and its version must match this interpreter
+# (see AGENTS.md; the project Dockerfile builds mpy-cross).
 
 cmake_minimum_required(VERSION 3.16)
 
-set(MP_DIR "${CMAKE_CURRENT_LIST_DIR}/micropython")
+include(FetchContent)
 
-# Verify the submodule is present.
+# The pinned MicroPython revision. NOTE: this is a v1.29.0-preview commit, not
+# the v1.28.0 release — it is exactly what the submodule pointed at, carried
+# over unchanged so this switch is a no-op for the resulting binary.
+set(MP_COMMIT "1c63211817d9c5164542b94771634cf80b300fdf")
+set(MP_ARCHIVE_SHA256
+    "0fbc545074a0960fc6c64c161bcc883aa101889514eb99f2d52a2ed9cefdf18e")
+
+# What py/makeversionhdr.py derives from git describe at MP_COMMIT. An archive
+# has no .git, so these are passed to it via the MICROPY_GIT_TAG/_HASH env vars
+# it documents for exactly this case (see "Step 0" below), keeping the generated
+# mpversion.h identical to what the submodule build produced.
+set(MP_GIT_TAG  "v1.29.0-preview.245.g1c63211817")
+set(MP_GIT_HASH "1c6321181")
+
+# Fetched sources live OUTSIDE the build directory, keyed by commit, so that
+# `idf.py fullclean` does not throw the download away and a pin change does not
+# overwrite the previous tree. Override to point at a local MicroPython checkout
+# (for example when bisecting upstream):
+#     idf.py -DMP_SOURCE_DIR=/path/to/micropython build
+set(MP_FETCH_ROOT "${CMAKE_SOURCE_DIR}/.deps/micropython-${MP_COMMIT}"
+    CACHE PATH "Where the pinned MicroPython source archive is unpacked")
+set(MP_SOURCE_DIR "" CACHE PATH
+    "Use an existing MicroPython checkout instead of fetching the pinned one")
+
+if(MP_SOURCE_DIR)
+    set(MP_DIR "${MP_SOURCE_DIR}")
+    message(STATUS "MicroPython: using local checkout at ${MP_DIR}")
+else()
+    # No CMakeLists.txt at the MicroPython repo root, so MakeAvailable populates
+    # the source without trying to add_subdirectory() it into the IDF build.
+    FetchContent_Declare(micropython_src
+        URL      "https://github.com/micropython/micropython/archive/${MP_COMMIT}.tar.gz"
+        URL_HASH "SHA256=${MP_ARCHIVE_SHA256}"
+        SOURCE_DIR   "${MP_FETCH_ROOT}/src"
+        SUBBUILD_DIR "${MP_FETCH_ROOT}/subbuild"
+        BINARY_DIR   "${MP_FETCH_ROOT}/build"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(micropython_src)
+    set(MP_DIR "${micropython_src_SOURCE_DIR}")
+    message(STATUS "MicroPython: ${MP_GIT_TAG} at ${MP_DIR}")
+endif()
+
 if(NOT EXISTS "${MP_DIR}/py/runtime.c")
     message(FATAL_ERROR
-        "MicroPython source not found at ${MP_DIR}.\n"
-        "Run: git submodule update --init --recursive components/micropython/micropython")
+        "MicroPython source incomplete at ${MP_DIR} — py/runtime.c is missing.\n"
+        "Delete ${MP_FETCH_ROOT} and re-run the build to refetch.")
 endif()
 
 # ------------------------------------------------------------------
@@ -206,7 +257,15 @@ set(MP_MPVERSION_H "${MP_GENHDR_DIR}/mpversion.h")
 add_custom_command(
     OUTPUT "${MP_MPVERSION_H}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${MP_GENHDR_DIR}"
-    COMMAND python3 "${MP_DIR}/py/makeversionhdr.py" "${MP_MPVERSION_H}"
+    # The fetched tree is an archive with no .git, so makeversionhdr.py cannot
+    # run `git describe`. Its documented MICROPY_GIT_TAG/MICROPY_GIT_HASH env
+    # overrides supply the same values that describe produced at MP_COMMIT —
+    # without them it would silently fall back to mpconfig.h and emit a vaguer
+    # "v1.29.0-preview" with no hash.
+    COMMAND ${CMAKE_COMMAND} -E env
+        "MICROPY_GIT_TAG=${MP_GIT_TAG}"
+        "MICROPY_GIT_HASH=${MP_GIT_HASH}"
+        python3 "${MP_DIR}/py/makeversionhdr.py" "${MP_MPVERSION_H}"
     WORKING_DIRECTORY "${MP_DIR}"
     COMMENT "Generating mpversion.h"
     VERBATIM

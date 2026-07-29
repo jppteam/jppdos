@@ -38,6 +38,15 @@ each build, not an API diff.
   it is demonstrating. Going the other way, the `mtproto` client skeleton — an
   ordinary app rather than an SDK demonstration — now lives in `jppdos-apps`.
 
+- **No more submodules anywhere in the build.** The MicroPython interpreter used
+  to arrive as a git submodule, which meant a plain `git clone` produced a tree
+  that would not build until you remembered `git submodule update --init
+  --recursive` — and then cost 1.6 GB of checkout plus 2.2 GB of git metadata to
+  deliver the ~3.4 MB of interpreter source the firmware actually compiles.
+  `idf.py build` now fetches a pinned, checksum-verified source archive itself
+  (8 MB, cached outside `build/`), so cloning and building is one step again.
+  The pinned revision is unchanged, so the resulting firmware is identical.
+
 ## v1.0-RTM — 2026-07-18
 
 First tagged release. This build is the RTM (release to manufacturing)

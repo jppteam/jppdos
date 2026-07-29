@@ -45,5 +45,10 @@ site/
 # Vendored component build configs (not part of this project's config)
 managed_components/**/sdkconfig.defaults
 
+# CMake FetchContent downloads (pinned MicroPython source — see
+# components/micropython/CMakeLists.txt). Outside build/ on purpose, so
+# `idf.py fullclean` does not force a refetch.
+.deps/
+
 # Git metadata
 .git/
