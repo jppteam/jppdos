@@ -75,10 +75,13 @@ backward-compatible way, so an app built for an older level keeps running on
 newer firmware. Declare the lowest level that provides every SDK symbol and
 capability your app uses:
 
-| `sdk_min` | Requires firmware providing |
-|-----------|-----------------------------|
-| `1` | the original SDK surface |
-| `2` | outbound TCP (`net_connect`, capability `network.connect`), the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`), and TLS-verified HTTP (`https_request`, capability `https.request`) |
+| `sdk_min` | Requires firmware providing | Since firmware |
+|-----------|-----------------------------|----------------|
+| `1` | the original SDK surface | v1.0-RTM |
+| `2` | outbound TCP (`net_connect`, capability `network.connect`), the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`), and TLS-verified HTTP (`https_request`, capability `https.request`) | v1.1 |
+
+Declaring `sdk_min: 2` means the app will not load on a v1.0-RTM device. If you
+only use the original surface, leave it at `1` so the app runs on every unit.
 
 ### `app_type`
 

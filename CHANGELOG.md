@@ -4,7 +4,18 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
-## Unreleased
+## v1.1 — 2026-07-29
+
+The first feature release after RTM. The headline is **App SDK level 2**, which
+adds secure web requests, outbound TCP, and hardware-accelerated crypto to what
+apps can do — plus a device-wide choice of how the Back button works.
+
+Existing apps are unaffected: the SDK surface only grows, so anything built for
+level 1 keeps running untouched. Going the other way, an app that declares
+`sdk_min: 2` will **not** load on a v1.0-RTM device, so leave `sdk_min` at `1`
+unless you actually use the new calls.
+
+### Highlights
 
 - **Apps can make HTTPS requests, one website at a time.** A new `https.request`
   capability lets an app talk to modern web APIs with the server's certificate
@@ -14,13 +25,14 @@ each build, not an API diff.
   yes and it never asks about that host again; if the app later starts
   contacting somewhere else, it has to ask you afresh. Certificate checking
   cannot be switched off by an app.
-- **Fixed: apps installed before this update could have misbehaved after it.**
-  An earlier change on this branch moved a field inside a structure that
-  separately-built apps read directly, which would have made already-installed
-  apps read the wrong values with no error message. The layout is restored and
-  a test now pins it, so the same mistake fails the build instead of reaching a
-  device.
-
+- **Apps can open ordinary network connections and do real crypto.** Alongside
+  HTTPS, apps can now dial out over plain TCP (`network.connect`) and call
+  hardware-accelerated SHA-256/SHA-1, AES-256-IGE, and big-integer
+  modular-exponentiation/RSA/Diffie-Hellman primitives. The crypto is provided
+  by the firmware rather than bundled into each app because an app has only
+  64 KB to live in — carrying its own AES and bignum implementations would eat
+  most of that before it did anything useful. Together these are what make a
+  chat-protocol client feasible on the device at all.
 - **Choose how the Back button works.** `Settings > Controls` now offers a
   device-wide choice between holding CENTER and double-clicking it to go back.
   Hold stays the default and behaves exactly as before, including the instant
@@ -33,6 +45,48 @@ each build, not an API diff.
   rapid-fire action button and a stray double-tap shouldn't drop you out to
   the launcher. Apps that don't claim anything keep receiving a single "back"
   event and never have to care which gesture the user picked.
+
+### App SDK & platform
+
+- **The SDK now has a version number that means something.** The firmware
+  exports API level **2**, and an app's manifest declares the lowest level it
+  needs via `sdk_min`. Previously that field was parsed but never checked, so an
+  app needing a newer firmware than the one it was installed on would load and
+  then fail in some unpredictable way; it is now enforced up front with a clear
+  `SDK_TOO_OLD` rejection. The matching `sdk_max` field was removed outright —
+  the surface only ever grows compatibly, so there was nothing for an upper
+  bound to protect against, and it only invited apps to lock themselves out of
+  firmware that would have run them fine.
+- **Manifests can name an author.** A free-form `author` string is now
+  documented in the schema and set on all first-party apps. The firmware ignores
+  it — it exists for the humans reading the manifest.
+
+### Apps
+
+- **MeetApp: the meetup leader can attach a comment.** Whoever runs the exchange
+  may add a short free-text note (up to 100 characters) after confirming who is
+  in the round — "Berlin meetup, March" and so on. It is part of the signed
+  document rather than a local annotation, so it is forwarded to every
+  participant and every copy of the proof verifies against the same text.
+- **Games: quitting no longer throws away a new high score.** A score was only
+  saved on game-over, so stopping mid-run at a personal best discarded it.
+  Selecting Quit from the pause menu now saves first.
+- **More things for the dim clock to say.** Additional idle-screen lines.
+
+### Fixes
+
+- **Apps installed before this update could have misbehaved after it.** An
+  earlier change on the SDK v2 branch moved a field inside a structure that
+  separately-built apps read directly, which would have made already-installed
+  apps read the wrong values with no error message at all. The layout is
+  restored and a test now pins it, so the same mistake fails the build instead
+  of reaching a device.
+- **Saving app data could fail when overwriting existing data.** The key-value
+  store replaced its file by renaming a temporary one over the old one, which is
+  not reliable on the SD card's FAT filesystem. The stale file is now removed
+  first.
+
+### Repo, build & documentation
 
 - **App development split out into its own repository.** The `jppd-app-sdk`
   Docker toolchain (`tools/app-sdk/`) moved to
@@ -61,6 +115,30 @@ each build, not an API diff.
   `idf.py build` now fetches a pinned, checksum-verified source archive itself
   (8 MB, cached outside `build/`), so cloning and building is one step again.
   The pinned revision is unchanged, so the resulting firmware is identical.
+- **The App Developer Guide is published as a website.** `docs/` is now rendered
+  as a searchable static site at
+  [jppdevice.by.m4l3vi.ch/sdk-docs](https://jppdevice.by.m4l3vi.ch/sdk-docs/),
+  republished automatically whenever the docs change on `master`. The Markdown
+  in `docs/` stays the single source of truth — the site adds navigation, theme,
+  and search on top of it, and nothing was forked or duplicated to build it.
+- **Fixed a half-finished app move that broke the build.** Relocating the
+  `mtproto` skeleton to `jppdos-apps` removed its sources but left its build
+  files behind, leaving a registered component pointing at files that no longer
+  existed — enough to fail `idf.py build` at configure time and to fail the
+  host test suite. The leftovers are gone.
+- **Fixed the MicroPython fetch aborting the build.** The switch away from the
+  submodule fetched the interpreter during CMake configure, but ESP-IDF resolves
+  component dependencies in an earlier pass that re-runs each component's build
+  file in a restricted script mode where the fetch machinery cannot run. Every
+  `idf.py build` stopped there, before compiling anything. The fetch is now
+  skipped in that pass, which only reads the dependency list and compiles
+  nothing.
+
+### Known limitations
+
+Unchanged from v1.0-RTM: no OTA update path, no LVGL UI redesign (the shell is
+still the line-based SSD1306 text UI), a single shared MicroPython VM, and a
+single foreground app at a time.
 
 ## v1.0-RTM — 2026-07-18
 

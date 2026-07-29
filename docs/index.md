@@ -1,6 +1,6 @@
 # JPPDOS App Developer Guide
 
-*Firmware v1.0-RTM · 2026-07-18*
+*Firmware v1.1 · 2026-07-29*
 
 **Guides:** [MicroPython](micropython/getting-started.md) · [Native C](native/getting-started.md) · [Code modules](native/modules.md) · [Manifest reference](manifest.md) · [SDK reference](sdk-reference.md) · [Serial protocol](serial-protocol.md)
 

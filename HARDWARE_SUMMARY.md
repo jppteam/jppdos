@@ -1,6 +1,6 @@
 # HARDWARE_SUMMARY.md — Agent Reference for the ESP32-C6-based J++Device
 
-*Firmware v1.0-RTM · 2026-07-18*
+*Firmware v1.1 · 2026-07-29*
 
 Purpose: give a coding agent everything needed to work on ESP-IDF firmware
 for the **J++Device**. This file documents the board's MCU, every

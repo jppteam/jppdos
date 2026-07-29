@@ -17,10 +17,16 @@ extern "C" {
  * newer SDK than the running firmware (JPP_SDK_VERSION < sdk_min).  Bump this
  * whenever a backward-compatible symbol/capability is ADDED to the SDK surface.
  *
- *   1 — initial release
+ *   1 — initial release                        (shipped in firmware v1.0-RTM)
  *   2 — adds network.connect (outbound TCP), the crypto primitives
  *       (sha256/sha1, aes256-ige, modexp/rsa_encrypt/dh_compute), and
  *       https.request (TLS-verified HTTP client, per-origin consent)
+ *                                              (shipped in firmware v1.1)
+ *
+ * Every level above is now RELEASED, so the next addition to the surface must
+ * mint level 3 — do not fold it into 2.  Level 2 was allowed to accumulate
+ * three separate additions only because no released firmware ever exported it,
+ * so no app could have been built against a partial version of it.
  */
 #define JPP_SDK_VERSION 2
 

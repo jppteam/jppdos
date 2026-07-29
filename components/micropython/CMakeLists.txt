@@ -56,6 +56,15 @@ set(MP_SOURCE_DIR "" CACHE PATH
 if(MP_SOURCE_DIR)
     set(MP_DIR "${MP_SOURCE_DIR}")
     message(STATUS "MicroPython: using local checkout at ${MP_DIR}")
+elseif(CMAKE_SCRIPT_MODE_FILE)
+    # ESP-IDF expands component requirements in an early pass that re-runs this
+    # file with `cmake -P` (tools/cmake/scripts/component_get_requirements.cmake).
+    # FetchContent cannot run there: FetchContent_Declare reaches define_property,
+    # which script mode does not provide, and the whole configure aborts. That
+    # pass reads only the REQUIRES list — idf_component_register ignores SRCS —
+    # so there is nothing to fetch for it. Point MP_DIR at where the real
+    # configure pass unpacks the archive and skip the download.
+    set(MP_DIR "${MP_FETCH_ROOT}/src")
 else()
     # No CMakeLists.txt at the MicroPython repo root, so MakeAvailable populates
     # the source without trying to add_subdirectory() it into the IDF build.
@@ -72,7 +81,9 @@ else()
     message(STATUS "MicroPython: ${MP_GIT_TAG} at ${MP_DIR}")
 endif()
 
-if(NOT EXISTS "${MP_DIR}/py/runtime.c")
+# Not checked in script mode: the tree legitimately does not exist yet during
+# requirements expansion, and that pass compiles nothing.
+if(NOT CMAKE_SCRIPT_MODE_FILE AND NOT EXISTS "${MP_DIR}/py/runtime.c")
     message(FATAL_ERROR
         "MicroPython source incomplete at ${MP_DIR} — py/runtime.c is missing.\n"
         "Delete ${MP_FETCH_ROOT} and re-run the build to refetch.")
