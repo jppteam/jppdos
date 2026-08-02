@@ -36,9 +36,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Must match the pin the project Dockerfile builds; testapp_mp does not build
-  # without it, and build_mp.py hard-fails rather than skipping the app.
-  MPY_CROSS_VERSION: 1.28.0
   # Which branch a tag has to be on to count as a finished release.
   STABLE_BRANCH: master
   PRERELEASE_BRANCH: develop
@@ -173,13 +170,35 @@ jobs:
                  "it must match before the stable tag."
           fi
 
+      # testapp_mp's build step hard-fails without mpy-cross, and the stock IDF
+      # image does not carry it — only the project Dockerfile does.
+      #
+      # Built from source rather than `pip install mpy-cross==<v>`, because the
+      # released 1.28.0 is not on PyPI at all (it publishes 1.27.0.post2 and a
+      # 1.28.0rc0.post2, nothing in between), so that install can only fail.
+      # The tag is read out of the Dockerfile so this cannot drift from the
+      # image the documented local flow uses — moving the MicroPython pin means
+      # editing one line there and nothing here. Takes a few seconds.
+      - name: Build mpy-cross
+        run: |
+          set -euo pipefail
+          MPY_TAG=$(sed -n 's/.*--branch \(v[0-9.]*\).*/\1/p' Dockerfile | head -1)
+          if [ -z "$MPY_TAG" ]; then
+            echo "::error file=Dockerfile::Could not read the mpy-cross tag" \
+                 "from the Dockerfile's 'git clone --branch <tag>' line."
+            exit 1
+          fi
+          echo "Building mpy-cross $MPY_TAG (per Dockerfile)"
+          git clone --quiet --depth 1 --branch "$MPY_TAG" \
+              https://github.com/micropython/micropython.git /tmp/micropython
+          make -s -C /tmp/micropython/mpy-cross -j"$(nproc)"
+          cp /tmp/micropython/mpy-cross/build/mpy-cross /usr/local/bin/mpy-cross
+          mpy-cross --version
+
       - name: Build firmware
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh"
-          # mpy-cross is baked into the project Dockerfile but not into the
-          # stock IDF image; testapp_mp's build step fails hard without it.
-          pip install "mpy-cross==${MPY_CROSS_VERSION}"
           idf.py set-target esp32c6
           idf.py build
 

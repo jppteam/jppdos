@@ -9,8 +9,10 @@
 #
 #   idf.py build     # also triggers testapp_mp_bin
 #
-# Requires mpy-cross 1.28.0 on PATH:
-#   pip install mpy-cross==1.28.0
+# Requires an mpy-cross emitting bytecode ABI 6 (mpy v6.3) on PATH. PyPI has
+# no 1.28.0 release; the rc emits the same v6.3:
+#   pip install mpy-cross==1.28.0rc0.post2
+# The project Dockerfile instead builds v1.28.0 from source.
 #
 # Output:
 #   build/apps/testapp_mp/main.mpy

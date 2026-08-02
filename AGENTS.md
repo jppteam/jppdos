@@ -230,7 +230,7 @@ build/apps/testapp_mp/       main.mpy + manifest.json
 failing the custom target) rather than skipping the app. The project `Dockerfile`
 builds `mpy-cross` 1.28.0 into `/usr/local/bin`, so the documented
 `docker compose run --rm build idf.py build` flow already has it; only a
-host-side build outside the container needs `pip install mpy-cross==1.28.0`. The
+host-side build outside the container needs its own `mpy-cross`. **`pip install mpy-cross==1.28.0` does not work — that release is not on PyPI** (it publishes `1.27.0.post2` then `1.28.0rc0.post2`, nothing in between); the rc emits the same bytecode ABI (`mpy v6.3`) and is the one-line option, otherwise build `v1.28.0` from source as the Dockerfile does. `.github/workflows/release.yml` builds it from source, reading the tag out of the `Dockerfile` so the two cannot drift. The
 `mtproto` skeleton is **not** built here: it lives in the sibling `jppdos-apps`
 repo and is built with `jppd-build`.
 Native `.bin` files are ELF32 shared objects; the `.bin` extension is what the firmware expects.
