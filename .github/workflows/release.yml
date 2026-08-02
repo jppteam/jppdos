@@ -69,6 +69,13 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     container: espressif/idf:v5.5.1
+    defaults:
+      run:
+        # A container job defaults to `sh -e {0}`, not bash — and on this
+        # Ubuntu-based image /bin/sh is dash, which has no `set -o pipefail`
+        # and no arrays. Set it once for the job rather than per step, so a
+        # step added later cannot silently land back on dash.
+        shell: bash
     outputs:
       channel: ${{ steps.channel.outputs.channel }}
       branch: ${{ steps.channel.outputs.branch }}
@@ -167,7 +174,6 @@ jobs:
           fi
 
       - name: Build firmware
-        shell: bash
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh"
@@ -178,7 +184,6 @@ jobs:
           idf.py build
 
       - name: Package artifacts
-        shell: bash
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh"
@@ -207,7 +212,6 @@ jobs:
       # Flash headroom is tight (2 MB part, ~4% free is the steady state), so
       # put the numbers where they can be read without downloading anything.
       - name: Size summary
-        shell: bash
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh"
