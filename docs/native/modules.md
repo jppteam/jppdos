@@ -1,6 +1,6 @@
 # Native code modules
 
-Code modules let a native app **page additional ELF binaries into the app pool on demand**, then unload and replace them. This is how the Games app ships 9 games in one 80 KB pool — the resident hub (~13 KB) loads one game module (~2–4 KB) at a time, runs it, and unloads it when the player returns to the menu.
+Code modules let a native app **page additional ELF binaries into the app pool on demand**, then unload and replace them. This is how the Games app ships 9 games in one pool — the resident hub (~13 KB) loads one game module (~2–4 KB) at a time, runs it, and unloads it when the player returns to the menu.
 
 Modules are a native-only feature. MicroPython apps cannot load modules.
 
@@ -8,7 +8,7 @@ Modules are a native-only feature. MicroPython apps cannot load modules.
 
 ## When to use modules
 
-Use modules when your app's total code exceeds what fits comfortably in the 80 KB pool alongside your hub, or when you want to ship optional features that are only loaded on demand. The hub keeps running the whole time — the module runs inside the hub's task with the hub's SDK context and capabilities.
+Use modules when your app's total code exceeds what fits comfortably in the pool alongside your hub, or when you want to ship optional features that are only loaded on demand. The hub keeps running the whole time — the module runs inside the hub's task with the hub's SDK context and capabilities.
 
 If your app fits in the pool as a single binary, you do not need modules.
 
@@ -16,7 +16,7 @@ If your app fits in the pool as a single binary, you do not need modules.
 
 ## How the pool is split
 
-The 80 KB app pool is used as follows during a module session:
+The app pool is used as follows during a module session:
 
 ```
 [  hub binary  |     free     |  module binary  ]
@@ -25,6 +25,8 @@ pool start     hub image end  watermark          pool end
 ```
 
 The hub loads into the low end of the pool at launch. When you call `jpp_sdk_module_load`, the module ELF is loaded into the **tail** of the pool from the watermark upward. Only one module can be resident at a time — loading a second module requires unloading the first.
+
+The pool is **64 KB on firmware v1.1 and earlier** and 80 KB from [SDK level 3](../sdk-changelog.md#the-app-pool-grew-to-80-kb) onward, so `hub + largest module` is the figure to keep under 64 KB if the app has to run on units in the field. A manifest cannot require the larger pool; `jpp_sdk_module_load` returning `NO_MEMORY` is what a too-tight fit looks like at runtime, and a hub that handles that gracefully (report it, stay on the menu) runs on both.
 
 ---
 

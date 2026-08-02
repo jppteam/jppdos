@@ -79,6 +79,13 @@ only use the original surface, leave it at `1` so the app runs on every unit.
 Level 3 is **not yet in any released firmware**, so an app declaring `sdk_min: 3`
 is rejected with `SDK_TOO_OLD` on every unit currently in the field.
 
+`sdk_min` gates **symbols and capabilities only**. It says nothing about how much
+memory a device will give your app: the [app pool](sdk/limits.md#apps-and-background)
+grew from 64 KB to 80 KB in the same firmware that exports level 3, but there is
+no manifest field for that and declaring `sdk_min: 3` does not reserve it. An app
+too large for the running firmware's pool fails at load with `NO_MEMORY`, not
+`SDK_TOO_OLD`.
+
 The [SDK changelog](sdk-changelog.md) documents each level in full.
 
 ### `app_type`
