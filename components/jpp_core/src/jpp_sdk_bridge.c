@@ -2892,6 +2892,21 @@ size_t jpp_sdk_wrap_text(const char *text,
     return (col > 0u || line > 0u) ? line + 1u : 0u;
 }
 
+/* A frame-backed modal (dialog/confirm/list/input/file_pick) takes the app out
+   of fullscreen with jpp_sdk_set_frame() (which sets canvas_fullscreen=false and
+   publishes its own frame_lines). A fullscreen app that never re-enables the
+   canvas afterwards — like MTProto, which flushes the whole 64-row canvas every
+   frame but only calls jpp_sdk_canvas_fullscreen(true) once — would then stay
+   windowed: the modal's text lingers on pages 0-1 and the app's bottom rows
+   never render. So the modal puts fullscreen (and the empty frame lines) back
+   on the way out, making the system UI invisible to the app. */
+static void jpp_sdk_modal_done(jpp_sdk_context_t *context, bool was_fullscreen)
+{
+    if (was_fullscreen && !context->canvas_fullscreen) {
+        (void)jpp_sdk_canvas_fullscreen(context, true);
+    }
+}
+
 jpp_sdk_status_t jpp_sdk_dialog(
     jpp_sdk_context_t *context,
     const char *title,
@@ -2905,6 +2920,7 @@ jpp_sdk_status_t jpp_sdk_dialog(
     if (out_result == NULL) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
+    bool fullscreen_before = context->canvas_fullscreen;
 
     char body[JPP_SDK_FRAME_LINE_CAPACITY][JPP_SDK_FRAME_TEXT_MAX];
     const char *lines[JPP_SDK_FRAME_LINE_CAPACITY];
@@ -2929,10 +2945,12 @@ jpp_sdk_status_t jpp_sdk_dialog(
         jpp_sdk_key_event_t key = jpp_sdk_ui_next_key(context);
         if (key == JPP_SDK_KEY_CENTER) {
             *out_result = JPP_SDK_UI_OK;
+            jpp_sdk_modal_done(context, fullscreen_before);
             return JPP_SDK_STATUS_OK;
         }
         if (key == JPP_SDK_KEY_CENTER_LONG) {
             *out_result = JPP_SDK_UI_BACK;
+            jpp_sdk_modal_done(context, fullscreen_before);
             return JPP_SDK_STATUS_OK;
         }
     }
@@ -2953,6 +2971,7 @@ jpp_sdk_status_t jpp_sdk_confirm(
     if (out_allow == NULL || (body_count > 0u && body_lines == NULL)) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
+    bool fullscreen_before = context->canvas_fullscreen;
 
     bool allow = default_allow;
     char frame[JPP_SDK_FRAME_LINE_CAPACITY][JPP_SDK_FRAME_TEXT_MAX];
@@ -2987,8 +3006,8 @@ jpp_sdk_status_t jpp_sdk_confirm(
         switch (key) {
         case JPP_SDK_KEY_LEFT:        allow = false; break;
         case JPP_SDK_KEY_RIGHT:       allow = true;  break;
-        case JPP_SDK_KEY_CENTER:      *out_allow = allow; return JPP_SDK_STATUS_OK;
-        case JPP_SDK_KEY_CENTER_LONG: *out_allow = false; return JPP_SDK_STATUS_OK;
+        case JPP_SDK_KEY_CENTER:      *out_allow = allow; jpp_sdk_modal_done(context, fullscreen_before); return JPP_SDK_STATUS_OK;
+        case JPP_SDK_KEY_CENTER_LONG: *out_allow = false; jpp_sdk_modal_done(context, fullscreen_before); return JPP_SDK_STATUS_OK;
         default: break;
         }
     }
@@ -3014,6 +3033,7 @@ jpp_sdk_status_t jpp_sdk_list(
         out_result == NULL) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
+    bool fullscreen_before = context->canvas_fullscreen;
 
     bool   checked[JPP_SDK_LIST_ITEM_MAX] = {0};
     bool   has_title  = jpp_sdk_text_present(title);
@@ -3069,6 +3089,7 @@ jpp_sdk_status_t jpp_sdk_list(
                 out_indices[0] = cursor;
                 *out_count = 1u;
                 *out_result = JPP_SDK_UI_OK;
+                jpp_sdk_modal_done(context, fullscreen_before);
                 return JPP_SDK_STATUS_OK;
             }
             if (cursor == item_count) {   /* "Done" row confirms */
@@ -3080,6 +3101,7 @@ jpp_sdk_status_t jpp_sdk_list(
                 }
                 *out_count = c;
                 *out_result = JPP_SDK_UI_OK;
+                jpp_sdk_modal_done(context, fullscreen_before);
                 return JPP_SDK_STATUS_OK;
             }
             checked[cursor] = !checked[cursor];
@@ -3087,6 +3109,7 @@ jpp_sdk_status_t jpp_sdk_list(
         case JPP_SDK_KEY_CENTER_LONG:
             *out_count = 0u;
             *out_result = JPP_SDK_UI_BACK;
+            jpp_sdk_modal_done(context, fullscreen_before);
             return JPP_SDK_STATUS_OK;
         default:
             break;
@@ -3396,13 +3419,18 @@ jpp_sdk_status_t jpp_sdk_input(
     if (out_value == NULL || value_buf_len == 0u || out_result == NULL) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
+    bool fullscreen_before = context->canvas_fullscreen;
 
+    jpp_sdk_status_t r;
     if (type == JPP_SDK_INPUT_DATE || type == JPP_SDK_INPUT_TIME) {
-        return jpp_sdk_datetime_picker(context, title, type,
-                                       out_value, value_buf_len, out_result);
+        r = jpp_sdk_datetime_picker(context, title, type,
+                                    out_value, value_buf_len, out_result);
+    } else {
+        r = jpp_sdk_keyboard_entry(context, title, placeholder, type, NULL,
+                                   out_value, value_buf_len, out_result);
     }
-    return jpp_sdk_keyboard_entry(context, title, placeholder, type, NULL,
-                                  out_value, value_buf_len, out_result);
+    jpp_sdk_modal_done(context, fullscreen_before);
+    return r;
 }
 
 
@@ -3485,6 +3513,8 @@ jpp_sdk_status_t jpp_sdk_file_pick(
         if (cap_st != JPP_SDK_STATUS_OK) { return cap_st; }
     }
 
+    bool fullscreen_before = context->canvas_fullscreen;
+
     const jpp_file_browser_io_t io = {
         .list_dir = sdk_fp_list_dir,
         .render   = sdk_fp_render,
@@ -3497,6 +3527,7 @@ jpp_sdk_status_t jpp_sdk_file_pick(
         out_path[0] = '\0';
         *out_result = JPP_SDK_UI_BACK;
     }
+    jpp_sdk_modal_done(context, fullscreen_before);
     return JPP_SDK_STATUS_OK;
 }
 

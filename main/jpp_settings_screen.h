@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 /* ---- Version string ----------------------------------------------------- */
-#define JPPDOS_VERSION "1.1"
+#define JPPDOS_VERSION "1.2-rc.3"
 
 /* ---- Settings sections -------------------------------------------------- */
 typedef enum {
