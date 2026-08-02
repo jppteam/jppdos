@@ -6,6 +6,29 @@ each build, not an API diff.
 
 ## Unreleased
 
+### File transfer & device verification
+
+- **WebDAV transfers are faster and no longer fight the Wi-Fi radio for
+  memory.** The WebDAV server and the Device Info verification server used to
+  run on ESP-IDF's stock HTTP server, which takes its working memory — task
+  stack, connection state, buffers — from the same pool the Wi-Fi driver draws
+  packet buffers from. On a device with one small block of RAM shared by
+  everything, a big file transfer could starve the radio and wedge the
+  connection mid-copy. Both servers now run in the 64 KB workspace the device
+  reserves for running apps, which is otherwise sitting idle while you are on
+  the WebDAV screen. Nothing is taken from the Wi-Fi side any more, and the
+  file buffer grew from 4 KB to 32 KB, so copies do far fewer SD-card and
+  network round trips.
+
+- **The servers behave like apps now: they run in front, not behind.** Backing
+  out of the WebDAV screen stops the server instead of leaving it quietly
+  serving your SD card. Consequently the device will not sleep while either
+  server is up, and starting a server while an app is running (or vice versa)
+  is now impossible rather than merely discouraged.
+
+- WebDAV also gained proper `HEAD` support, which some file managers use to
+  check a file before downloading it.
+
 ### App SDK & platform
 
 - **A documented SDK call that never actually worked now works.** `wrap_text`,
