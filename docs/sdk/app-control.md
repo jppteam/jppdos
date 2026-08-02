@@ -36,7 +36,7 @@ jppsdk.set_frame(lines: list[str]) -> None
 **Returns:** `JPP_SDK_OK`, or `JPP_SDK_TEXT_TRUNCATED` if any line was clipped.
 
 **Notes:**
-- Calling `set_frame` clears fullscreen canvas mode. If you were using `canvas_fullscreen(true)`, re-enable it after each `set_frame` call.
+- Calling `set_frame` clears fullscreen canvas mode, taking the app back to the 48-row window for the duration. When the modal returns, the firmware restores fullscreen if the app was in fullscreen when the frame was shown, so apps do not need to re-enable it after every prompt.
 - Row 0 acts as the title — if non-empty, a 1-px signature rule is drawn below it.
 - The frame persists until the next `set_frame`. You do not need to call it on every idle tick; call it only when content changes.
 

@@ -11,11 +11,13 @@ The canvas is a **128×48 pixel area** occupying OLED pages 2–7 (below the fra
 
 Each pixel row is 16 bytes (128 bits). In each byte, the most significant bit is the leftmost pixel: byte 0 bits `[7..0]` map to pixels x=0..7, byte 1 to x=8..15, and so on.
 
-!!! warning "`set_frame` and every modal drop fullscreen mode."
-    [`canvas_fullscreen(true)`](#canvas_fullscreen) is cleared by
-    [`set_frame`](app-control.md#set_frame) and by `dialog` / `list` / `input` /
-    `confirm`. Re-enable it after any of those calls, or your next frame draws
-    into the 48-row window.
+!!! note "Modals drop fullscreen temporarily — and restore it for you."
+    [`set_frame`](app-control.md#set_frame) and `dialog` / `list` / `input` /
+    `confirm` switch to the 48-row window to draw the system UI. When the modal
+    returns, the firmware re-enables fullscreen automatically if your app was
+    in fullscreen when the modal started, so a scene that repaints every frame
+    (e.g. `canvas_write` of the whole 128×64) keeps rendering fullscreen without
+    re-calling `canvas_fullscreen(true)` after every prompt.
 
 ### `canvas_write`
 
@@ -124,8 +126,7 @@ jppsdk.canvas_fullscreen(on: bool) -> None
 
 **Notes:**
 - Enabling fullscreen clears the canvas and hides the frame text and signature rule.
-- `set_frame` and all modal UI helpers (`dialog`, `list`, `input`) switch back to windowed mode. Call `canvas_fullscreen(true)` again after any of those calls.
-- Games should call `canvas_fullscreen(true)` once at startup and re-enable it after any modal.
+- `set_frame` and all modal UI helpers (`dialog`, `list`, `input`, `confirm`) switch back to windowed mode to draw themselves, then automatically restore fullscreen on return if the app was fullscreen when the modal started. You do not need to re-enable it after a prompt.
 
 ---
 
