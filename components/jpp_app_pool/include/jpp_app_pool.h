@@ -33,12 +33,22 @@ extern "C" {
  * app image, a server wants several separate allocations, so it carves them
  * with jpp_app_pool_alloc() instead of taking the base pointer.
  *
- * Sizing: 64 KB fits the largest native app (MeetApp, ~50 KB loaded) with
- * headroom, and is far above the typical MicroPython GC footprint (~15-20 KB).
- * Raise JPP_APP_POOL_BYTES (and rebuild) if an app needs more.
+ * Sizing: 80 KB. The largest native app (MeetApp, ~50 KB loaded) fits with
+ * headroom, as does a hub plus one code module and the ~43 KB a running HTTP
+ * server carves; the typical MicroPython GC footprint (~15-20 KB) is nowhere
+ * near it.
+ *
+ * Every byte here is static .bss, taken permanently out of the same heap the
+ * WiFi driver draws management/data frames and lwIP pbufs from — which is the
+ * failure mode jpp_heap_monitor exists to catch. So this is a real trade, not
+ * free headroom: raising it buys app capacity at the cost of free heap after
+ * boot, which ESP_IDF_CONTRACT.md holds to a 64 KB floor. Check the heap_mon
+ * boot line on hardware after changing it, and update the size quoted in
+ * docs/sdk/limits.md, the native app docs, and the AGENTS.md maps in the same
+ * commit.
  */
 
-#define JPP_APP_POOL_BYTES (64u * 1024u)
+#define JPP_APP_POOL_BYTES (80u * 1024u)
 
 /*
  * Acquire the shared pool for an owner (a short label such as "app" or

@@ -836,7 +836,7 @@ jppsdk.mdns_stop() -> None
 
 **`esp_http_server` is no longer linked.** WebDAV and the LRV server moved to
 the in-house `jpp_http_server_core` (`components/jpp_core/`), which runs its
-task stack and I/O buffer out of the shared 64 KB `jpp_app_pool` instead of the
+task stack and I/O buffer out of the shared 80 KB `jpp_app_pool` instead of the
 heap. Two consequences for this proposal:
 
 1. Reaching for `httpd_start()` here re-links the whole ESP-IDF HTTP server
@@ -846,7 +846,7 @@ heap. Two consequences for this proposal:
 2. `jpp_http_server_start()` **acquires the app pool**, and a running app
    already holds it. An app-owned server therefore cannot use the core as-is:
    it needs a mode that takes its memory from the app's own pool allocation
-   (the app knows how much of its 64 KB it can spare) rather than acquiring the
+   (the app knows how much of its 80 KB it can spare) rather than acquiring the
    pool itself. Design that before implementing this step. The upside is that
    the WebDAV/LRV mutual exclusion below stops being a policy check and becomes
    structural.

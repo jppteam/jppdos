@@ -1,0 +1,225 @@
+# =============================================================================
+# Builds the firmware when a version tag is pushed and publishes it as a
+# GitHub Release with flashable binaries attached.
+#
+# Only the PRODUCTION image is built and published. The provisioning image
+# (scripts/build_images.sh, CONFIG_JPP_LRV_PROVISIONING=y) is deliberately NOT
+# released: it carries the LRV EEPROM write path, which production firmware
+# does not contain. Manufacturing builds that locally.
+#
+# Needs no secrets — the built-in GITHUB_TOKEN creates the release.
+# =============================================================================
+name: release
+
+on:
+  push:
+    # Existing tags are unprefixed ("1.0-RTM", "1.1"); "v" is accepted too in
+    # case the convention changes.
+    tags:
+      - '[0-9]+*'
+      - 'v[0-9]+*'
+  # Lets a failed publish be retried against a tag that already exists.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release'
+        required: true
+
+concurrency:
+  # One release per tag at a time, and never cancel a run mid-publish.
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Must match the pin the project Dockerfile builds; testapp_mp does not build
+  # without it, and build_mp.py hard-fails rather than skipping the app.
+  MPY_CROSS_VERSION: 1.28.0
+
+jobs:
+  # A tagged build is the one build that must not ship broken, so the host
+  # suite gates it here rather than relying on tests.yml running in parallel.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: python3 -m pip install --upgrade pip -r requirements-test.txt
+
+      - name: Run host pytest suite
+        run: python3 -m pytest tests -v --tb=short
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.1
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The build stamps the app descriptor from `git describe`, which
+          # needs tags and history.
+          fetch-depth: 0
+
+      # The container runs as root over a checkout owned by the runner user;
+      # without this every git call in the build fails "dubious ownership".
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Resolve tag
+        id: tag
+        run: echo "name=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      # A release whose firmware reports a different version in Settings > About
+      # than the tag it was cut from is the exact mislabelling this catches.
+      - name: Check JPPDOS_VERSION matches the tag
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          WANT="${TAG#v}"
+          HAVE=$(sed -n 's/^#define JPPDOS_VERSION "\(.*\)"/\1/p' main/jpp_settings_screen.h)
+          if [ "$HAVE" != "$WANT" ]; then
+            echo "::error file=main/jpp_settings_screen.h::JPPDOS_VERSION is \"$HAVE\"" \
+                 "but the tag is \"$TAG\". Update JPPDOS_VERSION in" \
+                 "main/jpp_settings_screen.h, then re-tag."
+            exit 1
+          fi
+          echo "JPPDOS_VERSION = $HAVE"
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          # mpy-cross is baked into the project Dockerfile but not into the
+          # stock IDF image; testapp_mp's build step fails hard without it.
+          pip install "mpy-cross==${MPY_CROSS_VERSION}"
+          idf.py set-target esp32c6
+          idf.py build
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          TAG="${{ steps.tag.outputs.name }}"
+          OUT="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$OUT"
+
+          # Single-file image: one esptool write at 0x0, no offsets to get wrong.
+          idf.py merge-bin -o "$OUT/jppdos-${TAG}-esp32c6-merged.bin"
+
+          # Separate images for anyone flashing partitions individually, with
+          # the offsets/flash settings the firmware was built for.
+          ( cd build && zip -q -j "$OUT/jppdos-${TAG}-esp32c6.zip" \
+              bootloader/bootloader.bin \
+              partition_table/partition-table.bin \
+              jppdos_idf.bin \
+              flasher_args.json \
+              flash_args )
+
+          # Showcase apps, ready to copy onto /sd/apps/<id>/.
+          ( cd build/apps && zip -q -r "$OUT/jppdos-${TAG}-apps.zip" . )
+
+          ( cd "$OUT" && sha256sum jppdos-* > SHA256SUMS.txt )
+          ls -l "$OUT"
+
+      # Flash headroom is tight (2 MB part, ~4% free is the steady state), so
+      # put the numbers where they can be read without downloading anything.
+      - name: Size summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          {
+            echo '### Image size'
+            echo
+            echo '```'
+            idf.py size 2>/dev/null | sed -n '/Memory Type/,/^└/p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Only CHANGELOG.md is needed here, but a full checkout keeps the notes
+      # extraction honest about which commit the tag points at.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist
+
+      # CHANGELOG.md headings look like "## v1.1 — 2026-07-29"; take that
+      # section verbatim so the release page and the changelog cannot drift.
+      - name: Extract release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          BARE="${TAG#v}"
+          # Dots are literal here, not "any character".
+          BARE_RE=$(printf '%s' "$BARE" | sed 's/\./\\./g')
+          awk -v tag="$BARE_RE" '
+            $0 ~ "^## v?" tag "([^0-9.].*)?$" { grab = 1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No '## $BARE' section in CHANGELOG.md —" \
+                 "falling back to auto-generated notes."
+          fi
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          ARGS=(--title "JPPDOS $TAG")
+          if [ "${{ steps.notes.outputs.found }}" = "true" ]; then
+            ARGS+=(--notes-file notes.md)
+          else
+            ARGS+=(--generate-notes)
+          fi
+          # Anything with a pre-release marker in the tag is flagged as such;
+          # "1.0-RTM" and "1.1" are full releases.
+          case "$TAG" in
+            *rc*|*RC*|*alpha*|*beta*) ARGS+=(--prerelease) ;;
+          esac
+          # Add --draft here if releases should be reviewed before going public.
+          gh release create "$TAG" "${ARGS[@]}" dist/*
+
+      - name: Summary
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          echo "Published <${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG>" \
+            >> "$GITHUB_STEP_SUMMARY"

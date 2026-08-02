@@ -12,7 +12,7 @@
 Stateless, mbedTLS-backed primitives (AES / SHA / bignum are hardware-accelerated
 on the ESP32-C6). The heavy crypto code lives in the firmware, so an app can
 implement transport crypto such as MTProto without carrying its own AES/bignum
-in the 64 KB app pool.
+in the app pool.
 
 ### `jpp_crypto_sha256`
 ### `jpp_crypto_sha1`

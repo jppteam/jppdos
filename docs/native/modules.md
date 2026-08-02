@@ -1,6 +1,6 @@
 # Native code modules
 
-Code modules let a native app **page additional ELF binaries into the app pool on demand**, then unload and replace them. This is how the Games app ships 9 games in one 64 KB pool — the resident hub (~13 KB) loads one game module (~2–4 KB) at a time, runs it, and unloads it when the player returns to the menu.
+Code modules let a native app **page additional ELF binaries into the app pool on demand**, then unload and replace them. This is how the Games app ships 9 games in one 80 KB pool — the resident hub (~13 KB) loads one game module (~2–4 KB) at a time, runs it, and unloads it when the player returns to the menu.
 
 Modules are a native-only feature. MicroPython apps cannot load modules.
 
@@ -8,7 +8,7 @@ Modules are a native-only feature. MicroPython apps cannot load modules.
 
 ## When to use modules
 
-Use modules when your app's total code exceeds what fits comfortably in the 64 KB pool alongside your hub, or when you want to ship optional features that are only loaded on demand. The hub keeps running the whole time — the module runs inside the hub's task with the hub's SDK context and capabilities.
+Use modules when your app's total code exceeds what fits comfortably in the 80 KB pool alongside your hub, or when you want to ship optional features that are only loaded on demand. The hub keeps running the whole time — the module runs inside the hub's task with the hub's SDK context and capabilities.
 
 If your app fits in the pool as a single binary, you do not need modules.
 
@@ -16,7 +16,7 @@ If your app fits in the pool as a single binary, you do not need modules.
 
 ## How the pool is split
 
-The 64 KB app pool is used as follows during a module session:
+The 80 KB app pool is used as follows during a module session:
 
 ```
 [  hub binary  |     free     |  module binary  ]

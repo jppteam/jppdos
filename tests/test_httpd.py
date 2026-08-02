@@ -87,7 +87,7 @@ def test_http_server_core(tmp_path):
     out = _run(_build("http_server", tmp_path), str(_free_port()))
     assert "PASSED" in out
     # The pool interlock is the point of the rewrite: no server may start while
-    # an app holds the 64 KB, and stopping must hand every byte back.
+    # an app holds the pool, and stopping must hand every byte back.
     assert "pool released on stop" in out
     assert "server refuses to start while an app holds the pool" in out
     # Stopping while a client is parked mid-body is the case the release
