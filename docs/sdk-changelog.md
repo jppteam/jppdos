@@ -69,6 +69,24 @@ level-2 device cannot run it regardless of what the level-1 header advertised.
 - **C only.** MicroPython apps are unaffected — they never resolve symbols
   through `s_symtab`.
 
+### The app pool grew to 80 KB
+
+The single pool your app is loaded into — code for a native app, GC heap for a
+MicroPython one — went from 64 KB to **80 KB**. Nothing about the API changed,
+so this needs no `sdk_min` of its own: a bigger pool cannot break an app, and
+`sdk_min: 3` already implies a firmware that has it.
+
+It matters if you were up against the ceiling. A native hub plus one module now
+has 16 KB more to play with (see [Code modules](native/modules.md)), and a
+MicroPython app has a larger GC heap before collection pressure starts to bite.
+
+!!! warning "It does not mean a level-2 device will load a bigger app."
+    The pool size is a property of the firmware, not of the SDK level, and
+    there is no way to declare "needs an 80 KB pool" in a manifest. An app built
+    to fill 80 KB simply fails to load on firmware v1.1 with `NO_MEMORY`. If
+    that matters to you, keep the binary under 64 KB or gate the extra bulk
+    behind a module you load only when it fits.
+
 ---
 
 ## Level 2
@@ -117,7 +135,7 @@ accelerated on the ESP32-C6: `jpp_crypto_sha256`, `jpp_crypto_sha1`,
 `jpp_crypto_rsa_encrypt`, and `jpp_crypto_dh_compute`.
 
 They exist so an app can do transport crypto without carrying AES and bignum
-code inside the 64 KB app pool. The MTProto client skeleton is the reference
+code inside the app pool. The MTProto client skeleton is the reference
 user: it fits in roughly 11 KB of pool because the heavy crypto stayed in the
 firmware.
 

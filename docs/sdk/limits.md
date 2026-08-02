@@ -45,4 +45,4 @@ firmware, not tunables — an app cannot raise them.
 | Background task run quota | 30 seconds |
 | Background task minimum interval | 60 seconds |
 | Manifest capabilities | 16 |
-| Native app pool | 64 KB (hub + one module) |
+| Native app pool | 80 KB (hub + one module) |

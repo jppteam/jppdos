@@ -1529,10 +1529,11 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                     last_drawn_wifi = false;
                     ESP_LOGI(TAG, "SCREEN_WAKE");
                 } else if (now == JPP_UI_POWER_OFF) {
-                    const char *top_at_sleep = jpp_ui_stack_top(&shell->stack);
-                    bool wakelock = (shell->fileserver_running &&
-                                     top_at_sleep != NULL &&
-                                     strcmp(top_at_sleep, "webdav") == 0) ||
+                    /* Either HTTP server is a foreground activity holding the
+                       app pool — it only runs while its own screen is up, so
+                       running is on its own enough to hold off deep sleep. */
+                    bool wakelock = shell->fileserver_running ||
+                                    jpp_lrv_server_is_running() ||
                                     (s_active_sdk_context != NULL &&
                                      s_active_sdk_context->wakelock_held) ||
                                     jpp_serial_mgr_needs_render();
@@ -1776,9 +1777,10 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             continue;
         }
 
-        /* Dim state: show big clock on launcher (suppressed when WebDAV server is active) */
+        /* Dim state: show big clock on launcher (suppressed while an HTTP
+           server is up — its screen shows the address the user is typing in) */
         if (shell->power_state == JPP_UI_POWER_DIM && !sd_app_open &&
-            !shell->fileserver_running) {
+            !shell->fileserver_running && !jpp_lrv_server_is_running()) {
             render_dim_clock(rtc_state);
             vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(JPP_UI_REFRESH_MS));
             continue;

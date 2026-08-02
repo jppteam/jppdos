@@ -6,6 +6,54 @@ each build, not an API diff.
 
 ## Unreleased
 
+### Apps
+
+- **Apps get more room: the workspace grew from 64 KB to 80 KB.** That is the
+  single block a running app lives in — program code for a C app, or the
+  garbage-collected heap for a MicroPython one. Apps that were bumping against
+  the ceiling now have 16 KB more, and a hub-plus-modules app can keep a bigger
+  hub resident. This costs the device 16 KB of general-purpose memory, so it is
+  a trade rather than free headroom.
+
+  Note it is a property of the firmware, not of the SDK level: an app built to
+  fill 80 KB will not load on v1.1, and there is no way to say "needs 80 KB" in
+  a manifest.
+
+### File transfer & device verification
+
+- **WebDAV transfers are faster and no longer fight the Wi-Fi radio for
+  memory.** The WebDAV server and the Device Info verification server used to
+  run on ESP-IDF's stock HTTP server, which takes its working memory — task
+  stack, connection state, buffers — from the same pool the Wi-Fi driver draws
+  packet buffers from. On a device with one small block of RAM shared by
+  everything, a big file transfer could starve the radio and wedge the
+  connection mid-copy. Both servers now run in the same workspace the device
+  reserves for running apps, which is otherwise sitting idle while you are on
+  the WebDAV screen. Nothing is taken from the Wi-Fi side any more, and the
+  file buffer grew from 4 KB to 32 KB, so copies do far fewer SD-card and
+  network round trips.
+
+- **The servers behave like apps now: they run in front, not behind.** Backing
+  out of the WebDAV screen stops the server instead of leaving it quietly
+  serving your SD card. Consequently the device will not sleep while either
+  server is up, and starting a server while an app is running (or vice versa)
+  is now impossible rather than merely discouraged.
+
+- WebDAV also gained proper `HEAD` support, which some file managers use to
+  check a file before downloading it.
+
+### Build & release
+
+- Pushing a version tag now builds the firmware and publishes a GitHub Release
+  with flashable images attached (`.github/workflows/release.yml`). Release
+  notes are taken from this file's section for that version.
+
+- Tags cut from `develop` publish as **pre-releases**, tags cut from `master`
+  as full releases. The branch is worked out from which one contains the tagged
+  commit, since a tag push carries no branch of its own; anything reachable
+  from neither is treated as a pre-release. `JPPDOS_VERSION` must match the tag
+  for a stable release and is only warned about for a pre-release.
+
 ### App SDK & platform
 
 - **A documented SDK call that never actually worked now works.** `wrap_text`,

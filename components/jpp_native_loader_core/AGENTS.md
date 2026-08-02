@@ -9,7 +9,7 @@ A native app binary is an ELF32 shared object (`ET_DYN`) compiled for
 `riscv32-esp-elf` with `-fPIC -shared -mno-relax -nostartfiles`. The loader:
 
 1. Reads and validates the ELF header (RISC-V, 32-bit, little-endian, ET_DYN).
-2. Acquires the shared `jpp_app_pool` (64 KB static `.bss`, executable on the C6
+2. Acquires the shared `jpp_app_pool` (80 KB static `.bss`, executable on the C6
    because `CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT=n` maps all SRAM RWX) covering all
    PT_LOAD segments. The pool is shared with the MicroPython GC heap — native and
    MP apps are mutually exclusive, so it is always free at launch.
@@ -67,6 +67,6 @@ The resulting `.so` file (which is a valid ELF) is placed on the SD card as
 | `READ_FAILED` | File not found or I/O error |
 | `INVALID_ELF` | Not a valid ELF32 RISC-V shared object |
 | `UNSUPPORTED` | Relocation type not handled |
-| `NO_MEMORY` | shared `jpp_app_pool` busy, or binary exceeds the 64 KB pool |
+| `NO_MEMORY` | shared `jpp_app_pool` busy, or binary exceeds the 80 KB pool |
 | `UNRESOLVED_SYM` | Symbol missing from firmware export table |
 | `NO_ENTRY` | `jpp_app_entry` not exported by the binary |

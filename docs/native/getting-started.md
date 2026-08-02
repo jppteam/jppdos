@@ -17,7 +17,7 @@ You do not need to install ESP-IDF, a RISC-V toolchain, or Python on your host �
 
 ## How native apps work
 
-A native app binary is an **ELF32 RISC-V shared object** (`ET_DYN`) compiled with position-independent code flags. The firmware's native loader (`jpp_native_loader_core`) maps it into a 64 KB static pool in BSS at launch, resolves all undefined symbols from the firmware's exported symbol table, and calls your entry point.
+A native app binary is an **ELF32 RISC-V shared object** (`ET_DYN`) compiled with position-independent code flags. The firmware's native loader (`jpp_native_loader_core`) maps it into an 80 KB static pool in BSS at launch, resolves all undefined symbols from the firmware's exported symbol table, and calls your entry point.
 
 All firmware functions (`jpp_sdk_*`, `esp_log_write`, standard C library functions) are resolved at load time from the symbol table — you never link against a separate SDK library. This means:
 
@@ -358,5 +358,5 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 - Use `jpp_sdk_wait_key(ctx, 100, &key)` with a short timeout when you need periodic updates (e.g. refreshing a clock display).
 - Check the return value of every SDK call. `JPP_SDK_ACCESS_DENIED` is expected and normal — handle it gracefully rather than treating it as a fatal error.
 - Honour `JPP_SDK_KEY_BACK` wherever it makes sense to exit or go up a level. Don't try to detect the physical gesture behind it unless you have deliberately claimed one.
-- The 64 KB app pool holds your entire binary. A typical app is 5–15 KB; complex apps with many data structures may approach 50 KB. If you need more, structure your code as a hub + loaded modules (see [Code modules](modules.md)).
+- The 80 KB app pool holds your entire binary. A typical app is 5–15 KB; complex apps with many data structures may approach 50 KB. If you need more, structure your code as a hub + loaded modules (see [Code modules](modules.md)).
 - `snprintf` is available from the standard C library via the symbol table. `malloc`/`free` work too, but prefer stack allocation — the device heap is shared with Wi-Fi and other firmware services.

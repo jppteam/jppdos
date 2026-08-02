@@ -539,6 +539,17 @@ jpp_ui_status_t jpp_ui_shell_handle_action(jpp_ui_shell_t *shell, jpp_ui_action_
 
     if (jpp_str_eq(screen, JPP_UI_SCREEN_WEBDAV)) {
         if (action == JPP_UI_ACTION_BACK) {
+            /* The server is a foreground activity: it runs out of the shared
+               app pool, so leaving the screen has to hand that memory back
+               rather than leave a task serving in the background. */
+            if (shell->fileserver_running &&
+                jpp_fileserver_stop() == JPP_FILESERVER_RESULT_OK) {
+                shell->fileserver_running     = false;
+                shell->fileserver_password[0] = '\0';
+            }
+            /* A failed stop leaves the flag alone: the main loop's 2 s status
+               poll re-reports the truth rather than showing a stopped server
+               that is in fact still holding the pool. */
             (void)jpp_ui_stack_pop(&shell->stack);
         } else if (shell->fileserver_running) {
             if (action == JPP_UI_ACTION_UP) {

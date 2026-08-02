@@ -309,5 +309,8 @@ app discovery              // /sd/apps scan, launcher handoff
 From `main/CMakeLists.txt`: `jpp_core`, `jpp_native_loader_core`,
 `jpp_crypto_core`, `spiffs`, `fatfs`, `sdmmc` (overridden, see §4.4),
 `driver`, `esp_driver_usb_serial_jtag`, `esp_adc`, `json`, `esp_wifi`,
-`esp_netif`, `lwip`, `nvs_flash`, `bt`, `esp_http_client`, `esp_http_server`,
-`esp_timer`, `esp_rom`, `espressif__libsodium`, and `mbedtls`.
+`esp_netif`, `lwip`, `nvs_flash`, `bt`, `esp_http_client`,
+`esp_timer`, `esp_rom`, `espressif__libsodium`, `mbedtls`, and `esp-tls`.
+`esp_http_server` is deliberately **not** in the list: the WebDAV and LRV
+servers run on the in-house `jpp_http_server_core` so their memory comes from
+the app pool rather than the heap the Wi-Fi driver shares (see `AGENTS.md`).
