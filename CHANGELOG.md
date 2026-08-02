@@ -45,9 +45,14 @@ each build, not an API diff.
 ### Build & release
 
 - Pushing a version tag now builds the firmware and publishes a GitHub Release
-  with flashable images attached (`.github/workflows/release.yml`). The build
-  refuses to run if `JPPDOS_VERSION` does not match the tag, and the release
+  with flashable images attached (`.github/workflows/release.yml`). Release
   notes are taken from this file's section for that version.
+
+- Tags cut from `develop` publish as **pre-releases**, tags cut from `master`
+  as full releases. The branch is worked out from which one contains the tagged
+  commit, since a tag push carries no branch of its own; anything reachable
+  from neither is treated as a pre-release. `JPPDOS_VERSION` must match the tag
+  for a stable release and is only warned about for a pre-release.
 
 ### App SDK & platform
 
