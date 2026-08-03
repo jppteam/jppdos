@@ -5,7 +5,7 @@
   "name": "SDK Test (C)",
   "version": "1.0.0",
   "author": "jppdos",
-  "sdk_min": 1,
+  "sdk_min": 3,
   "entry": "testapp_native.bin",
   "background": {
     "enabled": true,
@@ -16,11 +16,14 @@
   "capabilities": [
     "files.full",
     "http.request",
+    "https.request",
     "network.bind",
+    "network.connect",
     "ble.scan",
     "ble.advertise",
     "ble.connect",
     "ble.host",
+    "esp_now",
     "background.register"
   ]
 }
