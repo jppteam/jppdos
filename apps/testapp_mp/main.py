@@ -2,7 +2,8 @@
 testapp_mp — exercises every App SDK capability from MicroPython.
 
 Menu layout mirrors testapp_native (C version):
-  UI | Device | Files | KV | IPC | HTTP | Network | BLE | Buzzer | System | Exit
+  UI | Device | Files | KV | IPC | HTTP | Network | BLE | ESP-NOW | Buzzer |
+  Hardware | Crypto | System | Exit
 
 Background: the manifest declares a "heartbeat" task (every 300 s). The
 System menu's "Background register" item triggers the background.register
@@ -13,9 +14,10 @@ The app runs as a blocking sequence from on_idle() so the flow is identical
 to the C version: each test calls blocking SDK helpers (dialog, list, input)
 which wait for the user before returning.
 
-Note: ble_host_set_value / ble_host_wait_write / ble_host_clear /
-ble_set_connectable are not exposed in the jppsdk Python module; those
-functions are covered by the C version only.
+Note: the jppsdk module now mirrors the native SDK one-for-one — the only
+calls without a Python binding are module_load / module_run / module_unload
+(they page in a second native ELF; MicroPython apps use import instead) and
+push_key (a firmware-internal input hook).
 """
 
 import jppsdk
@@ -141,6 +143,47 @@ def test_keys(sdk):
     _show(sdk, "Keys pressed", " ".join(pressed))
 
 
+def test_poll_key(sdk):
+    # poll_key never blocks: right after entering the test the queue is
+    # almost always empty, unlike wait_key which would sit here until a key
+    # arrives.
+    k = sdk.poll_key()
+    _show_result(sdk, "poll_key (immediate)", True,
+                 "NONE (queue empty)" if k == jppsdk.KEY_NONE else "had a queued key")
+    _show(sdk, "poll_key", "Now press any key (via wait_key)...")
+    sdk.wait_key(0)
+    _show(sdk, "poll_key", "Got it via wait_key -- contrast confirmed.")
+
+
+def test_confirm(sdk):
+    try:
+        allow = sdk.confirm(
+            "Confirm test",
+            ["This is the shared", "Deny/Allow consent", "surface (confirm)."],
+            default_allow=True,
+        )
+        _show_result(sdk, "confirm", True, "Allow" if allow else "Deny")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "confirm", False, str(e))
+
+
+def test_wrap_text(sdk):
+    long_text = ("This sentence is long enough that wrap_text should split "
+                 "it across several twenty-one character rows.")
+    lines = sdk.wrap_text(long_text)
+    sdk.set_frame(lines)
+    sdk.wait_key(0)
+    _show_result(sdk, "wrap_text", True, f"{len(lines)} line(s)")
+
+
+def test_file_pick(sdk):
+    try:
+        path = sdk.file_pick()
+        _show(sdk, "File pick", f"Picked: {path}" if path is not None else "BACK: ")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "file_pick", False, str(e))
+
+
 def menu_ui(sdk):
     items = [
         "Frame (7 lines)",
@@ -153,6 +196,10 @@ def menu_ui(sdk):
         "Input TIME",
         "Canvas draw",
         "Key events",
+        "Poll key",
+        "Confirm",
+        "Wrap text",
+        "File pick",
     ]
     while True:
         sel = _pick(sdk, "UI Tests", items)
@@ -161,7 +208,8 @@ def menu_ui(sdk):
         handlers = [
             test_frame, test_dialog, test_list_single, test_list_multi,
             test_input_text, test_input_number, test_input_date, test_input_time,
-            test_canvas, test_keys,
+            test_canvas, test_keys, test_poll_key, test_confirm, test_wrap_text,
+            test_file_pick,
         ]
         handlers[sel](sdk)
 
@@ -351,16 +399,27 @@ def test_http_post(sdk):
         _show_result(sdk, "http POST", False, str(e))
 
 
+def test_https_get(sdk):
+    try:
+        r = sdk.https_request("GET", "https://httpbin.org/get")
+        code = r.get("status_code", "?")
+        _show_result(sdk, "https GET", True, f"HTTPS {code}")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "https GET", False, str(e))
+
+
 def menu_http(sdk):
-    items = ["GET neverssl.com", "POST httpbin.org"]
+    items = ["GET neverssl.com", "POST httpbin.org", "GET httpbin.org (TLS)"]
     while True:
         sel = _pick(sdk, "HTTP Tests", items)
         if sel is None:
             return
         if sel == 0:
             test_http_get(sdk)
-        else:
+        elif sel == 1:
             test_http_post(sdk)
+        else:
+            test_https_get(sdk)
 
 
 # --------------------------------------------------------------------------- #
@@ -394,6 +453,63 @@ def test_net_echo(sdk):
             pass
 
 
+def test_net_connect(sdk):
+    """Open an outbound TCP connection, send a minimal HTTP/1.0 request, and
+    read whatever comes back -- exercises net_connect against the shared
+    net_recv / net_send / net_close calls used by the server side above."""
+    try:
+        sock = sdk.net_connect("neverssl.com", 80, 5000)
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "net_connect", False, str(e))
+        return
+    try:
+        req = b"GET / HTTP/1.0\r\nHost: neverssl.com\r\nConnection: close\r\n\r\n"
+        sdk.net_send(sock, req)
+        data = sdk.net_recv(sock, 64, 5000)
+        _show_result(sdk, "net_connect", True, f"recv {len(data)} byte(s)")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "net_connect", False, str(e))
+    finally:
+        sdk.net_close(sock)
+
+
+def menu_network(sdk):
+    items = ["TCP echo server", "TCP client connect"]
+    while True:
+        sel = _pick(sdk, "Network Tests", items)
+        if sel is None:
+            return
+        if sel == 0:
+            test_net_echo(sdk)
+        else:
+            test_net_connect(sdk)
+
+
+# --------------------------------------------------------------------------- #
+# ESP-NOW tests                                                                #
+# --------------------------------------------------------------------------- #
+
+def test_espnow(sdk):
+    broadcast = bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+    payload = bytes([0xDE, 0xAD, 0xBE, 0xEF])
+    try:
+        sdk.espnow_send(broadcast, payload)
+        _show_result(sdk, "espnow_send", True, "sent to broadcast")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "espnow_send", False, str(e))
+
+    _show(sdk, "espnow_recv", "Waiting 2s for a packet...")
+    try:
+        result = sdk.espnow_recv(2000)
+        if result is None:
+            _show_result(sdk, "espnow_recv", True, "no packet (timeout, expected)")
+        else:
+            _, data = result
+            _show_result(sdk, "espnow_recv", True, f"got {len(data)} byte(s)")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "espnow_recv", False, str(e))
+
+
 # --------------------------------------------------------------------------- #
 # BLE tests                                                                    #
 # --------------------------------------------------------------------------- #
@@ -424,6 +540,16 @@ def test_ble_advertise(sdk):
         _show_result(sdk, "ble_advertise_stop", False, str(e))
 
 
+def test_ble_connectable(sdk):
+    try:
+        sdk.ble_set_connectable(True)
+        _show_result(sdk, "ble_set_connectable(True)", True, "ok")
+        sdk.ble_set_connectable(False)
+        _show_result(sdk, "ble_set_connectable(False)", True, "ok")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "ble_set_connectable", False, str(e))
+
+
 def test_ble_service(sdk):
     try:
         sdk.ble_service_register("4a505300-0000-0000-0000-000000000000")
@@ -431,6 +557,29 @@ def test_ble_service(sdk):
     except jppsdk.SdkError as e:
         _show_result(sdk, "ble_service_register", False, str(e))
         return
+
+    try:
+        sdk.ble_host_set_value(bytes([0x01, 0x02, 0x03, 0x04]))
+        _show_result(sdk, "ble_host_set_value", True, "published 4 bytes")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "ble_host_set_value", False, str(e))
+
+    _show(sdk, "ble_host_wait_write", "Waiting 2s for peer write...")
+    try:
+        data = sdk.ble_host_wait_write(2000)
+        if data is None:
+            _show_result(sdk, "ble_host_wait_write", True, "timeout (0 bytes)")
+        else:
+            _show_result(sdk, "ble_host_wait_write", True, f"received ({len(data)} bytes)")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "ble_host_wait_write", False, str(e))
+
+    try:
+        sdk.ble_host_clear()
+        _show_result(sdk, "ble_host_clear", True, "cleared")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "ble_host_clear", False, str(e))
+
     try:
         sdk.ble_service_unregister()
         _show_result(sdk, "ble_service_unregister", True, "unregistered")
@@ -490,7 +639,8 @@ def menu_ble(sdk):
     items = [
         "Scan (1s)",
         "Advertise (1s)",
-        "Host svc reg/unreg",
+        "Set connectable",
+        "Host svc + wait",
         "Connect to peer",
     ]
     while True:
@@ -502,6 +652,8 @@ def menu_ble(sdk):
         elif sel == 1:
             test_ble_advertise(sdk)
         elif sel == 2:
+            test_ble_connectable(sdk)
+        elif sel == 3:
             test_ble_service(sdk)
         else:
             test_ble_connect(sdk)
@@ -558,6 +710,82 @@ def test_buzzer(sdk):
 
 
 # --------------------------------------------------------------------------- #
+# Hardware tests (LED)                                                        #
+# --------------------------------------------------------------------------- #
+
+_LED_COLORS = [
+    ("Red",   255, 0,   0),
+    ("Green", 0,   255, 0),
+    ("Blue",  0,   0,   255),
+    ("White", 255, 255, 255),
+]
+
+def test_led(sdk):
+    try:
+        for label, r, g, b in _LED_COLORS:
+            sdk.led_set_color(r, g, b)
+            _show(sdk, "led_set_color", f"LED: {label}")
+        sdk.led_off()
+        _show_result(sdk, "led_off", True, "off")
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "led", False, str(e))
+
+
+# --------------------------------------------------------------------------- #
+# Crypto tests (ungated -- pure computation)                                  #
+# --------------------------------------------------------------------------- #
+
+def test_crypto_hash(sdk):
+    msg = b"test"
+    sha256 = jppsdk.crypto_sha256(msg)
+    _show(sdk, 'crypto_sha256("test")', f"sha256: {sha256.hex()}")
+    sha1 = jppsdk.crypto_sha1(msg)
+    _show(sdk, 'crypto_sha1("test")', f"sha1: {sha1.hex()}")
+
+
+def test_crypto_aes(sdk):
+    key = bytes(range(1, 33))
+    iv = bytes(32)
+    plain = b"0123456789abcdef0123456789abcde"
+    cipher = jppsdk.crypto_aes256_ige_encrypt(plain, key, iv)
+    decoded = jppsdk.crypto_aes256_ige_decrypt(cipher, key, iv)
+    ok = decoded == plain
+    _show(sdk, "crypto_aes256_ige", "PASS: round-trip ok" if ok else "FAIL: mismatch")
+
+
+def test_crypto_modexp(sdk):
+    # 2^10 mod 1000 = 24 = 0x0018
+    out = jppsdk.crypto_modexp(b"\x02", b"\x0a", b"\x03\xe8")
+    ok = out == b"\x00\x18"
+    _show(sdk, "crypto_modexp", "PASS: 2^10 mod 1000 = 24" if ok else "FAIL: unexpected result")
+
+
+def test_crypto_rsa_dh(sdk):
+    base, exp, mod = b"\x02", b"\x0a", b"\x03\xe8"
+    rsa_out = jppsdk.crypto_rsa_encrypt(base, mod, exp)
+    dh_out = jppsdk.crypto_dh_compute(base, exp, mod)
+    ok1 = rsa_out == b"\x00\x18"
+    ok2 = dh_out == b"\x00\x18"
+    _show(sdk, "crypto_rsa/dh",
+          f"rsa_encrypt {'PASS' if ok1 else 'FAIL'}, dh_compute {'PASS' if ok2 else 'FAIL'}")
+
+
+def menu_crypto(sdk):
+    items = [
+        "SHA-256 / SHA-1",
+        "AES-256-IGE round-trip",
+        "modexp (2^10 mod 1000)",
+        "rsa_encrypt / dh_compute",
+    ]
+    while True:
+        sel = _pick(sdk, "Crypto Tests", items)
+        if sel is None:
+            return
+        handlers = [test_crypto_hash, test_crypto_aes, test_crypto_modexp, test_crypto_rsa_dh]
+        handlers[sel](sdk)
+
+
+# --------------------------------------------------------------------------- #
 # System tests                                                                 #
 # --------------------------------------------------------------------------- #
 
@@ -588,8 +816,44 @@ def test_background_register(sdk):
         _show_result(sdk, "background_register", False, str(e))
 
 
+def test_request_cap(sdk):
+    # ble.scan is already declared and granted at launch (tier 1), so this
+    # demonstrates the "already granted, no prompt" fast path.
+    try:
+        sdk.request_cap("ble.scan")
+        _show_result(sdk, "request_cap(ble.scan)", True, "granted")
+    except jppsdk.SdkPermissionError:
+        _show_result(sdk, "request_cap(ble.scan)", False, "denied")
+
+
+def test_claim_center(sdk):
+    # Claiming only HOLD keeps a short CENTER press instant (menu navigation
+    # is unaffected) but diverts the long-press from Back to CENTER_HOLD.
+    # Always restore CENTER_CLAIM_NONE before returning, or the rest of the
+    # app loses its Back button.
+    try:
+        sdk.claim_center(jppsdk.CENTER_CLAIM_HOLD)
+    except jppsdk.SdkError as e:
+        _show_result(sdk, "claim_center(HOLD)", False, str(e))
+        return
+
+    _show(sdk, "claim_center", "Claimed HOLD. Hold CENTER within 3s...")
+    key = sdk.wait_key(3000)
+    _show_result(sdk, "claim_center result", True,
+                 "got KEY_CENTER_HOLD" if key == jppsdk.KEY_CENTER_HOLD else "timed out")
+
+    sdk.claim_center(jppsdk.CENTER_CLAIM_NONE)
+    _show_result(sdk, "claim_center(NONE)", True, "restored")
+
+
 def menu_system(sdk):
-    items = ["Wakelock acq/rel", "Log event", "Background register"]
+    items = [
+        "Wakelock acq/rel",
+        "Log event",
+        "Background register",
+        "Request cap",
+        "Claim center (HOLD)",
+    ]
     while True:
         sel = _pick(sdk, "System Tests", items)
         if sel is None:
@@ -598,8 +862,12 @@ def menu_system(sdk):
             test_wakelock(sdk)
         elif sel == 1:
             test_log(sdk)
-        else:
+        elif sel == 2:
             test_background_register(sdk)
+        elif sel == 3:
+            test_request_cap(sdk)
+        else:
+            test_claim_center(sdk)
 
 
 # --------------------------------------------------------------------------- #
@@ -651,13 +919,16 @@ class TestAppMP:
             "HTTP",
             "Network",
             "BLE",
+            "ESP-NOW",
             "Buzzer",
+            "Hardware",
+            "Crypto",
             "System",
             "Exit",
         ]
         while True:
             sel = _pick(sdk, "SDK Test (MP)", top_items)
-            if sel is None or sel == 10:
+            if sel is None or sel == 13:
                 break
             if sel == 0:
                 menu_ui(sdk)
@@ -672,10 +943,16 @@ class TestAppMP:
             elif sel == 5:
                 menu_http(sdk)
             elif sel == 6:
-                test_net_echo(sdk)
+                menu_network(sdk)
             elif sel == 7:
                 menu_ble(sdk)
             elif sel == 8:
-                test_buzzer(sdk)
+                test_espnow(sdk)
             elif sel == 9:
+                test_buzzer(sdk)
+            elif sel == 10:
+                test_led(sdk)
+            elif sel == 11:
+                menu_crypto(sdk)
+            elif sel == 12:
                 menu_system(sdk)

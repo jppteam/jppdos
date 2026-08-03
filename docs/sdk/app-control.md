@@ -90,18 +90,26 @@ jppsdk.log(event_name: str) -> None
 
 ---
 
-### `request_cap` (C only) { #request_cap }
+### `request_cap` { #request_cap }
 
 Proactively triggers the consent prompt for a single manifest-declared capability, without performing any operation. Use it to **front-load** permission requests — ask for the caps a screen or mode needs the moment the user chooses it, rather than letting the prompt fire mid-flow at first use.
 
 **Capability:** the one named by `cap` (must be declared in the manifest)
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_request_cap(jpp_sdk_context_t *ctx,
                                      const char *cap);
 ```
+///
 
-**Returns:** `JPP_SDK_OK` if the cap is already granted or the user allows it; `JPP_SDK_ACCESS_DENIED` if the user declines or the cap was not declared in the manifest; `JPP_SDK_INVALID_ARGUMENT` if `cap` is `NULL`/empty.
+/// tab | MicroPython
+```python
+jppsdk.request_cap(cap: str) -> None
+```
+///
+
+**Returns:** `JPP_SDK_OK` if the cap is already granted or the user allows it; `JPP_SDK_ACCESS_DENIED` if the user declines or the cap was not declared in the manifest; `JPP_SDK_INVALID_ARGUMENT` if `cap` is `NULL`/empty. In MicroPython the call returns `None` when granted and raises `SdkPermissionError` when declined — catch it to branch on the answer.
 
 **Notes:**
 - This only changes *when* the prompt appears, never the policy. Tier-1 caps (e.g. `ble.scan`, `ble.advertise`, `http.request`, `background.register`) persist once granted; tier-2 caps (e.g. `files.full`, `ble.connect`, `ble.host`, `network.bind`) are granted for the session only and re-prompt on the next launch — identical to first-use consent.
@@ -182,6 +190,10 @@ Injects a synthetic key event into the queue. Useful for testing and for UI help
 ```c
 void jpp_sdk_push_key(jpp_sdk_context_t *ctx, jpp_sdk_key_event_t event);
 ```
+
+**Notes:** This is really a firmware-internal hook — the keypad task uses it to
+feed the running app's queue — which is why it has no MicroPython binding. Apps
+read input with [`poll_key`](#poll_key) / [`wait_key`](#wait_key).
 
 ---
 
