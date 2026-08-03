@@ -13,9 +13,10 @@ The app runs as a blocking sequence from on_idle() so the flow is identical
 to the C version: each test calls blocking SDK helpers (dialog, list, input)
 which wait for the user before returning.
 
-Note: ble_host_set_value / ble_host_wait_write / ble_host_clear /
-ble_set_connectable are not exposed in the jppsdk Python module; those
-functions are covered by the C version only.
+Note: the jppsdk module now mirrors the native SDK one-for-one — the only
+calls without a Python binding are module_load / module_run / module_unload
+(they page in a second native ELF; MicroPython apps use import instead) and
+push_key (a firmware-internal input hook).
 """
 
 import jppsdk

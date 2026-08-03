@@ -110,19 +110,27 @@ jppsdk.ble_advertise_stop() -> None
 
 ---
 
-### `ble_set_connectable` (C only) { #ble_set_connectable }
+### `ble_set_connectable` { #ble_set_connectable }
 
 Set whether inbound BLE connections are accepted while advertising.
 
 **Capability:** `ble.advertise`
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_ble_set_connectable(jpp_sdk_context_t *ctx,
                                               bool connectable,
                                               jpp_broker_result_t *result);
 ```
+///
 
-**Notes:** Python binding not available — use `ble_host` for accepting inbound connections from Python.
+/// tab | MicroPython
+```python
+jppsdk.ble_set_connectable(connectable: bool) -> None
+```
+///
+
+**Notes:** The default is non-connectable. A GATT-host app must call this with `True` before `ble_advertise_start` so a peer can open a connection.
 
 ---
 
@@ -305,23 +313,34 @@ jppsdk.ble_service_unregister() -> None
 
 ---
 
-### `ble_host_set_value` (C only) { #ble_host_set_value }
+### `ble_host_set_value` { #ble_host_set_value }
 
 Publish bytes to the TX characteristic so connected peers can read them.
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_ble_host_set_value(jpp_sdk_context_t *ctx,
                                               const uint8_t *data,
                                               size_t len,
                                               jpp_broker_result_t *result);
 ```
+///
+
+/// tab | MicroPython
+```python
+jppsdk.ble_host_set_value(data: bytes) -> None
+```
+///
+
+**Notes:** At most `JPP_SDK_BLE_HOST_RX_MAX` (4096) bytes per call; a longer `data` raises `ValueError` in Python.
 
 ---
 
-### `ble_host_wait_write` (C only) { #ble_host_wait_write }
+### `ble_host_wait_write` { #ble_host_wait_write }
 
 Block until a peer writes to the RX characteristic, or the timeout elapses.
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_ble_host_wait_write(jpp_sdk_context_t *ctx,
                                               uint8_t *buf,
@@ -330,26 +349,46 @@ jpp_sdk_status_t jpp_sdk_ble_host_wait_write(jpp_sdk_context_t *ctx,
                                               bool *out_received,
                                               jpp_broker_result_t *result);
 ```
+///
+
+/// tab | MicroPython
+```python
+jppsdk.ble_host_wait_write(timeout_ms: int) -> bytes | None
+```
+///
 
 **Parameters:**
 
 | Name | Description |
 |------|-------------|
-| `buf` | Buffer to receive the written bytes. |
-| `len_inout` | In: buffer capacity. Out: bytes received. |
-| `timeout_ms` | Maximum wait time. |
-| `out_received` | Set to `true` if a write was received within the timeout. |
+| `buf` | C only: buffer to receive the written bytes. |
+| `len_inout` | C only: in — buffer capacity; out — bytes received. |
+| `timeout_ms` | Maximum wait time. `0` waits forever. |
+| `out_received` | C only: set to `true` if a write was received within the timeout. |
+
+**Returns:**
+
+- C: status, with the payload in `buf` and `*out_received` telling you whether a write arrived.
+- Python: the received `bytes`, or `None` if the timeout elapsed with no write.
 
 ---
 
-### `ble_host_clear` (C only) { #ble_host_clear }
+### `ble_host_clear` { #ble_host_clear }
 
 Clear the RX write buffer.
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_ble_host_clear(jpp_sdk_context_t *ctx,
                                          jpp_broker_result_t *result);
 ```
+///
+
+/// tab | MicroPython
+```python
+jppsdk.ble_host_clear() -> None
+```
+///
 
 ---
 

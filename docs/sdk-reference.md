@@ -20,10 +20,13 @@ Signatures are shown as **C** / **MicroPython** tabs, switched per signature.
     error separately and degrade — a denied capability is a normal outcome,
     not a crash.
 
-!!! warning "Not every C call has a Python binding."
-    Headings marked **(C only)** exist solely in the native SDK. The largest
-    gaps are `net_connect`, `file_pick`, `confirm`, the `ble_host_*` server
-    calls, the crypto primitives, and code modules.
+!!! info "The two SDKs expose the same surface."
+    Every SDK call has both a C and a MicroPython form, with two deliberate
+    exceptions marked **(C only)**: [code modules](sdk/background.md#code-modules-native-apps-only)
+    (`module_load`/`module_run`/`module_unload`), which load a second native ELF
+    binary and have no meaning for a MicroPython app — use `import` instead —
+    and [`push_key`](sdk/app-control.md#push_key), a firmware-internal input
+    hook rather than an app-facing call.
 
 ---
 

@@ -37,7 +37,7 @@ narrows the set of devices that will run your app.
 |-----------|---------|-------|
 | `1` | every shipped unit | The safe default |
 | `2` | firmware v1.1 and later | Required for TLS, outbound TCP, crypto, and CENTER claims |
-| `3` | *no released firmware yet* | Required only for `wrap_text` |
+| `3` | *no released firmware yet* | Required for `wrap_text`, and for the MicroPython bindings that closed the C/Python gap |
 
 ---
 
@@ -66,8 +66,47 @@ level-2 device cannot run it regardless of what the level-1 header advertised.
 - No capability — pure computation on caller-supplied buffers.
 - New symbol in `s_symtab`: `jpp_sdk_wrap_text`. The function itself is
   unchanged; only its reachability from a loaded app binary is new.
-- **C only.** MicroPython apps are unaffected — they never resolve symbols
-  through `s_symtab`.
+- MicroPython apps never resolve symbols through `s_symtab`, so this part is
+  C-side only — but `wrap_text` also gained a `jppsdk` binding at this level,
+  see below.
+
+### The MicroPython SDK caught up with the native one
+
+Sixteen calls that existed only in C now have `jppsdk` bindings, so a
+MicroPython app can do everything a native one can apart from loading native
+code modules. The C functions are unchanged; what is new is that they are
+reachable from Python — and `sdk_min` is the only way a MicroPython app can
+require a firmware where they exist, so this mints a level for exactly the
+reason `wrap_text` does.
+
+- [`request_cap`](sdk/app-control.md#request_cap) — front-load a capability
+  prompt. Returns `None` when granted, raises `SdkPermissionError` when denied.
+- [`confirm`](sdk/display.md#confirm) — the shared Deny/Allow consent surface,
+  as `confirm(title, lines, default_allow=True) -> bool`.
+- [`wrap_text`](sdk/display.md#wrap_text) — `wrap_text(text, max_lines=7) -> list[str]`.
+- [`file_pick`](sdk/display.md#file_pick) — SD file browser; returns the path or
+  `None`. Still requires `files.full`.
+- [`ble_set_connectable`](sdk/wireless.md#ble_set_connectable) and the GATT-server
+  trio [`ble_host_set_value`](sdk/wireless.md#ble_host_set_value) ·
+  [`ble_host_wait_write`](sdk/wireless.md#ble_host_wait_write) ·
+  [`ble_host_clear`](sdk/wireless.md#ble_host_clear) — a Python app can now be the
+  BLE peripheral, not just the central. `ble_host_wait_write` returns `bytes`, or
+  `None` on timeout.
+- [`net_connect`](sdk/network.md#net_connect) — outbound TCP, returning a socket
+  for the already-bound `net_recv`/`net_send`/`net_close`. Requires
+  `network.connect`.
+- The [crypto primitives](sdk/crypto.md), as `jppsdk.crypto_*`:
+  `crypto_sha256` · `crypto_sha1` · `crypto_aes256_ige_encrypt` ·
+  `crypto_aes256_ige_decrypt` · `crypto_modexp` · `crypto_rsa_encrypt` ·
+  `crypto_dh_compute`. All take and return `bytes`; a bad key/IV/length raises
+  `ValueError`, a backend failure raises `SdkError`.
+
+!!! info "Still C only, deliberately."
+    [Code modules](sdk/background.md#code-modules-native-apps-only)
+    (`module_load`/`module_run`/`module_unload`) page in a second native ELF —
+    a MicroPython app uses `import` instead — and `push_key` is a
+    firmware-internal input hook, not an app-facing call. Those two are the
+    whole remaining difference between the SDKs.
 
 ### The app pool grew to 80 KB
 
@@ -108,7 +147,8 @@ ones.
 
 - New capability: `network.connect` (tier 2 — per-session, never persisted).
 - New symbol: `jpp_sdk_net_connect`.
-- **C only.** There is no `jppsdk.net_connect` binding.
+- C only *at this level* — the `jppsdk.net_connect` binding arrived at
+  [level 3](#the-micropython-sdk-caught-up-with-the-native-one).
 
 ### TLS-verified HTTP — `https.request`
 
@@ -140,8 +180,9 @@ user: it fits in roughly 11 KB of pool because the heavy crypto stayed in the
 firmware.
 
 - No capability — pure computation, nothing to gate.
-- **C only**, and they are plain functions from `jpp_crypto_core.h` rather than
-  `jpp_sdk_*` calls.
+- In C they are plain functions from `jpp_crypto_core.h` rather than `jpp_sdk_*`
+  calls. C only *at this level* — the `jppsdk.crypto_*` bindings arrived at
+  [level 3](#the-micropython-sdk-caught-up-with-the-native-one).
 
 ### CENTER gesture claims
 

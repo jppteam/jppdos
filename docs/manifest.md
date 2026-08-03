@@ -71,7 +71,7 @@ capability your app uses:
 |-----------|-----------------------|----------------|
 | `1` | the original SDK surface | v1.0-RTM |
 | `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · CENTER gesture claims (`claim_center`, `KEY_BACK`, `KEY_CENTER_HOLD`/`_DOUBLE`) · `jpp_sdk_confirm` from a native app | v1.1 |
-| `3` | `jpp_sdk_wrap_text` from a native app | *unreleased* |
+| `3` | `jpp_sdk_wrap_text` from a native app · from a MicroPython app, any of the calls that gained a `jppsdk` binding at this level: `request_cap` · `confirm` · `wrap_text` · `file_pick` · `ble_set_connectable` · `ble_host_set_value`/`_wait_write`/`_clear` · `net_connect` · `crypto_sha256`/`sha1`/`aes256_ige_encrypt`/`aes256_ige_decrypt`/`modexp`/`rsa_encrypt`/`dh_compute` | *unreleased* |
 
 Declaring `sdk_min: 2` means the app will not load on a v1.0-RTM device. If you
 only use the original surface, leave it at `1` so the app runs on every unit.
@@ -215,7 +215,7 @@ These work in every app, with no manifest declaration and no user prompt:
 - Wakelock: `wakelock_acquire`, `wakelock_release`
 - Device info: `device_status`, `get_time`, `is_dummy_mode`
 - CENTER gesture claims: `claim_center` (SDK level 2)
-- Crypto primitives: `jpp_crypto_sha256`/`sha1`, `aes256_ige_*`, `modexp`/`rsa_encrypt`/`dh_compute` (SDK level 2, C only)
+- Crypto primitives: `jpp_crypto_sha256`/`sha1`, `aes256_ige_*`, `modexp`/`rsa_encrypt`/`dh_compute` (SDK level 2 in C; `jppsdk.crypto_*` from level 3)
 - Scoped file I/O: `file_read`, `file_write`, `file_list` (sandboxed to `/sd/apps/<app_id>/`)
 - Shared file I/O: `shared_read`, `shared_write`, `shared_list` (sandboxed to `/sd/shared/<app_id>/`)
 - Key-value store: `kv_get`, `kv_set`, `kv_delete`

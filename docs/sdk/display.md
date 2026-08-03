@@ -273,18 +273,20 @@ jppsdk.input(title: str,
 
 ---
 
-### `confirm` (C only) { #confirm }
+### `confirm` { #confirm }
 
 Show a customizable Deny/Allow prompt. This is the same consent surface used by capability and `files.full` path prompts.
 
 **Capability:** None
 
-!!! info "Resolvable from SDK level 2 onwards."
+!!! info "Resolvable from SDK level 2 onwards (C)."
     `jpp_sdk_confirm` was declared in the v1.0-RTM header but was missing from
     the firmware's native symbol table, so a native app that called it failed to
     launch with `UNRESOLVED_SYM`. It became callable in firmware v1.1 — declare
-    `"sdk_min": 2` if you use it. See the [SDK changelog](../sdk-changelog.md).
+    `"sdk_min": 2` if you use it from C. See the
+    [SDK changelog](../sdk-changelog.md).
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_confirm(jpp_sdk_context_t *ctx,
                                   const char *title,
@@ -293,22 +295,35 @@ jpp_sdk_status_t jpp_sdk_confirm(jpp_sdk_context_t *ctx,
                                   bool default_allow,
                                   bool *out_allow);
 ```
+///
+
+/// tab | MicroPython
+```python
+jppsdk.confirm(title: str, lines: list[str],
+               default_allow: bool = True) -> bool
+```
+///
 
 **Parameters:**
 
 | Name | Description |
 |------|-------------|
 | `title` | Prompt title. |
-| `body_lines` | Array of body text rows. |
-| `body_count` | Number of body rows. |
+| `body_lines` / `lines` | Body text rows. In Python, a list or tuple of `str`; rows past the 7-line frame capacity are dropped. Pre-wrap long text with [`wrap_text`](#wrap_text). |
+| `body_count` | Number of body rows (C only). |
 | `default_allow` | Which button (`Deny`/`Allow`) is focused by default. |
-| `out_allow` | Receives the user's decision: `true` = Allow, `false` = Deny. |
+| `out_allow` | C only: receives the user's decision: `true` = Allow, `false` = Deny. |
 
-**Notes:** There is no Python binding for `confirm` — the MicroPython test app uses `dialog` for similar prompts. `confirm` is primarily useful in native apps that implement their own consent flows.
+**Returns:**
+
+- C: status, with the decision in `*out_allow`.
+- Python: `True` for Allow, `False` for Deny.
+
+**Notes:** `confirm` is useful in apps that implement their own consent flows; use `dialog` when you only need to show a message.
 
 ---
 
-### `file_pick` (C only) { #file_pick }
+### `file_pick` { #file_pick }
 
 Launch a full SD card file browser and return the path the user selects.
 
@@ -316,34 +331,61 @@ Launch a full SD card file browser and return the path the user selects.
     **Tier 2** — prompted on first use of every launch, never persisted. See
     [Full file access](storage.md#full-file-access).
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_file_pick(jpp_sdk_context_t *ctx,
                                     char *out_path,
                                     size_t out_path_len,
                                     jpp_sdk_ui_result_t *out_result);
 ```
+///
 
-**Notes:** The browser starts at the SD root (`/sd`). Directories appear with a `/` suffix; `..` navigates up. Long names scroll as marquees. `out_path` receives the absolute path of the selected file. Returns `JPP_SDK_UI_BACK` if the user cancels without selecting a file.
+/// tab | MicroPython
+```python
+jppsdk.file_pick() -> str | None
+```
+///
 
-There is no direct Python equivalent; use `file_open` with a known path for MicroPython apps that need full access.
+**Returns:**
+
+- C: status; `out_path` receives the absolute path and `*out_result` is `JPP_SDK_UI_OK`, or `JPP_SDK_UI_BACK` if the user cancelled.
+- Python: the absolute path, or `None` if the user cancelled.
+
+**Notes:** The browser starts at the SD root (`/sd`). Directories appear with a `/` suffix; `..` navigates up. Long names scroll as marquees. `out_path_len` must be at least `JPP_SDK_PATH_MAX` (160).
 
 ---
 
-### `wrap_text` (C only) { #wrap_text }
+### `wrap_text` { #wrap_text }
 
-!!! info "Requires SDK level 3 · C only"
+!!! info "Requires SDK level 3 in C."
     Declared since level 1 but only callable from a loaded app binary at level
     3. On a level-1 or level-2 device a native app calling it is rejected at
-    launch with `UNRESOLVED_SYM`, so declare `sdk_min: 3` if you use it.
+    launch with `UNRESOLVED_SYM`, so declare `sdk_min: 3` if you use it from C.
+    The MicroPython binding has no such constraint.
 
 Word-wrap a string into fixed-width frame lines.
 
+**Capability:** None
+
+/// tab | C
 ```c
 size_t jpp_sdk_wrap_text(const char *text,
                           char lines[][JPP_SDK_FRAME_TEXT_MAX],
                           size_t max_lines);
 ```
+///
 
-**Returns:** Number of lines produced. Use this to split a long message before passing it to `set_frame` or a modal helper.
+/// tab | MicroPython
+```python
+jppsdk.wrap_text(text: str, max_lines: int = 7) -> list[str]
+```
+///
+
+**Returns:**
+
+- C: number of lines produced, written into `lines`.
+- Python: the list of wrapped lines. `max_lines` must be 1–32.
+
+Use this to split a long message before passing it to `set_frame` or a modal helper such as [`confirm`](#confirm).
 
 ---

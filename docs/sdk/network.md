@@ -259,9 +259,9 @@ jppsdk.net_close(sock: int) -> None
 !!! warning "Capability: `network.connect`."
     **Tier 2** — prompted on first use of every launch, never persisted.
 
-!!! info "Requires SDK level 2 · C only."
-    Declare `"sdk_min": 2`. There is no `jppsdk.net_connect` binding, so
-    MicroPython apps are limited to the [TCP server](#tcp-server) side.
+!!! info "Requires SDK level 2 in C."
+    Declare `"sdk_min": 2` for native apps. The MicroPython binding has no such
+    constraint.
 
 Open an outbound TCP connection. A connected socket is used with the same
 `net_recv` / `net_send` / `net_close` calls as an accepted server socket, and
@@ -270,10 +270,11 @@ occupies a slot in the same 2-entry connection table. `net_recv`/`net_send`/
 (`network.bind`) **or** `net_connect` (`network.connect`) — holding either
 capability is sufficient to move bytes on a socket you own.
 
-### `net_connect` (C only) { #net_connect }
+### `net_connect` { #net_connect }
 
 Resolve `host` (DNS name or dotted-quad) and connect to `port`.
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_net_connect(jpp_sdk_context_t *ctx,
                                      const char *host,
@@ -282,6 +283,13 @@ jpp_sdk_status_t jpp_sdk_net_connect(jpp_sdk_context_t *ctx,
                                      int *out_sock,
                                      jpp_broker_result_t *result);
 ```
+///
+
+/// tab | MicroPython
+```python
+jppsdk.net_connect(host: str, port: int, timeout_ms: int) -> int
+```
+///
 
 | Parameter | Meaning |
 |-----------|---------|
