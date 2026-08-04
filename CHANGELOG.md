@@ -42,6 +42,19 @@ each build, not an API diff.
 - WebDAV also gained proper `HEAD` support, which some file managers use to
   check a file before downloading it.
 
+### Serial protocol (JPPD-SMP)
+
+- **The device now tells a connected PC when a management session ends
+  because you held OK, instead of leaving it to find out the hard way.**
+  Holding OK to end a session already closed it on the device; a host tool
+  previously only learned about that from its next command failing
+  (`ERR_NO_SESSION`) or a 30-second timeout. The device now sends an
+  unsolicited notification the moment the session closes, so a host tool that
+  is idling — waiting on the user, updating a UI — finds out immediately.
+  `scripts/jppd_upload.py` (and the manufacturing scripts built on it) already
+  understand it. See the [serial protocol reference](docs/serial-protocol.md#device-initiated-events)
+  for the wire format if you're writing your own host tooling.
+
 ### Build & release
 
 - Pushing a version tag now builds the firmware and publishes a GitHub Release
@@ -53,6 +66,14 @@ each build, not an API diff.
   commit, since a tag push carries no branch of its own; anything reachable
   from neither is treated as a pre-release. `JPPDOS_VERSION` must match the tag
   for a stable release and is only warned about for a pre-release.
+
+- Fixed the documented way to install `mpy-cross` for a host-side MicroPython
+  build (needed by the release build itself, since `testapp_mp` hard-fails
+  without it). The docs and the build's own error message said
+  `pip install mpy-cross==1.28.0`, but PyPI has never published that exact
+  version — the command could not have worked for anyone. Both now point at
+  the prerelease build that emits identical bytecode, or building from source
+  the way the project's Docker image and CI already do.
 
 ### App SDK & platform
 
@@ -70,6 +91,52 @@ each build, not an API diff.
   released, such an app will not load on any unit in the field. Every existing
   app is unaffected: the surface only grows, so anything built for level 1 or 2
   keeps running untouched.
+
+- **MicroPython apps can now do almost everything a native app can.** Sixteen
+  calls that used to be C-only are now reachable from `jppsdk` too: front-loading
+  a permission prompt, the confirm dialog, text wrapping, the file picker,
+  acting as a BLE peripheral (advertising plus the GATT-server read/write
+  handlers), opening outbound TCP connections, and all seven hardware-backed
+  crypto primitives. Nothing about the underlying functions changed — only
+  their reachability from Python did, which is why it shares SDK level 3 with
+  `wrap_text` above; a MicroPython app that needs one of these should also
+  declare `sdk_min: 3`. The only capabilities that remain native-only are
+  loading a second compiled binary as a module (MicroPython has `import`
+  instead) and a firmware-internal input hook no app calls directly. Both test
+  apps (`testapp_native`, `testapp_mp`) were extended to exercise every one of
+  the sixteen so the two stay proof that the surfaces genuinely match.
+
+- **The 5th keypad button is now called OK everywhere, not CENTER.** Every
+  identifier, on-screen label, and doc that named the button — firmware,
+  App SDK, and the App Developer Guide alike — now says OK, matching how it
+  was already labeled on the board and referred to in prose. One function and
+  its constants were renamed as part of this: `jpp_sdk_claim_center` /
+  `jppsdk.claim_center` and the `JPP_SDK_KEY_CENTER*` / `JPP_SDK_CENTER_CLAIM_*`
+  constants it used are now `jpp_sdk_claim_ok` / `jppsdk.claim_ok` /
+  `JPP_SDK_KEY_OK*` / `JPP_SDK_OK_CLAIM_*` — **but the old names still work.**
+  They're kept as deprecated aliases (same values, same underlying function),
+  so nothing already built needs to change. New C source using an old name
+  gets a compiler warning naming its replacement; new code should switch to
+  the OK-named forms, but nothing is forced to. See the
+  [SDK changelog](docs/sdk-changelog.md#the-5th-keypad-button-is-ok-not-center)
+  for the full list of renamed symbols and their aliases.
+
+### Fixes
+
+- **A placeholder in a text input looked exactly like a value you'd already
+  typed, which made it easy to submit it by mistake.** `input()`'s
+  `placeholder` text now renders in `[brackets]`, so example/hint text is
+  visually distinct from something the user actually entered. The first
+  keystroke still clears it and starts a real value, unchanged.
+
+- **A fullscreen app could get stuck showing a stale system dialog.** An app
+  that repaints its whole screen every frame — like the MTProto client — and
+  only switches to fullscreen once at startup used to stay stuck in the
+  windowed system-UI layout after showing a dialog, confirm, list, input, or
+  file-picker prompt: the prompt's text lingered at the top of the screen and
+  the bottom rows stopped updating. The five modal helpers now restore
+  fullscreen automatically when they return, so this can no longer happen
+  without the app doing anything differently.
 
 ## v1.1 — 2026-07-29
 
@@ -101,14 +168,14 @@ unless you actually use the new calls.
   most of that before it did anything useful. Together these are what make a
   chat-protocol client feasible on the device at all.
 - **Choose how the Back button works.** `Settings > Controls` now offers a
-  device-wide choice between holding CENTER and double-clicking it to go back.
+  device-wide choice between holding OK and double-clicking it to go back.
   Hold stays the default and behaves exactly as before, including the instant
   OK on a short click. Picking Double-click trades a short delay on OK (the
   device has to wait and see whether a second click is coming) for a Back
   gesture that doesn't require holding a button down.
-- **Apps can take CENTER over as a game button.** An app may now claim the
+- **Apps can take OK over as a game button.** An app may now claim the
   hold and/or double-click gesture as its own input, in which case it becomes
-  responsible for its own way out — useful for games where CENTER is a
+  responsible for its own way out — useful for games where OK is a
   rapid-fire action button and a stray double-tap shouldn't drop you out to
   the launcher. Apps that don't claim anything keep receiving a single "back"
   event and never have to care which gesture the user picked.
