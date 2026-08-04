@@ -66,6 +66,17 @@ STATUS_NAMES = {
     0x0A: 'ERR_APP_RUNNING',
 }
 
+# Device-initiated events: unsolicited frames sent outside the command/response
+# cycle, reusing the response envelope with a reserved SEQ the device never
+# echoes for a real reply. _next_seq() below skips this value on the host side
+# too, so SEQ_EVENT can never coincide with a genuine command's sequence number.
+SEQ_EVENT          = 0xFF
+EVT_SESSION_ENDED  = 0x01  # user held OK on the device; the session is gone
+
+EVENT_NAMES = {
+    0x01: 'SESSION_ENDED',
+}
+
 # ---- CRC helpers ------------------------------------------------------------
 
 def _crc16_ccitt_false(data: bytes) -> int:
@@ -187,6 +198,10 @@ class _SMPSession:
     def __init__(self, port: str):
         self._ser = serial.Serial(port, BAUD_RATE, timeout=2.0)
         self._seq = 0
+        # Set when a SESSION_ENDED event arrives — the device tore the session
+        # down itself (the user held OK) and no further command will succeed
+        # until a fresh SESSION_START.
+        self.session_ended_by_device = False
 
     def close(self) -> None:
         self._ser.close()
@@ -194,6 +209,10 @@ class _SMPSession:
     def _next_seq(self) -> int:
         s = self._seq
         self._seq = (self._seq + 1) & 0xFF
+        if self._seq == SEQ_EVENT:
+            # Never assign the value the device reserves for unsolicited
+            # events, so a real response's SEQ can never be mistaken for one.
+            self._seq = 0
         return s
 
     def _cmd(self, cmd: int, body: bytes = b'', timeout: float = 10.0,
@@ -228,10 +247,22 @@ class _SMPSession:
                 except RuntimeError as exc:
                     last_exc = exc     # timeout / CRC error — re-send if attempts remain
                     break
+                if resp_seq == SEQ_EVENT:
+                    self._handle_event(status, resp_body)
+                    continue        # not a reply to anything — keep reading this window
                 if resp_seq == seq:
                     return status, resp_body
                 # Stale reply to an earlier attempt: skip, keep reading this window.
         raise last_exc
+
+    def _handle_event(self, event_type: int, body: bytes) -> None:
+        """Handle a device-initiated event frame (SEQ == SEQ_EVENT)."""
+        name = EVENT_NAMES.get(event_type, f"0x{event_type:02X}")
+        if event_type == EVT_SESSION_ENDED:
+            self.session_ended_by_device = True
+            print("Device ended the session (user held OK).", file=sys.stderr)
+        else:
+            print(f"Unrecognized device event: {name}", file=sys.stderr)
 
     def _require_ok(self, status: int, context: str, also_ok: tuple = ()) -> None:
         if status != ST_OK and status not in also_ok:
