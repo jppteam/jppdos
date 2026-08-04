@@ -21,8 +21,8 @@ Q(KEY_UP)
 Q(KEY_DOWN)
 Q(KEY_LEFT)
 Q(KEY_RIGHT)
-Q(KEY_CENTER)
-Q(KEY_CENTER_LONG)
+Q(KEY_OK)
+Q(KEY_OK_LONG)
 
 /* SDK functions */
 Q(set_frame)
@@ -31,8 +31,21 @@ Q(log)
 Q(device_status)
 Q(get_time)
 Q(is_dummy_mode)
-Q(claim_center)
+Q(claim_ok)
 Q(KEY_BACK)
+Q(KEY_OK_HOLD)
+Q(KEY_OK_DOUBLE)
+Q(OK_CLAIM_NONE)
+Q(OK_CLAIM_HOLD)
+Q(OK_CLAIM_DOUBLE)
+
+/* Deprecated pre-rename names (5th keypad button: CENTER -> OK), same
+ * values/objects as their OK_* counterparts above — kept so .mpy files
+ * compiled before the rename keep resolving jppsdk.claim_center /
+ * jppsdk.KEY_CENTER* / jppsdk.CENTER_CLAIM_* without a rebuild. */
+Q(claim_center)
+Q(KEY_CENTER)
+Q(KEY_CENTER_LONG)
 Q(KEY_CENTER_HOLD)
 Q(KEY_CENTER_DOUBLE)
 Q(CENTER_CLAIM_NONE)

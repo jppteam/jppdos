@@ -12,7 +12,7 @@
  *   DOWN   100 kΩ  → 3.3 × 10/(10+100) = 0.3000 V  (band centre 0.30 V ±0.04 V)
  *   LEFT    56 kΩ  → 3.3 × 10/(10+ 56) = 0.5000 V  (band centre 0.50 V ±0.04 V)
  *   RIGHT   39 kΩ  → 3.3 × 10/(10+ 39) = 0.6735 V  (band centre 0.70 V ±0.04 V)
- *   CENTER  27 kΩ  → 3.3 × 10/(10+ 27) = 0.8919 V  (band centre 0.90 V ±0.04 V)
+ *   OK  27 kΩ  → 3.3 × 10/(10+ 27) = 0.8919 V  (band centre 0.90 V ±0.04 V)
  *   (none)                               = 0.0000 V  (below all bands → idle)
  *
  * When multiple buttons are pressed simultaneously the lowest-index button
@@ -25,7 +25,7 @@
 #define BTN_COUNT 5
 
 static const float  BTN_VOLTAGES[BTN_COUNT] = { 0.1179f, 0.3000f, 0.5000f, 0.6735f, 0.8919f };
-static const char  *BTN_NAMES[BTN_COUNT]    = { "UP", "DOWN", "LEFT", "RIGHT", "CENTER" };
+static const char  *BTN_NAMES[BTN_COUNT]    = { "UP", "DOWN", "LEFT", "RIGHT", "OK" };
 
 static pin_t g_btn[BTN_COUNT];
 static pin_t g_out;

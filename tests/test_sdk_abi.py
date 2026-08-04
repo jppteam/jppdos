@@ -123,7 +123,7 @@ FROZEN_CONTEXT_PREFIX = (
     "char pending_cap_strs[JPP_SDK_PENDING_CAP_MAX][32];",
     "int pending_cap_tiers[JPP_SDK_PENDING_CAP_MAX];",
     "size_t pending_cap_count;",
-    "uint8_t center_claim;",
+    "uint8_t ok_claim;",
 )
 
 

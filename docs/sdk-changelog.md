@@ -36,8 +36,8 @@ narrows the set of devices that will run your app.
 | `sdk_min` | Runs on | Notes |
 |-----------|---------|-------|
 | `1` | every shipped unit | The safe default |
-| `2` | firmware v1.1 and later | Required for TLS, outbound TCP, crypto, and CENTER claims |
-| `3` | *no released firmware yet* | Required for `wrap_text`, and for the MicroPython bindings that closed the C/Python gap |
+| `2` | firmware v1.1 and later | Required for TLS, outbound TCP, crypto, and OK claims |
+| `3` | *no released firmware yet* | Required for `wrap_text`, the MicroPython bindings that closed the C/Python gap, and the new OK-named forms of the CENTER-claim API (the old names still work — see below) |
 
 ---
 
@@ -107,6 +107,35 @@ reason `wrap_text` does.
     a MicroPython app uses `import` instead — and `push_key` is a
     firmware-internal input hook, not an app-facing call. Those two are the
     whole remaining difference between the SDKs.
+
+### The 5th keypad button is "OK", not "CENTER"
+
+The physical button is renamed everywhere it's SDK-visible, to match how it's
+labeled on the board and referred to in every other part of the firmware and
+docs: `JPP_SDK_KEY_CENTER` → [`JPP_SDK_KEY_OK`](sdk/types.md), `JPP_SDK_KEY_CENTER_LONG`
+→ `JPP_SDK_KEY_OK_LONG`, `JPP_SDK_KEY_CENTER_HOLD` → `JPP_SDK_KEY_OK_HOLD`,
+`JPP_SDK_KEY_CENTER_DOUBLE` → `JPP_SDK_KEY_OK_DOUBLE`, `JPP_SDK_CENTER_CLAIM_NONE`
+/ `_HOLD` / `_DOUBLE` → `JPP_SDK_OK_CLAIM_*`, and [`jpp_sdk_claim_center`](sdk/app-control.md#claim_ok)
+→ `jpp_sdk_claim_ok` (`jppsdk.claim_center` → `jppsdk.claim_ok` in MicroPython).
+`JPP_SDK_KEY_BACK` — already the preferred spelling of the long-press/back
+event — is unaffected in name; only what it's an alias *of* was renamed
+alongside it.
+
+!!! info "The old names still work — they're deprecated, not gone."
+    Every pre-rename identifier (`JPP_SDK_KEY_CENTER*`, `JPP_SDK_CENTER_CLAIM_*`,
+    `jpp_sdk_claim_center`, `jppsdk.claim_center`, `jppsdk.KEY_CENTER*`,
+    `jppsdk.CENTER_CLAIM_*`) is kept as an alias with the same value as its
+    OK-named replacement. A native `.bin` compiled against the old names
+    resolves them through a second `s_symtab` entry pointing at the same
+    function; a MicroPython `.mpy` resolves them through a second entry in
+    the `jppsdk` module dict pointing at the same object. Nothing needs to be
+    rebuilt. Compiling new C source against an old name produces a
+    `-Wdeprecated-declarations` warning (`__attribute__((deprecated(...)))`
+    on the enum values and on `jpp_sdk_claim_center`) naming the replacement;
+    MicroPython has no equivalent compile-time warning, so an `.mpy` using an
+    old name compiles and runs silently. **Use the OK-named forms in new
+    code** — the old ones exist only to avoid breaking what's already built,
+    not as a second permanent spelling.
 
 ### The app pool grew to 80 KB
 
@@ -184,7 +213,7 @@ firmware.
   calls. C only *at this level* — the `jppsdk.crypto_*` bindings arrived at
   [level 3](#the-micropython-sdk-caught-up-with-the-native-one).
 
-### CENTER gesture claims
+### OK gesture claims
 
 The device gained a user preference for whether **hold** or **double-click**
 means "Back" (Settings → Controls). Apps never read that preference. Instead:
@@ -192,16 +221,16 @@ means "Back" (Settings → Controls). Apps never read that preference. Instead:
 - Claim nothing (the default) and you receive `JPP_SDK_KEY_BACK` whenever the
   user asks to go back, with the firmware deciding which physical gesture that
   was.
-- Claim a gesture with [`claim_center`](sdk/app-control.md#claim_center) and it
-  becomes yours, arriving as `JPP_SDK_KEY_CENTER_HOLD` or
-  `JPP_SDK_KEY_CENTER_DOUBLE` — and your app then owns its own way out.
+- Claim a gesture with [`claim_ok`](sdk/app-control.md#claim_ok) and it
+  becomes yours, arriving as `JPP_SDK_KEY_OK_HOLD` or
+  `JPP_SDK_KEY_OK_DOUBLE` — and your app then owns its own way out.
 
-New symbol `jpp_sdk_claim_center`; new enumerators `JPP_SDK_KEY_CENTER_HOLD`
-and `JPP_SDK_KEY_CENTER_DOUBLE`; new constants `JPP_SDK_CENTER_CLAIM_NONE` /
+New symbol `jpp_sdk_claim_ok`; new enumerators `JPP_SDK_KEY_OK_HOLD`
+and `JPP_SDK_KEY_OK_DOUBLE`; new constants `JPP_SDK_OK_CLAIM_NONE` /
 `_HOLD` / `_DOUBLE`. `JPP_SDK_KEY_BACK` is an **alias** of the pre-existing
-`JPP_SDK_KEY_CENTER_LONG` — same value, better name — so code using the old
-spelling is unaffected. Bound in MicroPython as `jppsdk.claim_center` with the
-matching `KEY_*` / `CENTER_CLAIM_*` constants.
+`JPP_SDK_KEY_OK_LONG` — same value, better name — so code using the old
+spelling is unaffected. Bound in MicroPython as `jppsdk.claim_ok` with the
+matching `KEY_*` / `OK_CLAIM_*` constants.
 
 ### `jpp_sdk_confirm` became callable
 

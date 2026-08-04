@@ -1,5 +1,5 @@
 {
   "name": "Keypad ADC Bridge",
   "author": "jppdos",
-  "pins": ["UP", "DOWN", "LEFT", "RIGHT", "CENTER", "OUT"]
+  "pins": ["UP", "DOWN", "LEFT", "RIGHT", "OK", "OUT"]
 }

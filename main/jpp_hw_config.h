@@ -100,4 +100,4 @@
 #define JPP_HW_SIM_DOWN_GPIO     10
 #define JPP_HW_SIM_LEFT_GPIO     11
 #define JPP_HW_SIM_RIGHT_GPIO    21
-#define JPP_HW_SIM_CENTER_GPIO   22
+#define JPP_HW_SIM_OK_GPIO   22

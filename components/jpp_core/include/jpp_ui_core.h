@@ -128,7 +128,7 @@ jpp_ui_status_t jpp_ui_display_render_lines(
     jpp_ui_frame_t *rendered_frame,
     bool *changed
 );
-/* Maps a keypad event to a UI action. CENTER hold/double-click gestures are
+/* Maps a keypad event to a UI action. OK hold/double-click gestures are
    NOT handled here — they are policy (see the note in the implementation) and
    are resolved by keypad_task() before this is called. */
 jpp_ui_action_t jpp_ui_normalize_action(const jpp_keypad_event_t *event);

@@ -135,10 +135,10 @@ jpp_ui_action_t jpp_ui_normalize_action(const jpp_keypad_event_t *event)
     if (event == NULL || event->kind == JPP_KEYPAD_KIND_NO_EVENT) {
         return JPP_UI_ACTION_NONE;
     }
-    if (event->kind == JPP_KEYPAD_KIND_CENTER_SHORT || jpp_str_eq(event->mapped, "OK")) {
+    if (event->kind == JPP_KEYPAD_KIND_OK_SHORT || jpp_str_eq(event->mapped, "OK")) {
         return JPP_UI_ACTION_OK;
     }
-    /* CENTER_LONG / CENTER_DOUBLE are deliberately not mapped here: whether a
+    /* OK_LONG / OK_DOUBLE are deliberately not mapped here: whether a
        hold or a double-click means "Back" depends on the user's Settings >
        Controls preference and on what the foreground app has claimed, and
        neither is visible from a single keypad event. keypad_task() in

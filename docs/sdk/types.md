@@ -25,24 +25,24 @@
 | `JPP_SDK_KEY_DOWN` | D-pad down |
 | `JPP_SDK_KEY_LEFT` | D-pad left |
 | `JPP_SDK_KEY_RIGHT` | D-pad right |
-| `JPP_SDK_KEY_CENTER` | D-pad center (short press) |
+| `JPP_SDK_KEY_OK` | D-pad OK (short press) |
 | `JPP_SDK_KEY_BACK` | The user asked to go back. Which physical gesture produced it (hold or double-click) depends on Settings > Controls and is not your app's concern. |
-| `JPP_SDK_KEY_CENTER_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value — kept so existing apps are unaffected |
-| `JPP_SDK_KEY_CENTER_HOLD` | Raw CENTER hold. Delivered only if claimed via [`claim_center`](app-control.md#claim_center) |
-| `JPP_SDK_KEY_CENTER_DOUBLE` | Raw CENTER double-click. Delivered only if claimed via [`claim_center`](app-control.md#claim_center) |
+| `JPP_SDK_KEY_OK_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value — kept so existing apps are unaffected |
+| `JPP_SDK_KEY_OK_HOLD` | Raw OK hold. Delivered only if claimed via [`claim_ok`](app-control.md#claim_ok) |
+| `JPP_SDK_KEY_OK_DOUBLE` | Raw OK double-click. Delivered only if claimed via [`claim_ok`](app-control.md#claim_ok) |
 
 ### Python — `jppsdk` constants
 
 ```python
 # Key events (match C enum values)
-KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_CENTER
-KEY_BACK, KEY_CENTER_LONG          # same value; KEY_BACK is preferred
-KEY_CENTER_HOLD, KEY_CENTER_DOUBLE # raw gestures, only if claimed
+KEY_NONE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_OK
+KEY_BACK, KEY_OK_LONG          # same value; KEY_BACK is preferred
+KEY_OK_HOLD, KEY_OK_DOUBLE # raw gestures, only if claimed
 
-# CENTER gesture claims (see claim_center)
-CENTER_CLAIM_NONE = 0
-CENTER_CLAIM_HOLD = 1
-CENTER_CLAIM_DOUBLE = 2
+# OK gesture claims (see claim_ok)
+OK_CLAIM_NONE = 0
+OK_CLAIM_HOLD = 1
+OK_CLAIM_DOUBLE = 2
 
 # File open modes
 OPEN_READ = 0

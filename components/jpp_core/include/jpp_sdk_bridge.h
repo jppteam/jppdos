@@ -15,6 +15,11 @@
 extern "C" {
 #endif
 
+/* Marks a pre-rename symbol kept only for source compatibility — emits a
+   build warning naming its replacement. GCC/Clang only, which is all this
+   project ever builds with (ESP-IDF's toolchain, or clang-tidy). */
+#define JPP_SDK_DEPRECATED(msg) __attribute__((deprecated(msg)))
+
 #define JPP_SDK_PENDING_CAP_MAX 16u  /* must be >= SD_MANIFEST_CAP_MAX */
 
 #define JPP_SDK_FRAME_LINE_CAPACITY JPP_RESOURCE_SDK_FRAME_LINE_LIMIT
@@ -534,25 +539,44 @@ typedef enum {
     JPP_SDK_KEY_DOWN,
     JPP_SDK_KEY_LEFT,
     JPP_SDK_KEY_RIGHT,
-    JPP_SDK_KEY_CENTER,
-    JPP_SDK_KEY_CENTER_LONG,
-    /* Raw CENTER gestures, delivered only to apps that claimed them via
-       jpp_sdk_claim_center(). Appended deliberately: native apps are
+    JPP_SDK_KEY_OK,
+    JPP_SDK_KEY_OK_LONG,
+    /* Raw OK gestures, delivered only to apps that claimed them via
+       jpp_sdk_claim_ok(). Appended deliberately: native apps are
        separately-built ELFs, so these values must never be renumbered. */
-    JPP_SDK_KEY_CENTER_HOLD,
-    JPP_SDK_KEY_CENTER_DOUBLE,
+    JPP_SDK_KEY_OK_HOLD,
+    JPP_SDK_KEY_OK_DOUBLE,
     /* Preferred spelling of the semantic "user wants to go back" event. Same
-       value as JPP_SDK_KEY_CENTER_LONG, which predates the Settings > Controls
+       value as JPP_SDK_KEY_OK_LONG, which predates the Settings > Controls
        preference and is kept so existing apps and binaries are unaffected. */
-    JPP_SDK_KEY_BACK = JPP_SDK_KEY_CENTER_LONG,
+    JPP_SDK_KEY_BACK = JPP_SDK_KEY_OK_LONG,
+
+    /* Deprecated: the 5th keypad button was renamed from CENTER to OK. These
+       are the pre-rename names, same values — kept so source written before
+       the rename keeps compiling. Use the JPP_SDK_KEY_OK* names instead. */
+    JPP_SDK_KEY_CENTER
+        JPP_SDK_DEPRECATED("renamed to JPP_SDK_KEY_OK") = JPP_SDK_KEY_OK,
+    JPP_SDK_KEY_CENTER_LONG
+        JPP_SDK_DEPRECATED("renamed to JPP_SDK_KEY_OK_LONG") = JPP_SDK_KEY_OK_LONG,
+    JPP_SDK_KEY_CENTER_HOLD
+        JPP_SDK_DEPRECATED("renamed to JPP_SDK_KEY_OK_HOLD") = JPP_SDK_KEY_OK_HOLD,
+    JPP_SDK_KEY_CENTER_DOUBLE
+        JPP_SDK_DEPRECATED("renamed to JPP_SDK_KEY_OK_DOUBLE") = JPP_SDK_KEY_OK_DOUBLE,
 } jpp_sdk_key_event_t;
 
-/* Bits for jpp_sdk_claim_center(). Claiming a gesture takes it over as your
+/* Bits for jpp_sdk_claim_ok(). Claiming a gesture takes it over as your
    own input; claiming anything at all means JPP_SDK_KEY_BACK is no longer
    delivered and your app owns its exit. */
-#define JPP_SDK_CENTER_CLAIM_NONE   0x00u
-#define JPP_SDK_CENTER_CLAIM_HOLD   0x01u
-#define JPP_SDK_CENTER_CLAIM_DOUBLE 0x02u
+#define JPP_SDK_OK_CLAIM_NONE   0x00u
+#define JPP_SDK_OK_CLAIM_HOLD   0x01u
+#define JPP_SDK_OK_CLAIM_DOUBLE 0x02u
+
+/* Deprecated pre-rename names for the constants above (same values) — plain
+   macros can't carry a deprecated attribute, so this is comment-only. Use
+   the JPP_SDK_OK_CLAIM_* names instead. */
+#define JPP_SDK_CENTER_CLAIM_NONE   JPP_SDK_OK_CLAIM_NONE
+#define JPP_SDK_CENTER_CLAIM_HOLD   JPP_SDK_OK_CLAIM_HOLD
+#define JPP_SDK_CENTER_CLAIM_DOUBLE JPP_SDK_OK_CLAIM_DOUBLE
 
 /* ---- High-level UI abstractions ----------------------------------------- */
 /*
@@ -560,14 +584,14 @@ typedef enum {
  * key primitives. Each takes over the screen and the d-pad until the user
  * resolves it, then returns. The control scheme is uniform:
  *   d-pad        — move focus
- *   CENTER       — select / confirm / type the focused key
- *   CENTER long  — BACK (dismiss / cancel)
+ *   OK       — select / confirm / type the focused key
+ *   OK long  — BACK (dismiss / cancel)
  */
 
 /* Outcome of a modal UI helper. */
 typedef enum {
-    JPP_SDK_UI_OK   = 0,   /* user confirmed (CENTER) */
-    JPP_SDK_UI_BACK = 1,   /* user dismissed with BACK (long-press CENTER) */
+    JPP_SDK_UI_OK   = 0,   /* user confirmed (OK) */
+    JPP_SDK_UI_BACK = 1,   /* user dismissed with BACK (long-press OK) */
 } jpp_sdk_ui_result_t;
 
 /* Character set selected for an Input prompt's on-screen keyboard. */
@@ -616,11 +640,11 @@ typedef struct {
     char pending_cap_strs[JPP_SDK_PENDING_CAP_MAX][32];
     int  pending_cap_tiers[JPP_SDK_PENDING_CAP_MAX];
     size_t pending_cap_count;
-    /* CENTER gestures this app has taken over; see jpp_sdk_claim_center().
+    /* OK gestures this app has taken over; see jpp_sdk_claim_ok().
        New fields go here, at the tail: app binaries are built separately and
        loaded from SD, so inserting above this point shifts every offset they
        were compiled against. */
-    uint8_t center_claim;
+    uint8_t ok_claim;
     /* Post-v1 service callbacks — see jpp_sdk_services_v2_t. Kept here rather
        than inside `services` above precisely because this is the tail. */
     jpp_sdk_services_v2_t services_v2;
@@ -1122,36 +1146,44 @@ jpp_sdk_status_t jpp_sdk_wait_key(jpp_sdk_context_t *context, uint32_t timeout_m
 void jpp_sdk_push_key(jpp_sdk_context_t *context, jpp_sdk_key_event_t event);
 
 /*
- * Ungated — take over CENTER gestures as your own input.
+ * Ungated — take over OK gestures as your own input.
  *
- * `mask` is a bitwise OR of JPP_SDK_CENTER_CLAIM_HOLD / _DOUBLE, or
- * JPP_SDK_CENTER_CLAIM_NONE (the default on every bind) to leave CENTER
+ * `mask` is a bitwise OR of JPP_SDK_OK_CLAIM_HOLD / _DOUBLE, or
+ * JPP_SDK_OK_CLAIM_NONE (the default on every bind) to leave OK
  * alone. The rule is:
  *
- *   claim nothing  →  you get JPP_SDK_KEY_CENTER and JPP_SDK_KEY_BACK.
+ *   claim nothing  →  you get JPP_SDK_KEY_OK and JPP_SDK_KEY_BACK.
  *                     The firmware decides which physical gesture means Back
  *                     from the user's Settings > Controls preference; your
  *                     code never sees that choice.
- *   claim anything →  the claimed gestures arrive as JPP_SDK_KEY_CENTER_HOLD
+ *   claim anything →  the claimed gestures arrive as JPP_SDK_KEY_OK_HOLD
  *                     / _DOUBLE, JPP_SDK_KEY_BACK is no longer delivered, and
  *                     your app is responsible for its own way out.
  *
- * Claiming only HOLD also keeps JPP_SDK_KEY_CENTER instant: nothing then
+ * Claiming only HOLD also keeps JPP_SDK_KEY_OK instant: nothing then
  * needs to tell a double-click apart, so the short click is never withheld
  * to wait for a second one. That is the combination to use for an app where
- * CENTER is a rapid action button ("fire") and hold opens a pause menu.
+ * OK is a rapid action button ("fire") and hold opens a pause menu.
  *
  * Never affects UP/DOWN/LEFT/RIGHT, and never affects the launcher or
  * Settings — the claim lives on your context and is dropped when you exit.
  */
+jpp_sdk_status_t jpp_sdk_claim_ok(jpp_sdk_context_t *context, uint8_t mask);
+
+/* Deprecated: renamed to jpp_sdk_claim_ok() when the 5th keypad button was
+   renamed from CENTER to OK. Identical behavior — a thin forwarding wrapper,
+   also registered in s_symtab under this name — kept so source and
+   already-compiled native .bin files written against the pre-rename name
+   keep working without a rebuild. */
+JPP_SDK_DEPRECATED("renamed to jpp_sdk_claim_ok()")
 jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *context, uint8_t mask);
 
 /* ---- High-level UI helpers (no capability required) ---------------------- */
 
 /*
  * Dialog — a modal message box. `title` may be NULL. `text` is word-wrapped
- * across the body rows. Blocks until the user presses CENTER (returns
- * *out_result = JPP_SDK_UI_OK) or long-presses CENTER (JPP_SDK_UI_BACK).
+ * across the body rows. Blocks until the user presses OK (returns
+ * *out_result = JPP_SDK_UI_OK) or long-presses OK (JPP_SDK_UI_BACK).
  */
 jpp_sdk_status_t jpp_sdk_dialog(
     jpp_sdk_context_t *context,
@@ -1163,12 +1195,12 @@ jpp_sdk_status_t jpp_sdk_dialog(
 /*
  * List — prompt the user to choose from `items` (an array of `item_count`
  * strings). `title` may be NULL.
- *   single-select (multiselect=false): CENTER on an item confirms; on OK,
+ *   single-select (multiselect=false): OK on an item confirms; on OK,
  *     *out_count is 1 and out_indices[0] is the chosen index.
- *   multi-select (multiselect=true): CENTER toggles the focused item; a
+ *   multi-select (multiselect=true): OK toggles the focused item; a
  *     trailing "Done" row confirms. On OK, out_indices[0..*out_count-1] holds
  *     the checked indices in ascending order.
- * Long-press CENTER cancels: *out_result = JPP_SDK_UI_BACK, *out_count = 0.
+ * Long-press OK cancels: *out_result = JPP_SDK_UI_BACK, *out_count = 0.
  * out_indices must have room for at least out_capacity entries.
  */
 jpp_sdk_status_t jpp_sdk_list(
@@ -1185,10 +1217,12 @@ jpp_sdk_status_t jpp_sdk_list(
 
 /*
  * Input — prompt the user to type a value on an on-screen d-pad keyboard.
- * `title` is shown as the prompt. `placeholder` (may be NULL) is shown while
- * the field is empty. `type` selects the keyboard character set. On OK the
- * entered string is written to out_value (NUL-terminated). Long-press CENTER
- * cancels: *out_result = JPP_SDK_UI_BACK and out_value is set to "".
+ * `title` is shown as the prompt. `placeholder` (may be NULL) is example/hint
+ * text shown, bracketed, while the field is empty — it is never returned as
+ * the value; the first keystroke replaces it. `type` selects the keyboard
+ * character set. On OK the entered string is written to out_value
+ * (NUL-terminated). Long-press OK cancels: *out_result = JPP_SDK_UI_BACK and
+ * out_value is set to "".
  */
 jpp_sdk_status_t jpp_sdk_input(
     jpp_sdk_context_t *context,
@@ -1204,7 +1238,7 @@ jpp_sdk_status_t jpp_sdk_input(
  * Confirm — a unified Allow/Deny consent prompt. Renders `title` on row 0 with a
  * signature rule beneath it, the body_lines wrapped below, and a horizontal
  * "Deny / Allow" selector on the bottom row. d-pad LEFT/RIGHT move the selector,
- * CENTER confirms the highlighted choice, long-press CENTER denies. `default_allow`
+ * OK confirms the highlighted choice, long-press OK denies. `default_allow`
  * sets the initially highlighted side. Writes the choice to *out_allow.
  *
  * This is the single consent surface shared by capability and file-access prompts
@@ -1237,7 +1271,7 @@ size_t jpp_sdk_wrap_text(
  * Navigable directory listing; directories are shown with a "/" suffix and ".."
  * appears at the top of every non-root directory. Long names scroll as marquees.
  * On OK: *out_result = JPP_SDK_UI_OK and out_path holds the absolute /sd/ path.
- * On cancel (long-press CENTER / BACK at root): *out_result = JPP_SDK_UI_BACK.
+ * On cancel (long-press OK / BACK at root): *out_result = JPP_SDK_UI_BACK.
  * out_path_len must be at least JPP_SDK_PATH_MAX.
  */
 jpp_sdk_status_t jpp_sdk_file_pick(

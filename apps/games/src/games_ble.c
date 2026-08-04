@@ -154,7 +154,7 @@ games_mp_role_t games_ble_discover(jpp_sdk_context_t *ctx, uint8_t game_id)
         jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
         while (jpp_sdk_poll_key(ctx, &key) == JPP_SDK_STATUS_OK &&
                key != JPP_SDK_KEY_NONE) {
-            if (key == JPP_SDK_KEY_CENTER_LONG) {
+            if (key == JPP_SDK_KEY_OK_LONG) {
                 games_ble_end(ctx);
                 return GAMES_MP_NONE;
             }

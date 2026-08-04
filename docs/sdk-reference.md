@@ -37,7 +37,7 @@ Signatures are shown as **C** / **MicroPython** tabs, switched per signature.
 | Page | Functions |
 |------|-----------|
 | [Types and constants](sdk/types.md) | [`jpp_sdk_status_t`](sdk/types.md#c--jpp_sdk_status_t) · [`jpp_sdk_key_event_t`](sdk/types.md#c--jpp_sdk_key_event_t) · [Python constants](sdk/types.md#python--jppsdk-constants) · [`jpp_broker_result_t`](sdk/types.md#c--jpp_broker_result_t) |
-| [App control and input](sdk/app-control.md) | [`set_frame`](sdk/app-control.md#set_frame) · [`request_close`](sdk/app-control.md#request_close) · [`log`](sdk/app-control.md#log) · [`request_cap`](sdk/app-control.md#request_cap) · [`poll_key`](sdk/app-control.md#poll_key) · [`wait_key`](sdk/app-control.md#wait_key) · [`push_key`](sdk/app-control.md#push_key) · [`claim_center`](sdk/app-control.md#claim_center) |
+| [App control and input](sdk/app-control.md) | [`set_frame`](sdk/app-control.md#set_frame) · [`request_close`](sdk/app-control.md#request_close) · [`log`](sdk/app-control.md#log) · [`request_cap`](sdk/app-control.md#request_cap) · [`poll_key`](sdk/app-control.md#poll_key) · [`wait_key`](sdk/app-control.md#wait_key) · [`push_key`](sdk/app-control.md#push_key) · [`claim_ok`](sdk/app-control.md#claim_ok) |
 | [Canvas and UI helpers](sdk/display.md) | [`canvas_write`](sdk/display.md#canvas_write) · [`canvas_draw_pixel`](sdk/display.md#canvas_draw_pixel) · [`canvas_clear`](sdk/display.md#canvas_clear) · [`canvas_fullscreen`](sdk/display.md#canvas_fullscreen) · [`dialog`](sdk/display.md#dialog) · [`list`](sdk/display.md#list) · [`input`](sdk/display.md#input) · [`confirm`](sdk/display.md#confirm) · [`file_pick`](sdk/display.md#file_pick) · [`wrap_text`](sdk/display.md#wrap_text) |
 | [Buzzer, LED, device status](sdk/hardware.md) | [`buzzer_play`](sdk/hardware.md#buzzer_play) · [`buzzer_tone`](sdk/hardware.md#buzzer_tone) · [`buzzer_play_sequence`](sdk/hardware.md#buzzer_play_sequence) · [`buzzer_play_sequence_async`](sdk/hardware.md#buzzer_play_sequence_async) · [`buzzer_stop`](sdk/hardware.md#buzzer_stop) · [`led_set_color`](sdk/hardware.md#led_set_color) · [`led_off`](sdk/hardware.md#led_off) · [`wakelock_acquire`](sdk/hardware.md#wakelock_acquire) · [`wakelock_release`](sdk/hardware.md#wakelock_release) · [`device_status`](sdk/hardware.md#device_status) · [`get_time`](sdk/hardware.md#get_time) · [`is_dummy_mode`](sdk/hardware.md#is_dummy_mode) |
 
@@ -79,9 +79,10 @@ tier rules and what each one unlocks.
 ## Which SDK level do I need?
 
 The firmware exports a single API **level**, and an app declares the lowest one
-it can run on via [`sdk_min`](manifest.md#sdk_min). Everything in this reference
-is available at level 2 (firmware v1.1). The calls that are *not* available at
-level 1 are marked in place with a "Requires SDK level 2" note.
+it can run on via [`sdk_min`](manifest.md#sdk_min). Most of this reference is
+available at level 1. A call — or in a few cases just its MicroPython binding,
+where that arrived after the C form — added at level 2 or level 3 is marked in
+place with a "Requires SDK level 2/3" note.
 
 The [SDK changelog](sdk-changelog.md) lists every level, what it added, and how
 to pick a value for `sdk_min`.

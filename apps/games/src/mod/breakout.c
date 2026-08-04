@@ -220,10 +220,10 @@ static bool play_session(void)
                 g.paddle_x += 5;
                 if (g.paddle_x > 128 - PADDLE_W) { g.paddle_x = 128 - PADDLE_W; }
                 break;
-            case JPP_SDK_KEY_CENTER:
+            case JPP_SDK_KEY_OK:
                 if (g.ball_held) { serve(); }
                 break;
-            case JPP_SDK_KEY_CENTER_LONG: {
+            case JPP_SDK_KEY_OK_LONG: {
                 int action = pause_menu();
                 if (action == 1) { reset_game(); }
                 if (action == 2) { return false; }

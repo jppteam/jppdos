@@ -213,7 +213,7 @@ static bool play_session(void)
         case JPP_SDK_KEY_RIGHT: dir = 1; break;
         case JPP_SDK_KEY_UP:    dir = 2; break;
         case JPP_SDK_KEY_DOWN:  dir = 3; break;
-        case JPP_SDK_KEY_CENTER_LONG: {
+        case JPP_SDK_KEY_OK_LONG: {
             int action = pause_menu();
             if (action == 1) { reset_game(); }
             if (action == 2) { save_records(); return false; }

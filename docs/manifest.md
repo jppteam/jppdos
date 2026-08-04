@@ -70,7 +70,7 @@ capability your app uses:
 | `sdk_min` | Declare it if you use | Since firmware |
 |-----------|-----------------------|----------------|
 | `1` | the original SDK surface | v1.0-RTM |
-| `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · CENTER gesture claims (`claim_center`, `KEY_BACK`, `KEY_CENTER_HOLD`/`_DOUBLE`) · `jpp_sdk_confirm` from a native app | v1.1 |
+| `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · OK gesture claims, as `claim_center`/`KEY_CENTER*`/`CENTER_CLAIM_*` at this level — renamed at level 3, see below · `jpp_sdk_confirm` from a native app | v1.1 |
 | `3` | `jpp_sdk_wrap_text` from a native app · from a MicroPython app, any of the calls that gained a `jppsdk` binding at this level: `request_cap` · `confirm` · `wrap_text` · `file_pick` · `ble_set_connectable` · `ble_host_set_value`/`_wait_write`/`_clear` · `net_connect` · `crypto_sha256`/`sha1`/`aes256_ige_encrypt`/`aes256_ige_decrypt`/`modexp`/`rsa_encrypt`/`dh_compute` | *unreleased* |
 
 Declaring `sdk_min: 2` means the app will not load on a v1.0-RTM device. If you
@@ -214,7 +214,7 @@ These work in every app, with no manifest declaration and no user prompt:
 - LED: `led_set_color`, `led_off` (onboard WS2812 pixel)
 - Wakelock: `wakelock_acquire`, `wakelock_release`
 - Device info: `device_status`, `get_time`, `is_dummy_mode`
-- CENTER gesture claims: `claim_center` (SDK level 2)
+- OK gesture claims: `claim_ok` (SDK level 2 as `claim_center` — that name still works, deprecated, at `sdk_min: 2`; the `claim_ok` spelling needs `sdk_min: 3` — see the [SDK changelog](sdk-changelog.md#the-5th-keypad-button-is-ok-not-center))
 - Crypto primitives: `jpp_crypto_sha256`/`sha1`, `aes256_ige_*`, `modexp`/`rsa_encrypt`/`dh_compute` (SDK level 2 in C; `jppsdk.crypto_*` from level 3)
 - Scoped file I/O: `file_read`, `file_write`, `file_list` (sandboxed to `/sd/apps/<app_id>/`)
 - Shared file I/O: `shared_read`, `shared_write`, `shared_list` (sandboxed to `/sd/shared/<app_id>/`)

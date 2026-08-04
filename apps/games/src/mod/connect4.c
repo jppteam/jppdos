@@ -1,7 +1,7 @@
 /*
  * Connect-4 — Games-app module. BLE two-device only.
  *
- * 7×6 board, 8×8 px cells. LEFT/RIGHT move the column cursor, CENTER drops a
+ * 7×6 board, 8×8 px cells. LEFT/RIGHT move the column cursor, OK drops a
  * disc. The match is turn-based over the hub's BLE session, so the slow BLE
  * round-trip never hurts gameplay. The host (advertiser) is the authority:
  * it owns the board, validates every client move (your turn, column not
@@ -208,14 +208,14 @@ static uint8_t play_host(void)
             case JPP_SDK_KEY_RIGHT:
                 if (s_cursor < COLS - 1) { s_cursor++; }
                 break;
-            case JPP_SDK_KEY_CENTER:
+            case JPP_SDK_KEY_OK:
                 if (column_height(s_cursor) < ROWS) {
                     api->sfx_seq(k_drop, 4);
                     apply_move(s_cursor, 1u);
                     host_send_state(END_NONE);
                 }
                 break;
-            case JPP_SDK_KEY_CENTER_LONG:
+            case JPP_SDK_KEY_OK_LONG:
                 host_send_state(END_QUIT);
                 return END_QUIT;
             default: break;
@@ -226,7 +226,7 @@ static uint8_t play_host(void)
             if (!api->mp_host_recv(s_ctx, rx, sizeof(rx), &rx_len, 2000u)) {
                 jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
                 if (jpp_sdk_poll_key(s_ctx, &key) == JPP_SDK_STATUS_OK &&
-                    key == JPP_SDK_KEY_CENTER_LONG) {
+                    key == JPP_SDK_KEY_OK_LONG) {
                     host_send_state(END_QUIT);
                     return END_QUIT;
                 }
@@ -296,10 +296,10 @@ static uint8_t play_client(void)
             case JPP_SDK_KEY_RIGHT:
                 if (s_cursor < COLS - 1) { s_cursor++; }
                 break;
-            case JPP_SDK_KEY_CENTER:
+            case JPP_SDK_KEY_OK:
                 if (column_height(s_cursor) < ROWS) { move_col = (uint8_t)s_cursor; }
                 break;
-            case JPP_SDK_KEY_CENTER_LONG:
+            case JPP_SDK_KEY_OK_LONG:
                 client_send_move(++seq, MOVE_BYE);
                 return END_QUIT;
             default: break;
@@ -342,7 +342,7 @@ static uint8_t play_client(void)
             }
             jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
             if (jpp_sdk_poll_key(s_ctx, &key) == JPP_SDK_STATUS_OK &&
-                key == JPP_SDK_KEY_CENTER_LONG) {
+                key == JPP_SDK_KEY_OK_LONG) {
                 client_send_move(++seq, MOVE_BYE);
                 return END_QUIT;
             }

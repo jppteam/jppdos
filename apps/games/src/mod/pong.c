@@ -245,7 +245,7 @@ static void play_single(void)
             switch (key) {
             case JPP_SDK_KEY_UP:   move_paddle(&g.left_y, -PADDLE_STEP); break;
             case JPP_SDK_KEY_DOWN: move_paddle(&g.left_y, PADDLE_STEP);  break;
-            case JPP_SDK_KEY_CENTER_LONG: {
+            case JPP_SDK_KEY_OK_LONG: {
                 int action = pause_menu();
                 if (action == 1) { sp_reset(); }
                 if (action == 2) {
@@ -365,7 +365,7 @@ static uint8_t play_host(void)
             switch (key) {
             case JPP_SDK_KEY_UP:   move_paddle(&g.left_y, -PADDLE_STEP); break;
             case JPP_SDK_KEY_DOWN: move_paddle(&g.left_y, PADDLE_STEP);  break;
-            case JPP_SDK_KEY_CENTER_LONG:
+            case JPP_SDK_KEY_OK_LONG:
                 host_send_state(tick, 0u, END_QUIT, ac.last_seq);
                 vTaskDelay(pdMS_TO_TICKS(300u));
                 return END_QUIT;
@@ -454,7 +454,7 @@ static uint8_t play_client(void)
             switch (key) {
             case JPP_SDK_KEY_UP:   move_paddle(&my_paddle, -PADDLE_STEP); break;
             case JPP_SDK_KEY_DOWN: move_paddle(&my_paddle, PADDLE_STEP);  break;
-            case JPP_SDK_KEY_CENTER_LONG:
+            case JPP_SDK_KEY_OK_LONG:
                 client_send_paddle(++seq, my_paddle, PKT_TYPE_BYE);
                 return END_QUIT;
             default: break;

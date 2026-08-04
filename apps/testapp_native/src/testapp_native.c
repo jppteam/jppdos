@@ -87,9 +87,9 @@ static void test_dialog(jpp_sdk_context_t *ctx)
     jpp_sdk_ui_result_t res;
     jpp_sdk_canvas_clear(ctx);
     jpp_sdk_dialog(ctx, "Dialog test",
-                   "Press CENTER to confirm or long-press to dismiss.", &res);
+                   "Press OK to confirm or long-press to dismiss.", &res);
     show(ctx, "Dialog result",
-         res == JPP_SDK_UI_OK ? "OK (CENTER)" : "BACK (long)");
+         res == JPP_SDK_UI_OK ? "OK (OK)" : "BACK (long)");
 }
 
 static void test_list_single(jpp_sdk_context_t *ctx)
@@ -205,7 +205,7 @@ static void test_canvas(jpp_sdk_context_t *ctx)
 
 static void test_keys(jpp_sdk_context_t *ctx)
 {
-    const char *hint[] = { "Key test", "Press 5 keys.", "UP/DN/L/R/CTR/LONG" };
+    const char *hint[] = { "Key test", "Press 5 keys.", "UP/DN/L/R/OK/LONG" };
     jpp_sdk_set_frame(ctx, hint, 3);
 
     static const char *names[] = {
@@ -214,8 +214,8 @@ static void test_keys(jpp_sdk_context_t *ctx)
         [JPP_SDK_KEY_DOWN]        = "DOWN",
         [JPP_SDK_KEY_LEFT]        = "LEFT",
         [JPP_SDK_KEY_RIGHT]       = "RIGHT",
-        [JPP_SDK_KEY_CENTER]      = "CENTER",
-        [JPP_SDK_KEY_CENTER_LONG] = "LONG",
+        [JPP_SDK_KEY_OK]      = "OK",
+        [JPP_SDK_KEY_OK_LONG] = "LONG",
     };
     char log[64] = "";
     for (int i = 0; i < 5; i++) {
@@ -1059,26 +1059,26 @@ static void test_request_cap(jpp_sdk_context_t *ctx)
                 st == JPP_SDK_STATUS_OK ? "granted" : "denied");
 }
 
-static void test_claim_center(jpp_sdk_context_t *ctx)
+static void test_claim_ok(jpp_sdk_context_t *ctx)
 {
-    /* Claiming only HOLD keeps a short CENTER press instant (menu navigation
-       is unaffected) but diverts the long-press from Back to KEY_CENTER_HOLD.
-       Always restore CENTER_CLAIM_NONE before returning, or the rest of the
+    /* Claiming only HOLD keeps a short OK press instant (menu navigation
+       is unaffected) but diverts the long-press from Back to KEY_OK_HOLD.
+       Always restore OK_CLAIM_NONE before returning, or the rest of the
        app loses its Back button. */
-    jpp_sdk_status_t st = jpp_sdk_claim_center(ctx, JPP_SDK_CENTER_CLAIM_HOLD);
+    jpp_sdk_status_t st = jpp_sdk_claim_ok(ctx, JPP_SDK_OK_CLAIM_HOLD);
     if (st != JPP_SDK_STATUS_OK) {
-        show_result(ctx, "claim_center(HOLD)", st, "failed");
+        show_result(ctx, "claim_ok(HOLD)", st, "failed");
         return;
     }
 
-    show(ctx, "claim_center", "Claimed HOLD. Hold CENTER within 3s...");
+    show(ctx, "claim_ok", "Claimed HOLD. Hold OK within 3s...");
     jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
     jpp_sdk_wait_key(ctx, 3000, &key);
-    show_result(ctx, "claim_center result", JPP_SDK_STATUS_OK,
-                key == JPP_SDK_KEY_CENTER_HOLD ? "got KEY_CENTER_HOLD" : "timed out");
+    show_result(ctx, "claim_ok result", JPP_SDK_STATUS_OK,
+                key == JPP_SDK_KEY_OK_HOLD ? "got KEY_OK_HOLD" : "timed out");
 
-    st = jpp_sdk_claim_center(ctx, JPP_SDK_CENTER_CLAIM_NONE);
-    show_result(ctx, "claim_center(NONE)", st, "restored");
+    st = jpp_sdk_claim_ok(ctx, JPP_SDK_OK_CLAIM_NONE);
+    show_result(ctx, "claim_ok(NONE)", st, "restored");
 }
 
 static void menu_system(jpp_sdk_context_t *ctx)
@@ -1088,7 +1088,7 @@ static void menu_system(jpp_sdk_context_t *ctx)
         "Log event",
         "Background register",
         "Request cap",
-        "Claim center (HOLD)",
+        "Claim OK (HOLD)",
     };
     for (;;) {
         int sel = pick(ctx, "System Tests", items, 5);
@@ -1098,7 +1098,7 @@ static void menu_system(jpp_sdk_context_t *ctx)
         case 1: test_log(ctx);                break;
         case 2: test_background_register(ctx); break;
         case 3: test_request_cap(ctx);        break;
-        case 4: test_claim_center(ctx);       break;
+        case 4: test_claim_ok(ctx);       break;
         }
     }
 }

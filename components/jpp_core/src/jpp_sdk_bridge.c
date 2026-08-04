@@ -334,7 +334,7 @@ void jpp_sdk_context_init(jpp_sdk_context_t *context)
         return;
     }
     memset(context, 0, sizeof(*context));
-    /* memset leaves center_claim == JPP_SDK_CENTER_CLAIM_NONE, so every app
+    /* memset leaves ok_claim == JPP_SDK_OK_CLAIM_NONE, so every app
        starts out with the system-managed Back gesture. */
     context->key_queue = xQueueCreate(8u, sizeof(jpp_sdk_key_event_t));
 }
@@ -2819,15 +2819,20 @@ void jpp_sdk_push_key(jpp_sdk_context_t *context, jpp_sdk_key_event_t event)
     xQueueSendToBack(context->key_queue, &event, 0);
 }
 
-jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *context, uint8_t mask)
+jpp_sdk_status_t jpp_sdk_claim_ok(jpp_sdk_context_t *context, uint8_t mask)
 {
     jpp_sdk_status_t status = jpp_sdk_ensure_bound(context);
     if (status != JPP_SDK_STATUS_OK) { return status; }
-    if ((mask & ~(JPP_SDK_CENTER_CLAIM_HOLD | JPP_SDK_CENTER_CLAIM_DOUBLE)) != 0u) {
+    if ((mask & ~(JPP_SDK_OK_CLAIM_HOLD | JPP_SDK_OK_CLAIM_DOUBLE)) != 0u) {
         return JPP_SDK_STATUS_INVALID_ARGUMENT;
     }
-    context->center_claim = mask;
+    context->ok_claim = mask;
     return JPP_SDK_STATUS_OK;
+}
+
+jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *context, uint8_t mask)
+{
+    return jpp_sdk_claim_ok(context, mask);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2943,12 +2948,12 @@ jpp_sdk_status_t jpp_sdk_dialog(
 
     for (;;) {
         jpp_sdk_key_event_t key = jpp_sdk_ui_next_key(context);
-        if (key == JPP_SDK_KEY_CENTER) {
+        if (key == JPP_SDK_KEY_OK) {
             *out_result = JPP_SDK_UI_OK;
             jpp_sdk_modal_done(context, fullscreen_before);
             return JPP_SDK_STATUS_OK;
         }
-        if (key == JPP_SDK_KEY_CENTER_LONG) {
+        if (key == JPP_SDK_KEY_OK_LONG) {
             *out_result = JPP_SDK_UI_BACK;
             jpp_sdk_modal_done(context, fullscreen_before);
             return JPP_SDK_STATUS_OK;
@@ -3006,8 +3011,8 @@ jpp_sdk_status_t jpp_sdk_confirm(
         switch (key) {
         case JPP_SDK_KEY_LEFT:        allow = false; break;
         case JPP_SDK_KEY_RIGHT:       allow = true;  break;
-        case JPP_SDK_KEY_CENTER:      *out_allow = allow; jpp_sdk_modal_done(context, fullscreen_before); return JPP_SDK_STATUS_OK;
-        case JPP_SDK_KEY_CENTER_LONG: *out_allow = false; jpp_sdk_modal_done(context, fullscreen_before); return JPP_SDK_STATUS_OK;
+        case JPP_SDK_KEY_OK:      *out_allow = allow; jpp_sdk_modal_done(context, fullscreen_before); return JPP_SDK_STATUS_OK;
+        case JPP_SDK_KEY_OK_LONG: *out_allow = false; jpp_sdk_modal_done(context, fullscreen_before); return JPP_SDK_STATUS_OK;
         default: break;
         }
     }
@@ -3084,7 +3089,7 @@ jpp_sdk_status_t jpp_sdk_list(
         case JPP_SDK_KEY_DOWN:
             cursor = (cursor + 1u) % total_rows;
             break;
-        case JPP_SDK_KEY_CENTER:
+        case JPP_SDK_KEY_OK:
             if (!multiselect) {
                 out_indices[0] = cursor;
                 *out_count = 1u;
@@ -3106,7 +3111,7 @@ jpp_sdk_status_t jpp_sdk_list(
             }
             checked[cursor] = !checked[cursor];
             break;
-        case JPP_SDK_KEY_CENTER_LONG:
+        case JPP_SDK_KEY_OK_LONG:
             *out_count = 0u;
             *out_result = JPP_SDK_UI_BACK;
             jpp_sdk_modal_done(context, fullscreen_before);
@@ -3346,7 +3351,7 @@ static jpp_sdk_status_t jpp_sdk_datetime_picker(
         case JPP_SDK_KEY_DOWN:
             if (focus < SDK_DT_FIELDS) { sdk_dt_step_field(type, v, focus, -1); }
             break;
-        case JPP_SDK_KEY_CENTER:
+        case JPP_SDK_KEY_OK:
             if (focus < SDK_DT_FIELDS || focus == SDK_DT_BTN_OK) {
                 sdk_dt_format(type, v, out_value, value_buf_len);
                 *out_result = JPP_SDK_UI_OK;
@@ -3395,7 +3400,7 @@ static jpp_sdk_status_t jpp_sdk_datetime_picker(
                 }
             }
             break;
-        case JPP_SDK_KEY_CENTER_LONG:
+        case JPP_SDK_KEY_OK_LONG:
             out_value[0] = '\0';
             *out_result = JPP_SDK_UI_BACK;
             return JPP_SDK_STATUS_OK;
@@ -3486,8 +3491,8 @@ static jpp_fb_key_t sdk_fp_wait_key(void *ctx, uint32_t timeout_ms)
     switch (key) {
     case JPP_SDK_KEY_UP:          return JPP_FB_KEY_UP;
     case JPP_SDK_KEY_DOWN:        return JPP_FB_KEY_DOWN;
-    case JPP_SDK_KEY_CENTER:      return JPP_FB_KEY_OK;
-    case JPP_SDK_KEY_CENTER_LONG: return JPP_FB_KEY_BACK;
+    case JPP_SDK_KEY_OK:      return JPP_FB_KEY_OK;
+    case JPP_SDK_KEY_OK_LONG: return JPP_FB_KEY_BACK;
     default:                      return JPP_FB_KEY_NONE;
     }
 }
