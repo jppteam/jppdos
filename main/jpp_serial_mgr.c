@@ -45,6 +45,7 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 #define SMP_CMD_GET_INFO        0x02u
 #define SMP_CMD_GET_LRV_DATA    0x03u
 #define SMP_CMD_SET_TIME        0x04u
+#define SMP_CMD_KEEPALIVE       0x05u
 #define SMP_CMD_FS_LIST_DIR     0x10u
 #define SMP_CMD_FS_MKDIR        0x11u
 #define SMP_CMD_FS_REMOVE       0x12u
@@ -473,6 +474,20 @@ static void handle_set_time(uint8_t seq, const uint8_t *body, uint16_t body_len)
     send_err(seq, SMP_ST_OK);
     ESP_LOGI(TAG, "SMP_SET_TIME %04d-%02d-%02d %02d:%02d:%02d",
              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+}
+
+/*
+ * KEEPALIVE is a no-op the host can send during a stretch where it has
+ * nothing else to say to the device (idling on user input, redrawing a UI)
+ * so the session doesn't lapse after SMP_SESSION_TIMEOUT_MS. It needs no
+ * handler-side logic of its own: dispatch_command() already resets the
+ * inactivity timer before invoking *any* handler for a valid, session-gated
+ * command, and KEEPALIVE is gated the same way (ERR_NO_SESSION with no
+ * session open) so it can't be used to dodge that gate.
+ */
+static void handle_keepalive(uint8_t seq)
+{
+    send_err(seq, SMP_ST_OK);
 }
 
 static void handle_fs_list_dir(uint8_t seq, const uint8_t *body,
@@ -955,6 +970,7 @@ static void dispatch_command(const uint8_t *payload, uint16_t plen)
     case SMP_CMD_GET_INFO:        handle_get_info(seq);                          break;
     case SMP_CMD_GET_LRV_DATA:    handle_get_lrv_data(seq);                     break;
     case SMP_CMD_SET_TIME:        handle_set_time(seq, body, body_len);         break;
+    case SMP_CMD_KEEPALIVE:       handle_keepalive(seq);                        break;
     case SMP_CMD_FS_LIST_DIR:     handle_fs_list_dir(seq, body, body_len);      break;
     case SMP_CMD_FS_MKDIR:        handle_fs_mkdir(seq, body, body_len);          break;
     case SMP_CMD_FS_REMOVE:       handle_fs_remove(seq, body, body_len);         break;

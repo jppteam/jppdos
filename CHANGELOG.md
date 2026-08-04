@@ -55,6 +55,16 @@ each build, not an API diff.
   understand it. See the [serial protocol reference](docs/serial-protocol.md#device-initiated-events)
   for the wire format if you're writing your own host tooling.
 
+- **A management session no longer has to end just because nobody sent
+  anything for 30 seconds.** New no-op `KEEPALIVE` command: a host tool that
+  is idling — waiting on a user prompt, redrawing a UI — can send it to reset
+  the session's inactivity timer without doing any actual work. Any real
+  command already reset that timer; this just gives a host something to send
+  when it has nothing else to say. See
+  [0x05 — KEEPALIVE](docs/serial-protocol.md#0x05--keepalive) in the serial
+  protocol reference. `scripts/jppd_upload.py`'s `_SMPSession.keepalive()` is
+  the reference implementation.
+
 ### Build & release
 
 - Pushing a version tag now builds the firmware and publishes a GitHub Release

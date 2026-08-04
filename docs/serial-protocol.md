@@ -99,7 +99,7 @@ A host must open a session before issuing any command other than `SESSION_START`
 2. The device displays an OLED consent dialog (**Allow / Deny**) and plays a notification chime. The host blocks until the user responds.
 3. If the user allows, `SESSION_START` returns `OK` and commands may flow.
 4. If the user denies, `SESSION_START` returns `ERR_DENIED`. No session is opened.
-5. The host sends `SESSION_END` when done, the session times out after **30 seconds** of inactivity, or the user ends it from the device by holding **OK** — which also sends a `SESSION_ENDED` [event](#device-initiated-events) so the host doesn't have to find out from a failed command or a timeout.
+5. The host sends `SESSION_END` when done, the session times out after **30 seconds** of inactivity, or the user ends it from the device by holding **OK** — which also sends a `SESSION_ENDED` [event](#device-initiated-events) so the host doesn't have to find out from a failed command or a timeout. Any valid command resets the inactivity timer, including the no-op `KEEPALIVE`, which exists for a host that has nothing else to send during a long idle stretch.
 
 **Mutual exclusion:**
 - A session cannot be opened while an SD app is running (`ERR_APP_RUNNING`).
@@ -179,6 +179,22 @@ Sets the device's RTC (in-RAM state, and the DS1307 hardware if one is attached)
 | Device → host | — |
 
 `weekday` is `0`–`6`; the firmware does not interpret its meaning beyond storing it. Returns `ERR_INVALID` if the body is not exactly 8 bytes or the fields fail range validation (year ≥ 2000, month 1–12, day 1–31, hour 0–23, minute/second 0–59).
+
+---
+
+### 0x05 — KEEPALIVE
+
+A no-op the host can send to reset the session's inactivity timeout without
+doing anything else. Use it during a stretch where the host has no other
+command to send — waiting on user input, redrawing a UI — and would
+otherwise let the session lapse after 30 seconds. Any valid command already
+resets the timeout; `KEEPALIVE` just exists for when there's nothing else to
+say.
+
+| Direction | Body |
+|-----------|------|
+| Host → device | — |
+| Device → host | — |
 
 ---
 
