@@ -42,6 +42,7 @@ CMD_SESSION_START   = 0x00
 CMD_SESSION_END     = 0x01
 CMD_GET_INFO        = 0x02
 CMD_SET_TIME        = 0x04
+CMD_KEEPALIVE       = 0x05
 CMD_FS_MKDIR        = 0x11
 CMD_FS_UPLOAD_BEGIN = 0x14
 CMD_FS_UPLOAD_CHUNK = 0x15
@@ -322,6 +323,15 @@ class _SMPSession:
                            dt.hour, dt.minute, dt.second)
         status, _ = self._cmd(CMD_SET_TIME, body)
         self._require_ok(status, "SET_TIME")
+
+    def keepalive(self) -> None:
+        """Send a no-op KEEPALIVE to reset the device's session inactivity
+        timer (currently 30s).  Useful when the host is idling — waiting on
+        a user prompt, redrawing a UI — longer than that with no other
+        command to send.
+        """
+        status, _ = self._cmd(CMD_KEEPALIVE)
+        self._require_ok(status, "KEEPALIVE")
 
     def mkdir(self, path: str) -> None:
         body   = path.encode() + b'\x00'
