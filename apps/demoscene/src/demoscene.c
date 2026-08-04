@@ -9,7 +9,7 @@
  * Bayer matrix fakes greyscale by ordered dithering.
  *
  * Controls: LEFT/RIGHT switch scene, UP toggles music, DOWN toggles
- * auto-advance, long-press CENTER exits.
+ * auto-advance, long-press OK exits.
  */
 
 #include "demoscene.h"
@@ -549,7 +549,7 @@ static const char k_scroll_msg[] =
     "RUNNING ON A 160 MHZ RISC-V WITH 128X64 PIXELS OF PURE OLDSKOOL...   "
     "ALL INTEGER MATH - THE BAYER MATRIX IS DOING THE HEAVY LIFTING...   "
     "LEFT/RIGHT: CHANGE SCENE   UP: MUSIC   DOWN: AUTOPILOT   "
-    "HOLD CENTER TO EXIT...   "
+    "HOLD OK TO EXIT...   "
     "GREETINGS FLY OUT TO EVERY DEVICE STUCK IN DUMMY MODE...   "
     "KEEP THE SCENE ALIVE!         ";
 
@@ -660,7 +660,7 @@ void demoscene_run(jpp_sdk_context_t *ctx)
             switch (key) {
             case JPP_SDK_KEY_LEFT:  step -= 1; break;
             case JPP_SDK_KEY_RIGHT:
-            case JPP_SDK_KEY_CENTER: step += 1; break;
+            case JPP_SDK_KEY_OK: step += 1; break;
             case JPP_SDK_KEY_UP:
                 music_on = !music_on;
                 if (music_on) {
@@ -672,7 +672,7 @@ void demoscene_run(jpp_sdk_context_t *ctx)
             case JPP_SDK_KEY_DOWN:
                 autopilot = !autopilot;
                 break;
-            case JPP_SDK_KEY_CENTER_LONG:
+            case JPP_SDK_KEY_OK_LONG:
                 exit_requested = true;
                 break;
             default:

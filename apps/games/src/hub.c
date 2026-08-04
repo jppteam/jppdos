@@ -94,7 +94,7 @@ static const score_row_t k_scores[] = {
 #define SCORE_ROWS (sizeof(k_scores) / sizeof(k_scores[0]))
 
 /* Read-only scrollable breakdown rendered with the SDK list (system font);
-   any key (CENTER / BACK) returns. The label is left-padded so the value
+   any key (OK / BACK) returns. The label is left-padded so the value
    lines up to the right of the name. */
 static void scores_screen(jpp_sdk_context_t *ctx)
 {

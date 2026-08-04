@@ -132,7 +132,7 @@ jppsdk.canvas_fullscreen(on: bool) -> None
 
 ## UI helpers
 
-These are **blocking modal** calls. They take over the display and d-pad until the user resolves the prompt, then return. The control scheme is consistent across all helpers: d-pad moves focus, CENTER selects/confirms, CENTER long-press cancels.
+These are **blocking modal** calls. They take over the display and d-pad until the user resolves the prompt, then return. The control scheme is consistent across all helpers: d-pad moves focus, OK selects/confirms, OK long-press cancels.
 
 All titled modals draw the signature rule under the title row, matching the system Settings and launcher style.
 
@@ -206,7 +206,7 @@ jppsdk.list(items: list[str],
 | `title` | Optional title. |
 | `items` | The list of options to display. |
 | `item_count` | Number of items (C only). |
-| `multiselect` | If `true`, the user can check multiple items before confirming with a trailing "Done" row. If `false`, selection is immediate on CENTER. |
+| `multiselect` | If `true`, the user can check multiple items before confirming with a trailing "Done" row. If `false`, selection is immediate on OK. |
 | `out_indices` | C only: array receiving the selected indices. |
 | `out_capacity` | C only: size of `out_indices` array. |
 | `out_count` | C only: number of indices written to `out_indices`. |
@@ -251,7 +251,7 @@ jppsdk.input(title: str,
 | Name | Description |
 |------|-------------|
 | `title` | Prompt title shown at the top. |
-| `placeholder` | Pre-filled text, or `NULL`/`None` to start empty. |
+| `placeholder` | Example/hint text shown in brackets while the field is empty, or `NULL`/`None` for no hint. It is never returned as the value — typing anything replaces it immediately. |
 | `type` | Input mode — see below. |
 | `out_value` | C only: buffer for the returned string. Max `value_buf_len - 1` characters. |
 | `value_buf_len` | C only: size of `out_value` including the null terminator. |
@@ -269,7 +269,7 @@ jppsdk.input(title: str,
 - C: `JPP_SDK_OK`; check `*out_result`.
 - Python: the entered string, or `None` if the user cancelled.
 
-**Notes:** Cancelling (BACK or cancel key) returns `None`/`JPP_SDK_UI_BACK`. The returned string is limited to 64 characters.
+**Notes:** Cancelling (BACK or cancel key) returns `None`/`JPP_SDK_UI_BACK`. The returned string is limited to 64 characters. A `placeholder` renders in `[brackets]` with no text cursor, so it can't be mistaken for a value the user already entered; the first keystroke clears it and starts a real value with the cursor showing.
 
 ---
 

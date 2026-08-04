@@ -72,7 +72,8 @@ static const jpp_native_sym_t s_symtab[] = {
     { "jpp_sdk_poll_key",              (void *)jpp_sdk_poll_key              },
     { "jpp_sdk_wait_key",              (void *)jpp_sdk_wait_key              },
     { "jpp_sdk_push_key",              (void *)jpp_sdk_push_key              },
-    { "jpp_sdk_claim_center",          (void *)jpp_sdk_claim_center          },
+    { "jpp_sdk_claim_ok",              (void *)jpp_sdk_claim_ok              },
+    { "jpp_sdk_claim_center",          (void *)jpp_sdk_claim_center          }, /* deprecated, pre-rename */
 
     /* Canvas */
     { "jpp_sdk_canvas_clear",          (void *)jpp_sdk_canvas_clear          },

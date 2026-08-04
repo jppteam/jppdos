@@ -6,12 +6,12 @@ steps:
   - wait-serial: "SYSTEM_READY"
   - wait-serial: "LAUNCHER_READY"
   - set-control:
-      part-id: btn-center
+      part-id: btn-ok
       control: pressed
       value: 1
   - delay: "100ms"
   - set-control:
-      part-id: btn-center
+      part-id: btn-ok
       control: pressed
       value: 0
   - wait-serial: "APP_OPEN|app_id=settings"

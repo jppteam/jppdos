@@ -79,7 +79,7 @@ class MyApp:
         # Called approximately every 100 ms while the app is in the foreground.
         # Poll for key events and update the display here.
         key = self.sdk.poll_key()
-        if key == jppsdk.KEY_CENTER:
+        if key == jppsdk.KEY_OK:
             self.sdk.request_close()
 
     def on_stop(self):
@@ -129,17 +129,17 @@ jppsdk.KEY_UP
 jppsdk.KEY_DOWN
 jppsdk.KEY_LEFT
 jppsdk.KEY_RIGHT
-jppsdk.KEY_CENTER        # d-pad center press
+jppsdk.KEY_OK        # d-pad OK press
 jppsdk.KEY_BACK          # the user asked to go back
-jppsdk.KEY_CENTER_LONG   # older name for KEY_BACK, same value
+jppsdk.KEY_OK_LONG   # older name for KEY_BACK, same value
 ```
 
-!!! info "`KEY_BACK`, not `KEY_CENTER_LONG`."
+!!! info "`KEY_BACK`, not `KEY_OK_LONG`."
     The two are the same value, so existing code is unaffected — but the name
     matters. Which *physical* gesture means "back" is a user preference
     (Settings → Controls: hold, or double-click), and your app never sees which
-    one it was. `KEY_BACK` says what happened; `KEY_CENTER_LONG` guesses how.
-    `KEY_BACK` needs [`sdk_min: 2`](../sdk-changelog.md); `KEY_CENTER_LONG`
+    one it was. `KEY_BACK` says what happened; `KEY_OK_LONG` guesses how.
+    `KEY_BACK` needs [`sdk_min: 2`](../sdk-changelog.md); `KEY_OK_LONG`
     works at every level.
 
 ---
@@ -220,7 +220,7 @@ If you update the app while the device is running, return to the launcher first 
 This app fetches a weather summary from a local endpoint, saves it to the KV store, and displays it. It refreshes every 30 minutes via a background task.
 
 It declares `"sdk_min": 2` for one reason: it uses `KEY_BACK`. Swap that for
-`KEY_CENTER_LONG` and `"sdk_min": 1` would run it on every unit ever shipped.
+`KEY_OK_LONG` and `"sdk_min": 1` would run it on every unit ever shipped.
 
 **manifest.json:**
 
@@ -280,7 +280,7 @@ class WeatherApp:
 
     def on_idle(self):
         key = self.sdk.poll_key()
-        if key == jppsdk.KEY_CENTER:
+        if key == jppsdk.KEY_OK:
             self._fetch()
         elif key == jppsdk.KEY_BACK:
             self.sdk.request_close()

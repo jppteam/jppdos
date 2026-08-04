@@ -3,10 +3,10 @@
  *
  * Two 8×8 grids drawn side by side (7 px cells: left = own fleet, right =
  * targeting). Placement phase: ships of length {4,3,3,2}; the cursor moves
- * with the d-pad, RIGHT-long... actually CENTER places, and the UP/DOWN-held
- * "rotate" is on the CENTER key isn't possible, so rotation is on a dedicated
+ * with the d-pad, RIGHT-long... actually OK places, and the UP/DOWN-held
+ * "rotate" is on the OK key isn't possible, so rotation is on a dedicated
  * key (LEFT_LONG not available) — we rotate with a quick double: pressing
- * CENTER on an already-selected origin cycles orientation; see place_phase().
+ * OK on an already-selected origin cycles orientation; see place_phase().
  *
  * Hidden-state cheating is the real risk here: a device could lie about a hit
  * to never lose. We defend with a commit–reveal: at battle start each side
@@ -213,8 +213,8 @@ static void draw_target_grid(bool show_cursor)
     }
 }
 
-/* Interactive ship placement. Cursor moves with d-pad; CENTER places at the
-   highlighted origin; CENTER_LONG toggles orientation before placing. */
+/* Interactive ship placement. Cursor moves with d-pad; OK places at the
+   highlighted origin; OK_LONG toggles orientation before placing. */
 static bool placement_phase(void)
 {
     int cur_r = 0, cur_c = 0;
@@ -246,7 +246,7 @@ static bool placement_phase(void)
         case JPP_SDK_KEY_DOWN:  cur_r++; break;
         case JPP_SDK_KEY_LEFT:  if (cur_c > 0) { cur_c--; } break;
         case JPP_SDK_KEY_RIGHT: cur_c++; break;
-        case JPP_SDK_KEY_CENTER:
+        case JPP_SDK_KEY_OK:
             if (can_place(cur_r, cur_c, len, horiz)) {
                 place(cur_r, cur_c, len, horiz);
                 api->sfx_tone(880u, 30u);
@@ -255,7 +255,7 @@ static bool placement_phase(void)
                 api->sfx_tone(200u, 80u);
             }
             break;
-        case JPP_SDK_KEY_CENTER_LONG:
+        case JPP_SDK_KEY_OK_LONG:
             horiz = !horiz;
             break;
         default: break;
@@ -380,10 +380,10 @@ static void battle_phase(battle_t *bt)
             case JPP_SDK_KEY_DOWN:  if (b.cur_r < N - 1) { b.cur_r++; } break;
             case JPP_SDK_KEY_LEFT:  if (b.cur_c > 0) { b.cur_c--; } break;
             case JPP_SDK_KEY_RIGHT: if (b.cur_c < N - 1) { b.cur_c++; } break;
-            case JPP_SDK_KEY_CENTER:
+            case JPP_SDK_KEY_OK:
                 if (b.tgt[b.cur_r][b.cur_c] == TGT_UNKNOWN) { fire = true; }
                 break;
-            case JPP_SDK_KEY_CENTER_LONG: {
+            case JPP_SDK_KEY_OK_LONG: {
                 uint8_t bye = MSG_BYE;
                 send_msg(bt->is_host, &bye, 1u);
                 bt->end_reason = END_QUIT;
@@ -430,7 +430,7 @@ static void battle_phase(battle_t *bt)
                 /* allow quitting while waiting */
                 jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
                 if (jpp_sdk_poll_key(s_ctx, &key) == JPP_SDK_STATUS_OK &&
-                    key == JPP_SDK_KEY_CENTER_LONG) {
+                    key == JPP_SDK_KEY_OK_LONG) {
                     uint8_t bye = MSG_BYE;
                     send_msg(bt->is_host, &bye, 1u);
                     bt->end_reason = END_QUIT;

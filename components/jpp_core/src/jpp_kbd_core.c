@@ -183,7 +183,7 @@ void jpp_kbd_cursor_init(jpp_kbd_cursor_t *cursor, const char *prefill)
 }
 
 /* sdk_key values match jpp_sdk_key_event_t in jpp_sdk_bridge.h:
- *  0=NONE 1=UP 2=DOWN 3=LEFT 4=RIGHT 5=CENTER 6=CENTER_LONG */
+ *  0=NONE 1=UP 2=DOWN 3=LEFT 4=RIGHT 5=OK 6=OK_LONG */
 jpp_kbd_result_t jpp_kbd_step(jpp_kbd_cursor_t *cursor,
                                const jpp_kbd_key_t rows[JPP_KBD_MAX_ROWS][JPP_KBD_MAX_COLS],
                                const size_t row_len[JPP_KBD_MAX_ROWS],
@@ -192,9 +192,9 @@ jpp_kbd_result_t jpp_kbd_step(jpp_kbd_cursor_t *cursor,
                                size_t cap)
 {
     enum { KEY_NONE=0, KEY_UP=1, KEY_DOWN=2, KEY_LEFT=3,
-           KEY_RIGHT=4, KEY_CENTER=5, KEY_CENTER_LONG=6 };
+           KEY_RIGHT=4, KEY_OK=5, KEY_OK_LONG=6 };
 
-    if (sdk_key == KEY_CENTER_LONG) { return JPP_KBD_RESULT_CANCEL; }
+    if (sdk_key == KEY_OK_LONG) { return JPP_KBD_RESULT_CANCEL; }
 
     switch (sdk_key) {
     case KEY_UP:
@@ -212,7 +212,7 @@ jpp_kbd_result_t jpp_kbd_step(jpp_kbd_cursor_t *cursor,
     case KEY_RIGHT:
         cursor->focus_col = (cursor->focus_col + 1u) % row_len[cursor->focus_row];
         break;
-    case KEY_CENTER: {
+    case KEY_OK: {
         jpp_kbd_key_t k = rows[cursor->focus_row][cursor->focus_col];
         switch (k.kind) {
         case JPP_KBD_KIND_SHIFT:
@@ -284,8 +284,9 @@ void jpp_kbd_render(jpp_kbd_pixbuf_t buf,
         if (ilen > SHOWN) { tail = input_text + (ilen - SHOWN); }
         char field[JPP_KBD_VALUE_MAX + 4u];
         if (input_is_ghost) {
-            /* Ghost/placeholder: no cursor, just text */
-            snprintf(field, sizeof(field), "%s", tail);
+            /* Ghost/placeholder: bracketed and no cursor, so it reads as an
+               example rather than text the user already typed. */
+            snprintf(field, sizeof(field), "[%s]", tail);
         } else {
             snprintf(field, sizeof(field), "%s_", tail);
         }

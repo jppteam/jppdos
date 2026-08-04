@@ -614,7 +614,7 @@ static void grant_persist(const char *app_id, const char *cap)
  * Runs from within the app task via jpp_app_consent_prompt. Uses the SDK
  * frame/key system so it renders through the normal main-loop path and reads
  * keys from context->key_queue (populated by the keypad routing in app_main).
- * LEFT = move to Deny, RIGHT = move to Allow, CENTER = confirm, LONG = cancel.
+ * LEFT = move to Deny, RIGHT = move to Allow, OK = confirm, LONG = cancel.
  */
 static bool prompt_permission(jpp_sdk_context_t *sdk_ctx, const char *cap, int tier)
 {

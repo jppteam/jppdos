@@ -161,7 +161,7 @@ static bool play_session(void)
             case JPP_SDK_KEY_DOWN:  if (g.dy != -1) { g.pend_dx = 0;  g.pend_dy = 1;  } break;
             case JPP_SDK_KEY_LEFT:  if (g.dx != 1)  { g.pend_dx = -1; g.pend_dy = 0;  } break;
             case JPP_SDK_KEY_RIGHT: if (g.dx != -1) { g.pend_dx = 1;  g.pend_dy = 0;  } break;
-            case JPP_SDK_KEY_CENTER_LONG: {
+            case JPP_SDK_KEY_OK_LONG: {
                 int action = pause_menu();
                 if (action == 1) { reset_game(); }
                 if (action == 2) { return false; }

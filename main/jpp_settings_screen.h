@@ -37,7 +37,7 @@ typedef enum {
     JPP_SETTINGS_SECTION_FACTORY_RESET,
     JPP_SETTINGS_SECTION_DEVICE_INFO, /* hidden when no LRV data present */
     JPP_SETTINGS_SECTION_USERNAME,    /* user's display name */
-    JPP_SETTINGS_SECTION_DUMMY_MODE,  /* single-app lock; disable by holding CENTER on boot */
+    JPP_SETTINGS_SECTION_DUMMY_MODE,  /* single-app lock; disable by holding OK on boot */
     JPP_SETTINGS_SECTION_ABOUT,
     JPP_SETTINGS_SECTION_COUNT,
 } jpp_settings_section_t;

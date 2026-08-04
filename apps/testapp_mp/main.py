@@ -60,9 +60,9 @@ def test_frame(sdk):
 
 def test_dialog(sdk):
     sdk.canvas_clear()
-    ok = sdk.dialog("Press CENTER to confirm or long-press to dismiss.",
+    ok = sdk.dialog("Press OK to confirm or long-press to dismiss.",
                     "Dialog test")
-    _show(sdk, "Dialog result", "OK (CENTER)" if ok else "BACK (long)")
+    _show(sdk, "Dialog result", "OK (OK)" if ok else "BACK (long)")
 
 
 def test_list_single(sdk):
@@ -126,15 +126,15 @@ def test_canvas(sdk):
 
 
 def test_keys(sdk):
-    sdk.set_frame(["Key test", "Press 5 keys.", "UP/DN/L/R/CTR/LONG"])
+    sdk.set_frame(["Key test", "Press 5 keys.", "UP/DN/L/R/OK/LONG"])
     names = {
         jppsdk.KEY_NONE:        "NONE",
         jppsdk.KEY_UP:          "UP",
         jppsdk.KEY_DOWN:        "DOWN",
         jppsdk.KEY_LEFT:        "LEFT",
         jppsdk.KEY_RIGHT:       "RIGHT",
-        jppsdk.KEY_CENTER:      "CENTER",
-        jppsdk.KEY_CENTER_LONG: "LONG",
+        jppsdk.KEY_OK:      "OK",
+        jppsdk.KEY_OK_LONG: "LONG",
     }
     pressed = []
     for _ in range(5):
@@ -826,24 +826,24 @@ def test_request_cap(sdk):
         _show_result(sdk, "request_cap(ble.scan)", False, "denied")
 
 
-def test_claim_center(sdk):
-    # Claiming only HOLD keeps a short CENTER press instant (menu navigation
-    # is unaffected) but diverts the long-press from Back to CENTER_HOLD.
-    # Always restore CENTER_CLAIM_NONE before returning, or the rest of the
+def test_claim_ok(sdk):
+    # Claiming only HOLD keeps a short OK press instant (menu navigation
+    # is unaffected) but diverts the long-press from Back to OK_HOLD.
+    # Always restore OK_CLAIM_NONE before returning, or the rest of the
     # app loses its Back button.
     try:
-        sdk.claim_center(jppsdk.CENTER_CLAIM_HOLD)
+        sdk.claim_ok(jppsdk.OK_CLAIM_HOLD)
     except jppsdk.SdkError as e:
-        _show_result(sdk, "claim_center(HOLD)", False, str(e))
+        _show_result(sdk, "claim_ok(HOLD)", False, str(e))
         return
 
-    _show(sdk, "claim_center", "Claimed HOLD. Hold CENTER within 3s...")
+    _show(sdk, "claim_ok", "Claimed HOLD. Hold OK within 3s...")
     key = sdk.wait_key(3000)
-    _show_result(sdk, "claim_center result", True,
-                 "got KEY_CENTER_HOLD" if key == jppsdk.KEY_CENTER_HOLD else "timed out")
+    _show_result(sdk, "claim_ok result", True,
+                 "got KEY_OK_HOLD" if key == jppsdk.KEY_OK_HOLD else "timed out")
 
-    sdk.claim_center(jppsdk.CENTER_CLAIM_NONE)
-    _show_result(sdk, "claim_center(NONE)", True, "restored")
+    sdk.claim_ok(jppsdk.OK_CLAIM_NONE)
+    _show_result(sdk, "claim_ok(NONE)", True, "restored")
 
 
 def menu_system(sdk):
@@ -852,7 +852,7 @@ def menu_system(sdk):
         "Log event",
         "Background register",
         "Request cap",
-        "Claim center (HOLD)",
+        "Claim OK (HOLD)",
     ]
     while True:
         sel = _pick(sdk, "System Tests", items)
@@ -867,7 +867,7 @@ def menu_system(sdk):
         elif sel == 3:
             test_request_cap(sdk)
         else:
-            test_claim_center(sdk)
+            test_claim_ok(sdk)
 
 
 # --------------------------------------------------------------------------- #

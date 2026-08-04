@@ -297,13 +297,13 @@ static int pause_menu(void)
     return (int)index;
 }
 
-/* Uniform control scheme in both orientations: CENTER rotates, UP hard-drops,
+/* Uniform control scheme in both orientations: OK rotates, UP hard-drops,
    DOWN soft-drops, LEFT/RIGHT move. (In the rotated layout the physical d-pad
    turns with the device; the lateral keys still move the piece across the
    board, the down keys still drive it toward the floor.) */
 static int handle_key(jpp_sdk_key_event_t key)
 {
-    if (key == JPP_SDK_KEY_CENTER_LONG) {
+    if (key == JPP_SDK_KEY_OK_LONG) {
         return pause_menu();
     }
     if (g.rotated) {
@@ -312,7 +312,7 @@ static int handle_key(jpp_sdk_key_event_t key)
         case JPP_SDK_KEY_DOWN:  try_move(-1); break;
         case JPP_SDK_KEY_LEFT:  hard_drop(); break;
         case JPP_SDK_KEY_RIGHT: soft_drop();  break;
-        case JPP_SDK_KEY_CENTER: try_rotate(); break;
+        case JPP_SDK_KEY_OK: try_rotate(); break;
         default: break;
         }
     } else {
@@ -321,7 +321,7 @@ static int handle_key(jpp_sdk_key_event_t key)
         case JPP_SDK_KEY_RIGHT: try_move(1);  break;
         case JPP_SDK_KEY_UP:    try_rotate(); break;
         case JPP_SDK_KEY_DOWN:  soft_drop();  break;
-        case JPP_SDK_KEY_CENTER: try_rotate(); break;
+        case JPP_SDK_KEY_OK: try_rotate(); break;
         default: break;
         }
     }

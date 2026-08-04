@@ -210,17 +210,17 @@ Return type for most SDK calls:
 | `JPP_SDK_KEY_DOWN` | Down |
 | `JPP_SDK_KEY_LEFT` | Left |
 | `JPP_SDK_KEY_RIGHT` | Right |
-| `JPP_SDK_KEY_CENTER` | Center press |
+| `JPP_SDK_KEY_OK` | OK press |
 | `JPP_SDK_KEY_BACK` | The user asked to go back |
-| `JPP_SDK_KEY_CENTER_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value |
-| `JPP_SDK_KEY_CENTER_HOLD` | Raw CENTER hold — only if claimed |
-| `JPP_SDK_KEY_CENTER_DOUBLE` | Raw CENTER double-click — only if claimed |
+| `JPP_SDK_KEY_OK_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value |
+| `JPP_SDK_KEY_OK_HOLD` | Raw OK hold — only if claimed |
+| `JPP_SDK_KEY_OK_DOUBLE` | Raw OK double-click — only if claimed |
 
 !!! info "Which gesture means “back” is not your app’s business."
     The user chooses hold or double-click in Settings → Controls, and the
     firmware translates it to `JPP_SDK_KEY_BACK` before you see it. Take a
     gesture over as your own input only with
-    [`jpp_sdk_claim_center`](../sdk/app-control.md#claim_center) — and then your
+    [`jpp_sdk_claim_ok`](../sdk/app-control.md#claim_ok) — and then your
     app owns its own way out. `JPP_SDK_KEY_BACK` and the claim API need
     [`sdk_min: 2`](../sdk-changelog.md).
 
@@ -319,7 +319,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 
         if (key == JPP_SDK_KEY_BACK) {
             break;
-        } else if (key == JPP_SDK_KEY_CENTER) {
+        } else if (key == JPP_SDK_KEY_OK) {
             show_scanning(ctx);
             jpp_sdk_status_t st = jpp_sdk_ble_scan(ctx, 3000,
                                                      results, MAX_RESULTS,

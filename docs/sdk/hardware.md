@@ -334,6 +334,6 @@ jppsdk.is_dummy_mode() -> bool
 - C: `true` if the app is the dummy-mode locked app, `false` otherwise (including if `ctx` is `NULL`).
 - Python: `True` or `False`.
 
-**Notes:** When dummy mode is active the firmware re-launches this app automatically after it exits and blocks all launcher navigation. Apps can call this to detect the condition and hide their own "Exit" option, since the firmware will re-launch them regardless. Dummy mode is enabled in **Settings → Dummy Mode** and disabled by holding CENTER on boot.
+**Notes:** When dummy mode is active the firmware re-launches this app automatically after it exits and blocks all launcher navigation. Apps can call this to detect the condition and hide their own "Exit" option, since the firmware will re-launch them regardless. Dummy mode is enabled in **Settings → Dummy Mode** and disabled by holding OK on boot.
 
 ---

@@ -74,7 +74,7 @@ static const gpio_sim_btn_t GPIO_SIM_BTNS[] = {
     { JPP_HW_SIM_DOWN_GPIO,     902564 },
     { JPP_HW_SIM_LEFT_GPIO,       3223 },
     { JPP_HW_SIM_RIGHT_GPIO,  1377949 },
-    { JPP_HW_SIM_CENTER_GPIO, 1995531 },
+    { JPP_HW_SIM_OK_GPIO, 1995531 },
 };
 #define GPIO_SIM_BTN_COUNT (sizeof(GPIO_SIM_BTNS)/sizeof(GPIO_SIM_BTNS[0]))
 #endif
@@ -84,7 +84,7 @@ static const jpp_keypad_band_t KEYPAD_BANDS[] = {
     { .key = "UP",     .center_uv =  396498, .tolerance_uv = 260000, .repeatable = true  },
     { .key = "DOWN",   .center_uv =  902564, .tolerance_uv = 260000, .repeatable = true  },
     { .key = "RIGHT",  .center_uv = 1377949, .tolerance_uv = 320000, .repeatable = true  },
-    { .key = "CENTER", .center_uv = 1995531, .tolerance_uv = 345000, .repeatable = false },
+    { .key = "OK", .center_uv = 1995531, .tolerance_uv = 345000, .repeatable = false },
 };
 
 /*
@@ -201,29 +201,29 @@ typedef struct {
 
 static keypad_task_ctx_t s_kpad_ctx;
 
-/* Which CENTER gesture the user has picked to mean "Back" (Settings >
+/* Which OK gesture the user has picked to mean "Back" (Settings >
    Controls, persisted in NVS jpp_input/back_gesture). Only ever consulted
    here in the policy layer — neither the detector nor any app sees it. */
 static uint8_t s_back_gesture_mode = JPP_KEYPAD_BACK_GESTURE_HOLD;
 
-/* What the foreground app, if any, has taken over via jpp_sdk_claim_center(). */
-static uint8_t center_claim_now(void)
+/* What the foreground app, if any, has taken over via jpp_sdk_claim_ok(). */
+static uint8_t ok_claim_now(void)
 {
     if (s_active_sdk_context != NULL) {
-        return s_active_sdk_context->center_claim;
+        return s_active_sdk_context->ok_claim;
     }
-    return JPP_SDK_CENTER_CLAIM_NONE;
+    return JPP_SDK_OK_CLAIM_NONE;
 }
 
 /* Double-click discrimination costs the short click a double_click_ms delay,
    so ask for it only when something actually needs to tell the two apart:
    an app that claimed the double-click, or — when nothing is claimed — a user
    who chose it as their Back gesture. */
-static bool center_needs_double_click(void)
+static bool ok_needs_double_click(void)
 {
-    uint8_t claim = center_claim_now();
-    if (claim != JPP_SDK_CENTER_CLAIM_NONE) {
-        return (claim & JPP_SDK_CENTER_CLAIM_DOUBLE) != 0u;
+    uint8_t claim = ok_claim_now();
+    if (claim != JPP_SDK_OK_CLAIM_NONE) {
+        return (claim & JPP_SDK_OK_CLAIM_DOUBLE) != 0u;
     }
     return s_back_gesture_mode == JPP_KEYPAD_BACK_GESTURE_DOUBLE_CLICK;
 }
@@ -245,32 +245,32 @@ static void keypad_push_app_key(jpp_sdk_key_event_t sdk_key)
     }
 }
 
-/* Resolves one raw CENTER gesture into whatever it means right now. Returns
-   true if the event was a CENTER gesture and has been fully handled. */
-static bool keypad_handle_center_gesture(const jpp_keypad_event_t *ev)
+/* Resolves one raw OK gesture into whatever it means right now. Returns
+   true if the event was a OK gesture and has been fully handled. */
+static bool keypad_handle_ok_gesture(const jpp_keypad_event_t *ev)
 {
-    bool is_hold   = (ev->kind == JPP_KEYPAD_KIND_CENTER_LONG) ||
+    bool is_hold   = (ev->kind == JPP_KEYPAD_KIND_OK_LONG) ||
                      (ev->kind == JPP_KEYPAD_KIND_REPEAT &&
-                      ev->key != NULL && strcmp(ev->key, "CENTER") == 0);
-    bool is_double = (ev->kind == JPP_KEYPAD_KIND_CENTER_DOUBLE);
+                      ev->key != NULL && strcmp(ev->key, "OK") == 0);
+    bool is_double = (ev->kind == JPP_KEYPAD_KIND_OK_DOUBLE);
     if (!is_hold && !is_double) {
         return false;
     }
 
-    uint8_t claim = center_claim_now();
-    uint8_t bit   = is_hold ? JPP_SDK_CENTER_CLAIM_HOLD : JPP_SDK_CENTER_CLAIM_DOUBLE;
+    uint8_t claim = ok_claim_now();
+    uint8_t bit   = is_hold ? JPP_SDK_OK_CLAIM_HOLD : JPP_SDK_OK_CLAIM_DOUBLE;
 
     if ((claim & bit) != 0u) {
         /* The app took this gesture over as its own input. The auto-repeat of
            a hold is not forwarded: it exists so Back can pop several screens
            at once, not to make an app's pause gesture fire over and over. */
         if (ev->kind != JPP_KEYPAD_KIND_REPEAT) {
-            keypad_push_app_key(is_hold ? JPP_SDK_KEY_CENTER_HOLD
-                                        : JPP_SDK_KEY_CENTER_DOUBLE);
+            keypad_push_app_key(is_hold ? JPP_SDK_KEY_OK_HOLD
+                                        : JPP_SDK_KEY_OK_DOUBLE);
         }
         return true;
     }
-    if (claim != JPP_SDK_CENTER_CLAIM_NONE) {
+    if (claim != JPP_SDK_OK_CLAIM_NONE) {
         /* Claiming anything means the app owns its own way out, so the
            unclaimed gesture is not repurposed as Back behind its back. */
         return true;
@@ -314,7 +314,7 @@ static void keypad_task(void *arg)
         jpp_keypad_event_t events[8];
         size_t event_count = 0u;
         jpp_keypad_config_t poll_cfg = ctx->cfg;
-        poll_cfg.detect_double_click = center_needs_double_click();
+        poll_cfg.detect_double_click = ok_needs_double_click();
         jpp_keypad_poll(&ctx->state, &poll_cfg, sample_uv, true,
                         events, 8u, &event_count);
 
@@ -324,7 +324,7 @@ static void keypad_task(void *arg)
                      events[i].key    ? events[i].key    : "(null)",
                      events[i].mapped ? events[i].mapped : "(null)");
 
-            if (keypad_handle_center_gesture(&events[i])) {
+            if (keypad_handle_ok_gesture(&events[i])) {
                 continue;
             }
 
@@ -340,7 +340,7 @@ static void keypad_task(void *arg)
             case JPP_UI_ACTION_DOWN:  sdk_key = JPP_SDK_KEY_DOWN;   break;
             case JPP_UI_ACTION_LEFT:  sdk_key = JPP_SDK_KEY_LEFT;   break;
             case JPP_UI_ACTION_RIGHT: sdk_key = JPP_SDK_KEY_RIGHT;  break;
-            case JPP_UI_ACTION_OK:    sdk_key = JPP_SDK_KEY_CENTER; break;
+            case JPP_UI_ACTION_OK:    sdk_key = JPP_SDK_KEY_OK; break;
             case JPP_UI_ACTION_BACK:  sdk_key = JPP_SDK_KEY_NONE;   break;
             case JPP_UI_ACTION_NONE:  sdk_key = JPP_SDK_KEY_NONE;   break;
             }
@@ -1066,14 +1066,14 @@ static void settings_do_back_gesture_change(uint8_t mode)
 
 static bool s_dummy_enabled        = false;
 static char s_dummy_app_id[JPP_UI_TEXT_LIMIT] = "";
-static bool s_boot_center_held     = false;
+static bool s_boot_ok_held     = false;
 
 /*
- * Sample the keypad ADC to detect CENTER held at power-on.
+ * Sample the keypad ADC to detect OK held at power-on.
  * A temporary ADC unit is created and deleted; run_main_loop() creates
  * its own unit separately so there is no double-initialisation conflict.
  */
-static bool check_center_held_at_boot(void)
+static bool check_ok_held_at_boot(void)
 {
 #ifdef JPP_WOKWI_SIM
     return false;
@@ -1094,7 +1094,7 @@ static bool check_center_held_at_boot(void)
         adc_oneshot_read(boot_adc, JPP_HW_KEYPAD_ADC_CH, &raw);
         int uv = (int)((int64_t)raw * JPP_HW_KEYPAD_FULL_SCALE_UV
                        / JPP_HW_ADC_12BIT_MAX_RAW);
-        /* CENTER band: center_uv=1995531, tolerance=345000 */
+        /* OK band: center_uv=1995531, tolerance=345000 */
         if (uv >= (1995531 - 345000) && uv <= (1995531 + 345000)) { held++; }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -1691,7 +1691,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
             /* Dummy mode: re-push the locked app immediately after teardown
                so it re-launches on the next tick. Skip on crash so the crash
-               dialog is shown; the device must be rebooted (with CENTER held
+               dialog is shown; the device must be rebooted (with OK held
                to escape) to disable dummy mode anyway. */
             if (!app_crashed && s_dummy_enabled && s_dummy_app_id[0] != '\0') {
                 jpp_ui_stack_push(&shell->stack, s_dummy_app_id);
@@ -1901,13 +1901,13 @@ void app_main(void)
     /* Buzzer init (does drive-strength boost on GPIO3) */
     jpp_buzzer_init();
 
-    /* Check whether CENTER is held at power-on.  If held:
+    /* Check whether OK is held at power-on.  If held:
        - the startup jingle is always muted (regardless of dummy mode);
        - if dummy mode is active it is also disabled.
        Sample before any display work so the check runs as early as possible. */
-    s_boot_center_held = check_center_held_at_boot();
-    if (s_boot_center_held) {
-        ESP_LOGI(TAG, "BOOT: CENTER held — jingle muted");
+    s_boot_ok_held = check_ok_held_at_boot();
+    if (s_boot_ok_held) {
+        ESP_LOGI(TAG, "BOOT: OK held — jingle muted");
     }
 
     /* Pre-boot: I²C + OLED for boot progress display. */
@@ -2043,9 +2043,9 @@ void app_main(void)
     /* Load dummy mode from NVS now that NVS is initialised. */
     load_dummy_mode();
 
-    /* If CENTER was held at boot and dummy mode is active: disable it.
+    /* If OK was held at boot and dummy mode is active: disable it.
        Show a brief confirmation on the OLED (already initialised above). */
-    if (s_boot_center_held && s_dummy_enabled) {
+    if (s_boot_ok_held && s_dummy_enabled) {
         settings_do_dummy_mode_save(false, NULL);
         ssd1306_clear();
         ssd1306_draw_string(2, 20, "Dummy Mode", false);
@@ -2086,8 +2086,8 @@ void app_main(void)
     ESP_LOGI(TAG, "SYSTEM_READY");
 
     /* Play startup jingle (async: the launcher comes up while it plays).
-       Muted when CENTER was held at boot — always, regardless of dummy mode. */
-    if (!s_boot_center_held) {
+       Muted when OK was held at boot — always, regardless of dummy mode. */
+    if (!s_boot_ok_held) {
         jpp_buzzer_play_startup_jingle_async((jpp_startup_jingle_t)s_startup_jingle);
     }
 
