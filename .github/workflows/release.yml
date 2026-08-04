@@ -350,6 +350,25 @@ jobs:
           # Add --draft here if releases should be reviewed before going public.
           gh release create "$TAG" "${ARGS[@]}" dist/*
 
+      # A prominent call-to-action so anyone landing on the release page knows
+      # how to actually apply the update. Done as a follow-up edit rather than
+      # folded into body.md above, so it lands uniformly on every notes path
+      # the "Create release" step can take (changelog excerpt, "no changelog
+      # section" placeholder, or GitHub's own --generate-notes output) without
+      # fighting gh's --notes-file/--generate-notes mutual exclusivity.
+      - name: Prepend update-manager banner
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            echo "> [!TIP]"
+            echo "> **Update JPPDOS** on your device using [J++Device Manager](https://jppdevice.by.m4l3vi.ch/#/manager)."
+            echo
+            gh release view "$TAG" --json body -q .body
+          } > body_final.md
+          gh release edit "$TAG" --notes-file body_final.md
+
       - name: Summary
         run: |
           echo "Published **$CHANNEL** (from \`$BRANCH\`):" \
