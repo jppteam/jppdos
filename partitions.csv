@@ -1,10 +1,16 @@
 # Name,     Type, SubType, Offset,   Size,      Flags
-# 2 MB flash layout. factory is maximized; coredump dropped (coredump-to-flash
-# is disabled). App must fit within factory (0x1D8000 = 1933312 bytes).
-# data_fs (/data: settings, grants) and runtime_fs (/lib) hold small config only,
-# so they are kept minimal to leave the app the most headroom.
+# 4 MB flash layout. factory is generous (0x360000 = 3,538,944 B) rather than
+# maximized to the last byte — the 2 MB squeeze this replaced kept running
+# into headroom pressure from ordinary SDK growth, so this leaves real margin
+# instead of trading it away again. data_fs (/data) and runtime_fs (/lib) are
+# restored to their pre-squeeze size, and the coredump partition dropped
+# during the squeeze is back too (coredump-to-flash itself is a separate
+# CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH menuconfig choice, off by default; this
+# just reserves the partition it would need). The six partitions exactly fill
+# the 4 MB flash (nothing left unpartitioned).
 nvs,        data, nvs,     0x9000,   0x6000,
 phy_init,   data, phy,     0xf000,   0x1000,
-factory,    app,  factory, 0x10000,  0x1D8000,
-data_fs,    data, spiffs,  0x1E8000, 0x10000,
-runtime_fs, data, spiffs,  0x1F8000, 0x8000,
+factory,    app,  factory, 0x10000,  0x360000,
+data_fs,    data, spiffs,  0x370000, 0x40000,
+runtime_fs, data, spiffs,  0x3B0000, 0x40000,
+coredump,   data, coredump,0x3F0000, 0x10000,

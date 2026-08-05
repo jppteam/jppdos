@@ -29,6 +29,10 @@ Safety:
   --dry-run       do everything read-only: no flash, no write-once provision,
                   no upload. Still opens a session + GET_INFO to show the hwid.
   --skip-prov-flash / --skip-prod-flash / --no-apps  skip individual stages.
+  Every flash stage first checks the unit's actual flash size (esptool
+  flash_id) against the size the image was built for, and refuses to flash
+  on a mismatch — a batch is not guaranteed to be one uniform chip size, and
+  writing the wrong size partition table can corrupt or brick a unit.
 """
 
 import argparse
@@ -148,6 +152,39 @@ def append_ledger(ledger_path: Path, serial: int, hwid: str,
 # Flashing (esptool, driven by <build_dir>/flasher_args.json)
 # ---------------------------------------------------------------------------
 
+def detect_flash_size(port: str) -> str:
+    """Query the unit's actual flash size via esptool (e.g. "4MB")."""
+    cmd = [sys.executable, "-m", "esptool", "--chip", "esp32c6", "-p", port, "flash_id"]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if "Detected flash size:" in line:
+            return line.split(":", 1)[1].strip()
+    raise SystemExit(
+        f"Could not determine flash size from esptool flash_id output:\n{result.stdout}")
+
+
+def verify_flash_size(port: str, build_dir: Path, fa: dict) -> None:
+    """Refuse to flash if the unit's actual flash chip doesn't match the size
+    this image's partition table was built for. Units have been found in the
+    field with more flash than assumed, and a batch mixing sizes can't be
+    ruled out — writing a larger partition table's bootloader/partition-table
+    image is comparatively harmless, but the app image can run past the end
+    of a smaller chip's factory partition and corrupt whatever partition
+    comes after it (or wrap and corrupt the app itself). This check runs
+    before every flash so no stage can skip it.
+    """
+    expected = fa["flash_settings"]["flash_size"]
+    actual = detect_flash_size(port)
+    if actual.replace(" ", "").upper() != expected.replace(" ", "").upper():
+        raise SystemExit(
+            f"REFUSING TO FLASH {build_dir.name}/ to {port}: this image was "
+            f"built for {expected} flash, but the device reports {actual}. "
+            f"Flashing a {expected} partition table onto a {actual} unit can "
+            f"corrupt or brick it. Verify the unit's actual flash before "
+            f"retrying (see the flash-budget note in AGENTS.md).")
+    print(f"Flash size OK: {actual} (matches {build_dir.name}/ build)")
+
+
 def flash_image(port: str, build_dir: Path) -> None:
     """Flash an image using the offsets/settings idf.py recorded for it."""
     fa_path = build_dir / "flasher_args.json"
@@ -156,6 +193,8 @@ def flash_image(port: str, build_dir: Path) -> None:
                          f"(scripts/build_images.sh).")
     with open(fa_path) as f:
         fa = json.load(f)
+
+    verify_flash_size(port, build_dir, fa)
 
     cmd = [
         sys.executable, "-m", "esptool",

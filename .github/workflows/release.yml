@@ -228,8 +228,10 @@ jobs:
           ( cd "$OUT" && sha256sum jppdos-* > SHA256SUMS.txt )
           ls -l "$OUT"
 
-      # Flash headroom is tight (2 MB part, ~4% free is the steady state), so
-      # put the numbers where they can be read without downloading anything.
+      # Flash headroom is generous on the 4 MB layout, but keep publishing the
+      # numbers where they can be read without downloading anything — the
+      # 2 MB squeeze this replaced is exactly the kind of pressure that's
+      # easier to catch early than after it silently comes back.
       - name: Size summary
         run: |
           set -euo pipefail

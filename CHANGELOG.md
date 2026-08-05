@@ -85,6 +85,22 @@ each build, not an API diff.
   the prerelease build that emits identical bytecode, or building from source
   the way the project's Docker image and CI already do.
 
+- **The firmware now targets the flash chip these boards actually have.**
+  JPPDOS had been built for a 2 MB flash size — a v1.0-RTM-era correction that
+  itself turned out to be wrong — but the real chip on production units is
+  4 MB. The build now targets 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB`), and
+  `partitions.csv` restores the margin the 2 MB layout had traded away:
+  `data_fs`/`runtime_fs` are back to their original 256 KB each, the
+  `coredump` partition dropped during that squeeze is back too, and `factory`
+  grows to 3.4 MB of app headroom (from 1.9 MB) — roughly 1.6 MB (48%) free
+  right after the switch, up from single-digit percent free under the old
+  layout. `-Os` stays on regardless: it's no longer required to fit, but a
+  smaller, faster-flashing image has no downside. Because a production batch
+  is not guaranteed to be one uniform flash size, `scripts/prepare_device.py`
+  now checks each unit's actual flash size against the image before every
+  flash and refuses on a mismatch, rather than risk writing a 4 MB partition
+  table onto a genuine 2 MB unit.
+
 ### App SDK & platform
 
 - **A documented SDK call that never actually worked now works.** `wrap_text`,

@@ -840,9 +840,10 @@ task stack and I/O buffer out of the shared 80 KB `jpp_app_pool` instead of the
 heap. Two consequences for this proposal:
 
 1. Reaching for `httpd_start()` here re-links the whole ESP-IDF HTTP server
-   (~20 KB of flash on a budget with ~66 KB free). Prefer
-   `jpp_http_server_core` — the handler-callback shape below maps onto it
-   directly.
+   (~20 KB of flash) for no reason — `jpp_http_server_core` already exists and
+   the handler-callback shape below maps onto it directly. Flash headroom
+   itself is no longer the tight constraint it once was (see AGENTS.md), but
+   there's still no reason to carry two HTTP server implementations.
 2. `jpp_http_server_start()` **acquires the app pool**, and a running app
    already holds it. An app-owned server therefore cannot use the core as-is:
    it needs a mode that takes its memory from the app's own pool allocation
