@@ -42,6 +42,13 @@ each build, not an API diff.
 - WebDAV also gained proper `HEAD` support, which some file managers use to
   check a file before downloading it.
 
+- **The "Open Certificate Page" link on the Device Info verification screen now
+  points at a real, self-contained verification page**
+  (`https://jppdevice.by.m4l3vi.ch/verify`) instead of a placeholder domain.
+  The link now carries the certificate and its manufacturer signature, not
+  just the response signature, so the page can check authenticity on its own
+  — it never needs to reach the device over the network to verify it.
+
 ### Serial protocol (JPPD-SMP)
 
 - **The device now tells a connected PC when a management session ends
