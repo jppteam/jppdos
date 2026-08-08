@@ -6,6 +6,29 @@ each build, not an API diff.
 
 ## Unreleased
 
+### Firmware updates
+
+- **The device can now update its own firmware from GitHub Releases —
+  Settings > Firmware Update.** It checks the project's releases, downloads
+  the new image to the SD card, verifies it against the release's published
+  checksum, and only then installs it. Two toggles: "Auto-check" (off by
+  default) checks once after boot whenever Wi-Fi connects, but never
+  downloads or installs without you confirming; "Pre-releases" opts into
+  release-candidate builds instead of stable-only (pre-enabled automatically
+  if the firmware you're running is itself a pre-release).
+
+  **This device has one firmware slot, not two — read this before using it.**
+  Most OTA-capable devices keep a spare copy of the old firmware and fall
+  back to it automatically if an update goes wrong. This one does not: the
+  update overwrites the firmware currently running, so if power is lost
+  while it's writing, the device will not boot on its own and needs a USB
+  reflash to recover. The installer verifies the download's checksum before
+  touching anything, and double-checks what actually landed in flash
+  afterward, but neither of those helps if the device loses power mid-write.
+  Keep it plugged in or on a healthy battery for the ~30 seconds the
+  "UPDATING JPPDOS — Do NOT power off" screen is up, same as you would for
+  updating a router.
+
 ### Apps
 
 - **Apps get more room: the workspace grew from 64 KB to 80 KB.** That is the
