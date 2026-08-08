@@ -62,6 +62,7 @@
 #include "jpp_string_util.h"
 #include "jpp_icons.h"
 #include "jpp_native_loader_core.h"
+#include "jpp_ota_update.h"
 #include "jpp_serial_mgr.h"
 #include "jpp_backup_restore.h"
 #include "jpp_lrv.h"
@@ -427,6 +428,7 @@ static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 #define JPP_NVS_USER_NS   "jpp_user"
 #define JPP_NVS_DUMMY_NS  "jpp_dummy"
 #define JPP_NVS_INPUT_NS  "jpp_input"
+#define JPP_NVS_OTA_NS    "jpp_ota"
 
 typedef struct {
     bool enabled;
@@ -440,6 +442,22 @@ static volatile bool     s_ntp_time_ready = false;
 static jpp_ui_shell_t   *s_main_shell     = NULL;
 static jpp_rtc_state_t  *s_rtc_for_backup = NULL;
 static jpp_rtc_state_t  *s_rtc_for_lrv    = NULL;
+static jpp_battery_state_t *s_battery_for_ota = NULL;
+
+/* ---- Firmware Update (OTA): boot-time auto-check state ------------------- *
+ *
+ * Set once by ota_auto_check_task() (a one-shot background task fired from
+ * the main loop's Wi-Fi status poll — see run_main_loop) and read back,
+ * un-locked, by settings_do_ota_sync_auto_check() when the user opens
+ * Settings > Firmware Update. Write-once-then-read like this is the same
+ * "volatile ready flag" idiom jpp_app_dispatch's background app discovery
+ * uses (see AGENTS.md) — a torn read only costs a stale UI hint, never a
+ * flash write, so no mutex.
+ */
+static volatile bool         s_ota_auto_check_started = false;
+static volatile bool         s_ota_auto_check_done    = false;
+static jpp_ota_check_status_t  s_ota_auto_check_status = JPP_OTA_CHECK_ERR_WIFI;
+static jpp_ota_release_info_t  s_ota_auto_check_result;
 
 static void ntp_cfg_save(void)
 {
@@ -1158,6 +1176,170 @@ static void load_username(jpp_settings_state_t *state)
                     state->username_current, sizeof(state->username_current));
 }
 
+/* ---- Firmware Update (OTA) ------------------------------------------------ */
+
+static void load_ota_settings(jpp_settings_state_t *state)
+{
+    state->ota_auto_check = jpp_nvs_get_u8(JPP_NVS_OTA_NS, "auto_check", 0u) != 0u;
+    /* A build cut from the pre-release channel (or a local/dev build)
+       defaults this toggle on the first time it is ever loaded — see
+       jpp_ota_build_is_prerelease() and the "Build identity" comment in
+       main/CMakeLists.txt. */
+    uint8_t default_prerelease = jpp_ota_build_is_prerelease() ? 1u : 0u;
+    state->ota_prerelease_opt_in =
+        jpp_nvs_get_u8(JPP_NVS_OTA_NS, "prerelease", default_prerelease) != 0u;
+    ESP_LOGI(TAG, "OTA: auto_check=%d prerelease=%d (build %s, ts=%lu)",
+             (int)state->ota_auto_check, (int)state->ota_prerelease_opt_in,
+             jpp_ota_build_commit(), (unsigned long)jpp_ota_build_timestamp());
+}
+
+static void settings_do_ota_auto_check_change(bool enabled)
+{
+    jpp_nvs_set_u8(JPP_NVS_OTA_NS, "auto_check", enabled ? 1u : 0u);
+}
+
+static void settings_do_ota_prerelease_change(bool enabled)
+{
+    jpp_nvs_set_u8(JPP_NVS_OTA_NS, "prerelease", enabled ? 1u : 0u);
+}
+
+static void settings_do_ota_sync_auto_check(jpp_settings_state_t *state)
+{
+    if (!s_ota_auto_check_done) {
+        return;
+    }
+    state->ota_check_status = s_ota_auto_check_status;
+    state->ota_candidate    = s_ota_auto_check_result;
+}
+
+static void settings_do_ota_check(jpp_settings_state_t *state)
+{
+    state->ota_check_status = jpp_ota_check_for_update(state->ota_prerelease_opt_in,
+                                                         &state->ota_candidate);
+}
+
+typedef struct {
+    jpp_ota_progress_phase_t phase;
+    const char *tag;
+    uint8_t     last_pct;   /* 0xFF forces the first call to always redraw */
+    jpp_settings_state_t *state;
+} ota_progress_ctx_t;
+
+/* Redraws only when the integer percentage actually changes — chunks arrive
+   every 4 KB, which for a multi-MB image is far more often than the display
+   needs to be pushed over I2C. */
+static void ota_progress_trampoline(size_t bytes_done, size_t bytes_total, void *ctx_v)
+{
+    ota_progress_ctx_t *ctx = (ota_progress_ctx_t *)ctx_v;
+    uint8_t pct = (bytes_total > 0u)
+                  ? (uint8_t)((bytes_done * 100u) / bytes_total)
+                  : 0u;
+    if (pct == ctx->last_pct) {
+        return;
+    }
+    ctx->last_pct = pct;
+    if (ctx->state != NULL) {
+        ctx->state->ota_progress_pct = pct;
+    }
+    jpp_settings_screen_render_ota_progress(ctx->phase, ctx->tag, pct);
+}
+
+/* Blocking: download + SHA-256 verify + pre-flight check. Fully reversible —
+   nothing here touches flash. On success leaves a verified image on SD and
+   fills state->ota_staged_path; on any failure fills state->ota_error_msg
+   and leaves ota_staged_path empty (checked by the render pending-flag block
+   in jpp_settings_screen.c to decide RESULT vs ERROR). */
+static void settings_do_ota_download(jpp_settings_state_t *state)
+{
+    state->ota_staged_path[0] = '\0';
+    state->ota_error_msg[0]   = '\0';
+    state->ota_error_fatal    = false;
+
+    ota_progress_ctx_t ctx = {
+        .phase    = JPP_OTA_PROGRESS_DOWNLOADING,
+        .tag      = state->ota_candidate.tag,
+        .last_pct = 0xFFu,
+        .state    = state,
+    };
+    char path[JPP_OTA_STAGED_PATH_MAX];
+    jpp_ota_download_status_t dl = jpp_ota_download_update(
+        &state->ota_candidate, ota_progress_trampoline, &ctx, path, sizeof(path));
+    if (dl != JPP_OTA_DL_OK) {
+        snprintf(state->ota_error_msg, sizeof(state->ota_error_msg), "%s",
+                 jpp_ota_download_status_str(dl));
+        return;
+    }
+
+    int  battery_pct   = (s_battery_for_ota != NULL) ? s_battery_for_ota->percent : 0;
+    bool battery_valid = (s_battery_for_ota != NULL) && s_battery_for_ota->valid;
+    jpp_ota_preflight_status_t pf = jpp_ota_preflight_check(path, battery_pct, battery_valid);
+    if (pf != JPP_OTA_PREFLIGHT_OK) {
+        remove(path);
+        snprintf(state->ota_error_msg, sizeof(state->ota_error_msg), "%s",
+                 jpp_ota_preflight_status_str(pf));
+        return;
+    }
+
+    strncpy(state->ota_staged_path, path, sizeof(state->ota_staged_path) - 1u);
+    state->ota_staged_path[sizeof(state->ota_staged_path) - 1u] = '\0';
+}
+
+/* Blocking, point of no return: erases and rewrites the running `factory`
+   partition and reboots on success (does not return). Only reached on
+   failure does this function return at all — see jpp_ota_flash_and_reboot()
+   in main/jpp_ota_update.c and AGENTS.md "Firmware update (OTA)". */
+static void settings_do_ota_install(jpp_settings_state_t *state)
+{
+    /* Paint the "do not power off" screen once before the blocking call so
+       it is already on screen before the first progress callback fires
+       (which, for a fast SD card, may be most of the way through the
+       write). */
+    jpp_settings_screen_render_ota_progress(JPP_OTA_PROGRESS_INSTALLING, NULL, 0u);
+
+    ota_progress_ctx_t ctx = {
+        .phase    = JPP_OTA_PROGRESS_INSTALLING,
+        .tag      = NULL,
+        .last_pct = 0xFFu,
+        .state    = state,
+    };
+    jpp_ota_flash_error_t err = jpp_ota_flash_and_reboot(
+        state->ota_staged_path, ota_progress_trampoline, &ctx);
+
+    snprintf(state->ota_error_msg, sizeof(state->ota_error_msg), "%s",
+             jpp_ota_flash_error_str(err));
+    /* OPEN/NO_PARTITION are returned before esp_partition_erase_range() is
+       ever called — the device is exactly as bootable as it was before this
+       function ran. ERASE/WRITE/VERIFY are returned only after that point;
+       see the "point of no return" comment in jpp_ota_flash_and_reboot(). */
+    state->ota_error_fatal = (err == JPP_OTA_FLASH_ERR_ERASE ||
+                              err == JPP_OTA_FLASH_ERR_WRITE ||
+                              err == JPP_OTA_FLASH_ERR_VERIFY);
+    ESP_LOGE(TAG, "OTA install failed: %s (fatal=%d)",
+             jpp_ota_flash_error_str(err), (int)state->ota_error_fatal);
+}
+
+/* One-shot background task: fired from run_main_loop the first time Wi-Fi
+   connects after boot, only if the "Auto-check" toggle is on. Only checks —
+   never downloads or installs — so it can run headless with no consent
+   dialog, matching how background app tasks are never allowed to touch
+   anything a user has not already approved (see jpp_app_dispatch's
+   CONSENT_HEADLESS_DENY in AGENTS.md). */
+static void ota_auto_check_task(void *arg)
+{
+    (void)arg;
+    bool prerelease = jpp_nvs_get_u8(JPP_NVS_OTA_NS, "prerelease",
+                                      jpp_ota_build_is_prerelease() ? 1u : 0u) != 0u;
+    s_ota_auto_check_status = jpp_ota_check_for_update(prerelease, &s_ota_auto_check_result);
+    s_ota_auto_check_done   = true;
+    if (s_ota_auto_check_status == JPP_OTA_CHECK_OK && s_ota_auto_check_result.available) {
+        ESP_LOGI(TAG, "OTA: auto-check found update %s", s_ota_auto_check_result.tag);
+    } else if (s_ota_auto_check_status != JPP_OTA_CHECK_OK) {
+        ESP_LOGW(TAG, "OTA: auto-check failed: %s",
+                 jpp_ota_check_status_str(s_ota_auto_check_status));
+    }
+    vTaskDelete(NULL);
+}
+
 /* ---- Main loop ---------------------------------------------------------- */
 
 static void run_main_loop(jpp_ui_shell_t *shell,
@@ -1209,6 +1391,10 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     /* Expose the live battery state to the SDK device.status broker callback.
        run_main_loop never returns, so the address stays valid for app sessions. */
     jpp_native_services_set_battery_state(&bat_state);
+    /* Same reasoning: the OTA pre-flight battery gate reads this pointer,
+       not a copy, since bat_state keeps updating live for as long as the
+       device runs. */
+    s_battery_for_ota = &bat_state;
 
     /* Keypad task */
     s_kpad_ctx.adc       = adc;
@@ -1235,8 +1421,19 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     xTaskCreate(keypad_task, "keypad", 4096, &s_kpad_ctx,
                 configMAX_PRIORITIES - 1, NULL);
 
-    /* Settings screen state */
-    jpp_settings_state_t settings_state;
+    /* Settings screen state. static, not a stack local: run_main_loop() never
+       returns (it *is* the main loop), so this has no lifetime implications —
+       it just keeps a ~1.3 KB struct off an already-tight main task stack.
+       This one struct growing by the OTA feature's fields (~688 B) pushed
+       app_main()'s inlined stack frame from 3424 B to 4112 B out of the
+       8192 B CONFIG_ESP_MAIN_TASK_STACK_SIZE and caused a silent hang on
+       real hardware (no panic output — corruption from the overflow appears
+       to have taken out the panic handler's own path too) even though the
+       frame was still nominally under budget; the deepest nested call chain
+       from here (SD mount, Wi-Fi init, etc.) stacks on top of it. Prefer
+       `static` over shrinking the struct for any future large, boot-lifetime
+       state added here. */
+    static jpp_settings_state_t settings_state;
     sdmmc_card_t *sd_card_handle = jpp_hw_init_sd_card();
     sdmmc_card_t **sd_card_ptr = &sd_card_handle;
 
@@ -1264,6 +1461,12 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .do_lrv_server_stop     = settings_do_lrv_server_stop,
         .do_username_save       = settings_do_username_save,
         .do_dummy_mode_save     = settings_do_dummy_mode_save,
+        .do_ota_auto_check_change = settings_do_ota_auto_check_change,
+        .do_ota_prerelease_change = settings_do_ota_prerelease_change,
+        .do_ota_sync_auto_check   = settings_do_ota_sync_auto_check,
+        .do_ota_check             = settings_do_ota_check,
+        .do_ota_download          = settings_do_ota_download,
+        .do_ota_install           = settings_do_ota_install,
     };
     s_main_shell     = shell;
     s_rtc_for_backup = rtc_state;
@@ -1279,6 +1482,9 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
     /* Load persisted username. */
     load_username(&settings_state);
+
+    /* Load persisted Firmware Update toggles. */
+    load_ota_settings(&settings_state);
 
     /* First-boot welcome flow (no-op on every later boot). Runs after the
        keypad task/action queue and LRV/username state above are ready, before
@@ -1356,6 +1562,18 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         }
         jpp_ui_shell_set_status(shell, time_buf, shell->status_battery_pct);
     }
+
+    /* Main task stack headroom at the deepest point boot reaches (this
+       includes app_main()'s own inlined frame plus every non-inlined boot
+       call stacked on top of it — SD mount, Wi-Fi init, display init, etc.).
+       This exists because a ~700 B growth of a stack-local struct here once
+       silently overflowed the main task's stack on real hardware with no
+       panic output at all (see the "static, not a stack local" comment on
+       settings_state above) — static frame-size analysis alone did not
+       catch it. uxTaskGetStackHighWaterMark() is the empirical check:
+       watch this number after any future change that grows a local here. */
+    ESP_LOGI(TAG, "BOOT: main task stack headroom = %u bytes",
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
 
     while (true) {
         /* Drain action queue */
@@ -1462,6 +1680,17 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                 fs_status.password[0] != '\0' ? fs_status.password : NULL
             );
             shell->status_wifi_connected = wifi_is_connected();
+
+            /* Firmware Update auto-check: fire once, the first time Wi-Fi is
+               seen connected after boot, if the user has opted in. A
+               one-shot background task (checks only, never downloads or
+               installs) so this poll itself stays non-blocking. */
+            if (shell->status_wifi_connected && !s_ota_auto_check_started &&
+                jpp_nvs_get_u8(JPP_NVS_OTA_NS, "auto_check", 0u) != 0u) {
+                s_ota_auto_check_started = true;
+                xTaskCreate(ota_auto_check_task, "ota_check", 4096, NULL,
+                            tskIDLE_PRIORITY + 1, NULL);
+            }
 
             /* When any HTTP server (WebDAV or LRV) starts, free the BLE
                controller's heap so the WiFi driver can allocate management/data

@@ -15,6 +15,7 @@
 #include "jpp_rtc_core.h"
 #include "jpp_kbd_core.h"
 #include "jpp_buzzer_core.h"
+#include "jpp_ota_update.h"
 #include "sdmmc_cmd.h"
 
 #ifdef __cplusplus
@@ -38,6 +39,7 @@ typedef enum {
     JPP_SETTINGS_SECTION_DEVICE_INFO, /* hidden when no LRV data present */
     JPP_SETTINGS_SECTION_USERNAME,    /* user's display name */
     JPP_SETTINGS_SECTION_DUMMY_MODE,  /* single-app lock; disable by holding OK on boot */
+    JPP_SETTINGS_SECTION_OTA,         /* firmware update: check/download/install from GitHub */
     JPP_SETTINGS_SECTION_ABOUT,
     JPP_SETTINGS_SECTION_COUNT,
 } jpp_settings_section_t;
@@ -66,6 +68,16 @@ typedef enum {
     JPP_BACKUP_SS_MAIN = 0,   /* two-item list: Backup / Restore */
     JPP_BACKUP_SS_RESULT,     /* show result message; any key dismisses */
 } jpp_backup_subscreen_t;
+
+typedef enum {
+    JPP_OTA_SS_MAIN = 0,      /* toggles + "Check for updates" */
+    JPP_OTA_SS_CHECKING,      /* blocking GitHub check in progress */
+    JPP_OTA_SS_RESULT,        /* "Up to date" / "vX.Y available" + Install/Cancel */
+    JPP_OTA_SS_CONFIRM,       /* "Install vX.Y? No, cancel / Yes, install now" */
+    JPP_OTA_SS_DOWNLOADING,   /* blocking download+verify in progress */
+    JPP_OTA_SS_INSTALLING,    /* point of no return: blocking flash+reboot */
+    JPP_OTA_SS_ERROR,         /* check/download/preflight/flash failure message */
+} jpp_ota_subscreen_t;
 
 #define JPP_SETTINGS_WIFI_SCAN_MAX   8u
 #define JPP_SETTINGS_SSID_MAX        33u
@@ -144,6 +156,23 @@ typedef struct {
     char   dummy_app_name[JPP_UI_TEXT_LIMIT];
     size_t dummy_cursor;
     size_t dummy_scroll;
+
+    /* Firmware Update (OTA) section */
+    jpp_ota_subscreen_t    ota_ss;
+    bool                   ota_auto_check;        /* persisted: check after boot+Wi-Fi connect */
+    bool                   ota_prerelease_opt_in;  /* persisted: include pre-release builds */
+    size_t                 ota_main_cursor;        /* 0=Auto-check,1=Pre-releases,2=Check now */
+    bool                   ota_check_pending;
+    bool                   ota_download_pending;
+    bool                   ota_install_pending;
+    jpp_ota_release_info_t ota_candidate;          /* result of the last check */
+    jpp_ota_check_status_t ota_check_status;
+    size_t                 ota_result_cursor;      /* 0=Install,1=Cancel */
+    size_t                 ota_confirm_cursor;      /* 0=No cancel (default),1=Yes install */
+    char                   ota_staged_path[JPP_OTA_STAGED_PATH_MAX];
+    uint8_t                ota_progress_pct;
+    char                   ota_error_msg[40];
+    bool                   ota_error_fatal;         /* true = flash may be left in a bad state */
 } jpp_settings_state_t;
 
 typedef struct {
@@ -203,7 +232,40 @@ typedef struct {
        is the SD app to lock to; when disabled, app_id is ignored.
        The settings handler restarts the device after enabling (via do_reboot). */
     void (*do_dummy_mode_save)(bool enabled, const char *app_id);
+
+    /* Firmware Update: persisted toggle setters, applied immediately. */
+    void (*do_ota_auto_check_change)(bool enabled);
+    void (*do_ota_prerelease_change)(bool enabled);
+    /* Non-blocking: if the boot-time auto-check (see do_ota_auto_check_change)
+       has completed, copies its result into state->ota_candidate /
+       ota_check_status so the MAIN screen can show it without a fresh
+       network round trip; a no-op if auto-check is off, still running, or
+       never ran. Called once when the section is opened. */
+    void (*do_ota_sync_auto_check)(jpp_settings_state_t *state);
+    /* Blocking (network I/O): runs jpp_ota_check_for_update() and fills
+       state->ota_candidate / state->ota_check_status. */
+    void (*do_ota_check)(jpp_settings_state_t *state);
+    /* Blocking (network + SD I/O, fully reversible): downloads, SHA-256
+       verifies, and pre-flight-checks the candidate release. Draws its own
+       progress screen via jpp_settings_screen_render_ota_progress(). On
+       success fills state->ota_staged_path; on any failure fills
+       state->ota_error_msg (and leaves ota_staged_path empty). */
+    void (*do_ota_download)(jpp_settings_state_t *state);
+    /* Blocking, point of no return: erases and rewrites the running
+       `factory` partition from state->ota_staged_path and reboots on
+       success (does not return). Draws its own progress screen. On failure
+       fills state->ota_error_msg and state->ota_error_fatal. */
+    void (*do_ota_install)(jpp_settings_state_t *state);
 } jpp_settings_deps_t;
+
+/* Redraws the download/install progress screen full-screen (title, tag,
+   bar, percentage, and — while installing — a persistent "Do NOT power off"
+   warning). Exported so the do_ota_download/do_ota_install callbacks in
+   main/app_main.c can repaint it directly from inside jpp_ota_progress_cb
+   while they block inside main/jpp_ota_update.c; jpp_settings_screen.c is
+   still what owns the actual drawing. `tag` may be NULL. */
+void jpp_settings_screen_render_ota_progress(jpp_ota_progress_phase_t phase,
+                                              const char *tag, uint8_t pct);
 
 void jpp_settings_screen_init(jpp_settings_state_t *state,
                                const jpp_settings_deps_t *deps);

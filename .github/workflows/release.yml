@@ -139,9 +139,24 @@ jobs:
             *rc*|*RC*|*alpha*|*beta*) CHANNEL=prerelease ;;
           esac
 
-          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH"   >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA"         >> "$GITHUB_OUTPUT"
+          # Build identity for main/jpp_ota_update.c (see the "Build identity"
+          # comment in main/CMakeLists.txt): the tagged commit's committer date
+          # as a Unix epoch — not `date -u +%s` (wall-clock of the CI run) —
+          # so re-running this workflow against the same tag reproduces the
+          # same timestamp instead of drifting later on every retry.
+          TIMESTAMP=$(git show -s --format=%ct "$SHA")
+          if [ "$CHANNEL" = "stable" ]; then
+            PRERELEASE_FLAG=0
+          else
+            PRERELEASE_FLAG=1
+          fi
+
+          echo "channel=$CHANNEL"                >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH"                  >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA"                         >> "$GITHUB_OUTPUT"
+          echo "commit_short=${SHA:0:8}"          >> "$GITHUB_OUTPUT"
+          echo "timestamp=$TIMESTAMP"             >> "$GITHUB_OUTPUT"
+          echo "prerelease_flag=$PRERELEASE_FLAG" >> "$GITHUB_OUTPUT"
           echo "$TAG -> $CHANNEL (contained in $BRANCH)"
 
       # A release whose firmware reports a different version in Settings > About
@@ -196,6 +211,15 @@ jobs:
           mpy-cross --version
 
       - name: Build firmware
+        env:
+          # Baked into the image by main/CMakeLists.txt — see the "Build
+          # identity" comment there. Powers the device's own OTA update check
+          # (main/jpp_ota_update.c): what it compares a candidate GitHub
+          # release against, and whether it defaults the "Update to
+          # pre-releases" toggle on.
+          JPP_BUILD_TIMESTAMP:  ${{ steps.channel.outputs.timestamp }}
+          JPP_BUILD_COMMIT:     ${{ steps.channel.outputs.commit_short }}
+          JPP_BUILD_PRERELEASE: ${{ steps.channel.outputs.prerelease_flag }}
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh"
@@ -221,6 +245,16 @@ jobs:
               jppdos_idf.bin \
               flasher_args.json \
               flash_args )
+
+          # Standalone app-only image (no bootloader/partition table) for the
+          # device's own OTA self-update — main/jpp_ota_update.c downloads
+          # this one asset and writes it straight into the `factory`
+          # partition. It must never be the merged or zipped image: this
+          # firmware has no spare OTA slot (see AGENTS.md "Firmware update
+          # (OTA)"), so it self-overwrites the partition it boots from, and
+          # touching the bootloader/partition table from that path has no
+          # upside and a much worse failure mode than a bad app image.
+          cp build/jppdos_idf.bin "$OUT/jppdos-${TAG}-esp32c6-app.bin"
 
           # Showcase apps, ready to copy onto /sd/apps/<id>/.
           ( cd build/apps && zip -q -r "$OUT/jppdos-${TAG}-apps.zip" . )
