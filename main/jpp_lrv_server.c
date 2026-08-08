@@ -18,8 +18,12 @@ static const char *TAG = "jpp_lrv_srv";
 
 /* Server task stack, carved out of the shared app pool by
    jpp_http_server_core.  The page builder is the deepest frame here: roughly
-   2.5 KB of hex dumps and URL scratch plus the LRV record itself. */
-#define LRV_STACK_BYTES 8192u
+   6 KB of hex dumps, base64/percent-encoding scratch, and URL assembly (the
+   /verify URL now carries the certificate and its signature, not just the
+   response, and the URL buffers are sized generously so GCC's
+   -Werror=format-truncation can prove the snprintf calls can't overflow)
+   plus the LRV record itself. */
+#define LRV_STACK_BYTES 10240u
 
 /* ---- State -------------------------------------------------------------- */
 static bool             s_running = false;
@@ -37,30 +41,6 @@ static void get_local_ip(char ip[16])
     if (esp_netif_get_ip_info(netif, &info) == ESP_OK && info.ip.addr != 0u) {
         snprintf(ip, 16u, IPSTR, IP2STR(&info.ip));
     }
-}
-
-/* Approximate seconds since Unix epoch (no leap-second correction). */
-static uint32_t datetime_to_unix(const jpp_rtc_datetime_t *dt)
-{
-    static const int mdays[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
-
-    int y   = dt->year - 1970;
-    int mon = dt->month - 1;
-    int d   = dt->day - 1;
-
-    int leaps = (dt->year - 1) / 4 - (dt->year - 1) / 100 + (dt->year - 1) / 400
-              - (1969 / 4 - 1969 / 100 + 1969 / 400);
-
-    int days  = y * 365 + leaps + mdays[mon] + d;
-    if (mon > 1) {
-        int yy = dt->year;
-        if ((yy % 4 == 0 && yy % 100 != 0) || (yy % 400 == 0)) { days++; }
-    }
-
-    return (uint32_t)((uint64_t)days * 86400u
-                      + (uint32_t)dt->hour   * 3600u
-                      + (uint32_t)dt->minute * 60u
-                      + (uint32_t)dt->second);
 }
 
 /* URL-safe base64 (RFC 4648 §5): replaces '+' with '-', '/' with '_'. */
@@ -103,15 +83,12 @@ static void send_verification_page(jpp_http_conn_t *conn)
         return;
     }
 
-    /* Username, timestamp, and challenge all come from one builder call (one
-       RTC read) so the page, the URL, and the signed bytes stay consistent. */
-    char username[64] = {0};
-    jpp_rtc_datetime_t now = {0};
-    bool has_time = false;
+    /* The challenge (which already embeds username + timestamp as signed
+       text) comes from one builder call so the page, the URL, and the signed
+       bytes stay consistent — no separate ts/name fields to keep in sync. */
     char challenge[JPP_LRV_CHALLENGE_MAX];
     jpp_lrv_build_challenge(s_rtc, challenge, sizeof(challenge),
-                            username, sizeof(username), &now, &has_time);
-    uint32_t ts = has_time ? datetime_to_unix(&now) : 0u;
+                            NULL, 0u, NULL, NULL);
 
     uint8_t resp_sig[64] = {0};
     jpp_lrv_sign_challenge(challenge, resp_sig);
@@ -128,21 +105,30 @@ static void send_verification_page(jpp_http_conn_t *conn)
     jpp_lrv_hex_format(d.device_pubkey, 32u, 8u, pubkey_hex,  sizeof(pubkey_hex));
     jpp_lrv_hex_format(resp_sig,        64u, 8u, respsig_hex, sizeof(respsig_hex));
 
-    /* Build the jppdevice.com certificate page URL. */
+    /* Build the jppdevice.by.m4l3vi.ch/verify URL. cert + certsig travel
+       verbatim (base64url) so the verifier checks the exact issued bytes with
+       no reconstruction; challenge travels percent-encoded as one opaque
+       string so the site never has to reassemble it from separate parts. */
     char respsig_b64[128] = {0};
     b64url_encode(resp_sig, 64u, respsig_b64, sizeof(respsig_b64));
-    char name_enc[192] = {0};
-    url_encode(username, name_enc, sizeof(name_enc));
+    char certsig_b64[128] = {0};
+    b64url_encode(d.cert_sig, 64u, certsig_b64, sizeof(certsig_b64));
+    char cert_b64[300] = {0};
+    b64url_encode((const uint8_t *)d.cert, strnlen(d.cert, sizeof(d.cert) - 1u),
+                  cert_b64, sizeof(cert_b64));
+    char challenge_enc[400] = {0};
+    url_encode(challenge, challenge_enc, sizeof(challenge_enc));
 
-    char certpage_url[512];
+    char certpage_url[1280];
     snprintf(certpage_url, sizeof(certpage_url),
-             "https://jppdevice.com/lrv"
-             "?ts=%lu"
-             "&name=%s"
-             "&serial=%u"
+             "https://jppdevice.by.m4l3vi.ch/verify"
+             "?serial=%u"
+             "&cert=%s"
+             "&certsig=%s"
+             "&challenge=%s"
              "&resp=%s",
-             (unsigned long)ts, name_enc,
-             (unsigned)d.serial, respsig_b64);
+             (unsigned)d.serial, cert_b64, certsig_b64,
+             challenge_enc, respsig_b64);
 
     jpp_http_resp_set_type(conn, "text/html; charset=utf-8");
 
@@ -194,7 +180,7 @@ static void send_verification_page(jpp_http_conn_t *conn)
     jpp_http_resp_sendstr_chunk(conn, "</pre><hr>");
 
     /* Certificate page button — direct link, no user prompt needed. */
-    char btn[560];
+    char btn[1600];
     snprintf(btn, sizeof(btn),
              "<a class='btn' href='%s'>Open Certificate Page</a>",
              certpage_url);
