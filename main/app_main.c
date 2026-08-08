@@ -18,6 +18,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_wifi.h"
+#include "esp_mac.h"
+#include "esp_efuse.h"
+#include "esp_efuse_table.h"
+#include "esp_flash.h"
 #include "cJSON.h"
 #include <dirent.h>
 #include <sys/stat.h>
@@ -1923,6 +1927,43 @@ void app_main(void)
     jpp_boot_context_t boot;
     jpp_boot_context_init(&boot);
     ESP_LOGI(TAG, "BOOT_START");
+
+    /* ---- TEMPORARY HWID DIAGNOSTIC — delete this block once resolved -------
+       Investigating non-unique eFuse MAC addresses across manufactured units
+       (see scripts/ledger.csv). Logs three independent hardware-rooted IDs —
+       eFuse MAC (BLK1, what GET_INFO/hwid uses today), eFuse OPTIONAL_UNIQUE_ID
+       (a separate 128-bit identity fuse burned at wafer test), and the SPI
+       flash chip's own 64-bit RDUID (separate silicon from the ESP32 die) —
+       so readings can be compared across the affected units before picking a
+       replacement for the LRV record's `hwid` field. Not a documented
+       feature; grep "HWID_DIAG" to find every line this block adds. */
+    {
+        uint8_t mac[6] = {0};
+        esp_efuse_mac_get_default(mac);
+        ESP_LOGW(TAG, "HWID_DIAG efuse_mac=%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+        uint8_t uid[16] = {0};
+        esp_err_t uid_err = esp_efuse_read_field_blob(ESP_EFUSE_OPTIONAL_UNIQUE_ID, uid, sizeof(uid) * 8);
+        if (uid_err == ESP_OK) {
+            ESP_LOGW(TAG, "HWID_DIAG efuse_optional_unique_id="
+                     "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
+                     uid[0], uid[1], uid[2], uid[3], uid[4], uid[5], uid[6], uid[7],
+                     uid[8], uid[9], uid[10], uid[11], uid[12], uid[13], uid[14], uid[15]);
+        } else {
+            ESP_LOGW(TAG, "HWID_DIAG efuse_optional_unique_id read failed: %s", esp_err_to_name(uid_err));
+        }
+
+        uint64_t flash_uid = 0;
+        /* NULL chip arg substitutes esp_flash_default_chip. */
+        esp_err_t flash_err = esp_flash_read_unique_chip_id(NULL, &flash_uid);
+        if (flash_err == ESP_OK) {
+            ESP_LOGW(TAG, "HWID_DIAG flash_rduid=%016llX", (unsigned long long)flash_uid);
+        } else {
+            ESP_LOGW(TAG, "HWID_DIAG flash_rduid read failed: %s", esp_err_to_name(flash_err));
+        }
+    }
+    /* ---- END TEMPORARY HWID DIAGNOSTIC -------------------------------------- */
 
     /* Step 2 */
     bool storage_ok = mount_flash_storage();

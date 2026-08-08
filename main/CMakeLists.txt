@@ -21,5 +21,5 @@ idf_component_register(
         "jpp_lrv.c"
         "jpp_lrv_server.c"
     INCLUDE_DIRS "."
-    REQUIRES jpp_core jpp_native_loader_core jpp_crypto_core spiffs fatfs sdmmc driver esp_driver_usb_serial_jtag esp_adc json esp_wifi esp_netif lwip nvs_flash bt esp_http_client esp_timer esp_rom espressif__libsodium mbedtls esp-tls
+    REQUIRES jpp_core jpp_native_loader_core jpp_crypto_core spiffs fatfs sdmmc driver esp_driver_usb_serial_jtag esp_adc json esp_wifi esp_netif lwip nvs_flash bt esp_http_client esp_timer esp_rom espressif__libsodium mbedtls esp-tls efuse spi_flash
 )
