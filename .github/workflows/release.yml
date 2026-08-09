@@ -39,6 +39,12 @@ env:
   # Which branch a tag has to be on to count as a finished release.
   STABLE_BRANCH: master
   PRERELEASE_BRANCH: develop
+  # The image the firmware build runs in. Single source of truth for both
+  # the build job's docker-run steps below and cache-idf-image.yml's cache
+  # key — that workflow greps this line out rather than duplicating the tag,
+  # the same pattern the "Build mpy-cross" step uses to read its tag from
+  # the Dockerfile.
+  IDF_IMAGE: espressif/idf:v5.5.1
 
 jobs:
   # A tagged build is the one build that must not ship broken, so the host
@@ -65,14 +71,15 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
-    container: espressif/idf:v5.5.1
-    defaults:
-      run:
-        # A container job defaults to `sh -e {0}`, not bash — and on this
-        # Ubuntu-based image /bin/sh is dash, which has no `set -o pipefail`
-        # and no arrays. Set it once for the job rather than per step, so a
-        # step added later cannot silently land back on dash.
-        shell: bash
+    # No job-level `container:` — GitHub Actions pulls a job container
+    # *before* any step runs, which means a cache-restore step can never run
+    # early enough to intercept that pull. Toolchain steps below instead
+    # `docker run` IDF_IMAGE explicitly, after a step that restores it from
+    # an actions/cache tarball (falling back to a real pull + `docker save`
+    # on a miss). See the "Cache IDF Docker image" step for the tag-scoping
+    # wrinkle this runs into, and cache-idf-image.yml for how the cache
+    # actually gets warmed for a *new* tag rather than only a retry of the
+    # same one.
     outputs:
       channel: ${{ steps.channel.outputs.channel }}
       branch: ${{ steps.channel.outputs.branch }}
@@ -86,11 +93,6 @@ jobs:
           # from `git describe`, and the release channel is decided by which
           # branch contains the tagged commit.
           fetch-depth: 0
-
-      # The container runs as root over a checkout owned by the runner user;
-      # without this every git call in the build fails "dubious ownership".
-      - name: Trust the checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Resolve tag
         id: tag
@@ -185,6 +187,35 @@ jobs:
                  "it must match before the stable tag."
           fi
 
+      # actions/cache scopes a cache to the ref that created it, plus a
+      # fallback to the repository's default branch — but NOT to other tags
+      # ("Tags only have access to caches created in default branch," per
+      # GitHub's own docs). Since this workflow only ever runs on a tag push,
+      # a cache saved by *this* run would only ever help a re-run of the
+      # exact same tag (the workflow_dispatch retry case above), never the
+      # next tag. cache-idf-image.yml is what actually keeps this warm for a
+      # new tag — it runs on pushes to master (the repo's default branch),
+      # which every tag falls back to regardless of which branch it was cut
+      # from.
+      - name: Cache IDF Docker image
+        id: idf-image-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/idf-image.tar
+          key: idf-docker-image-${{ env.IDF_IMAGE }}
+
+      - name: Load or pull IDF Docker image
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/idf-image.tar" ]; then
+            echo "Cache hit — loading $IDF_IMAGE from cache"
+            docker load -i "$RUNNER_TEMP/idf-image.tar"
+          else
+            echo "Cache miss — pulling $IDF_IMAGE"
+            docker pull "$IDF_IMAGE"
+            docker save "$IDF_IMAGE" -o "$RUNNER_TEMP/idf-image.tar"
+          fi
+
       # testapp_mp's build step hard-fails without mpy-cross, and the stock IDF
       # image does not carry it — only the project Dockerfile does.
       #
@@ -194,6 +225,13 @@ jobs:
       # The tag is read out of the Dockerfile so this cannot drift from the
       # image the documented local flow uses — moving the MicroPython pin means
       # editing one line there and nothing here. Takes a few seconds.
+      #
+      # Built inside IDF_IMAGE (not on the runner host) so the binary links
+      # against the same glibc that will later run it — a host-built binary
+      # would risk a "GLIBC_x.xx not found" failure against this image's
+      # older base. Written to $RUNNER_TEMP, not /usr/local/bin, so it
+      # survives into the "Build firmware" step: each docker-run step below
+      # is a fresh container, sharing nothing but the bind-mounted host paths.
       - name: Build mpy-cross
         run: |
           set -euo pipefail
@@ -204,11 +242,20 @@ jobs:
             exit 1
           fi
           echo "Building mpy-cross $MPY_TAG (per Dockerfile)"
+          mkdir -p "$RUNNER_TEMP/mpy-cross"
+          cat > "$RUNNER_TEMP/build-mpy-cross.sh" <<'SCRIPT'
+          set -euo pipefail
           git clone --quiet --depth 1 --branch "$MPY_TAG" \
               https://github.com/micropython/micropython.git /tmp/micropython
           make -s -C /tmp/micropython/mpy-cross -j"$(nproc)"
-          cp /tmp/micropython/mpy-cross/build/mpy-cross /usr/local/bin/mpy-cross
-          mpy-cross --version
+          cp /tmp/micropython/mpy-cross/build/mpy-cross "$RUNNER_TEMP/mpy-cross/mpy-cross"
+          chmod +x "$RUNNER_TEMP/mpy-cross/mpy-cross"
+          SCRIPT
+          docker run --rm \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -e RUNNER_TEMP \
+            -e MPY_TAG="$MPY_TAG" \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/build-mpy-cross.sh"
 
       - name: Build firmware
         env:
@@ -222,15 +269,38 @@ jobs:
           JPP_BUILD_PRERELEASE: ${{ steps.channel.outputs.prerelease_flag }}
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/build-firmware.sh" <<'SCRIPT'
+          set -euo pipefail
+          # The container runs as root over a checkout owned by the runner
+          # user; without this, `idf.py build`'s internal `git describe` call
+          # (via esp_app_get_description(), see the OTA "Running …" line
+          # note below) fails "dubious ownership".
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
+          export PATH="$RUNNER_TEMP/mpy-cross:$PATH"
           idf.py set-target esp32c6
           idf.py build
+          SCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_WORKSPACE -e RUNNER_TEMP \
+            -e JPP_BUILD_TIMESTAMP -e JPP_BUILD_COMMIT -e JPP_BUILD_PRERELEASE \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/build-firmware.sh"
 
       - name: Package artifacts
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/package-artifacts.sh" <<'SCRIPT'
+          set -euo pipefail
           . "$IDF_PATH/export.sh"
-          TAG="${{ steps.tag.outputs.name }}"
+          # merge-bin depends on the "all" ninja target, same as `idf.py
+          # build` — and the testapp_mp custom build command has no declared
+          # outputs, so ninja always re-runs it rather than treating it as
+          # up to date. Needs mpy-cross on PATH again for that reason, exactly
+          # like the "Build firmware" step.
+          export PATH="$RUNNER_TEMP/mpy-cross:$PATH"
           OUT="$GITHUB_WORKSPACE/dist"
           mkdir -p "$OUT"
 
@@ -261,6 +331,14 @@ jobs:
 
           ( cd "$OUT" && sha256sum jppdos-* > SHA256SUMS.txt )
           ls -l "$OUT"
+          SCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_WORKSPACE -e RUNNER_TEMP \
+            -e TAG="${{ steps.tag.outputs.name }}" \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/package-artifacts.sh"
 
       # Flash headroom is generous on the 4 MB layout, but keep publishing the
       # numbers where they can be read without downloading anything — the
@@ -269,7 +347,13 @@ jobs:
       - name: Size summary
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/size-summary.sh" <<'SCRIPT'
+          set -euo pipefail
           . "$IDF_PATH/export.sh"
+          # Same "all"-target rebuild wrinkle as the "Package artifacts"
+          # step above: `idf.py size` also depends on a full build, which
+          # always re-runs the output-less testapp_mp custom command.
+          export PATH="$RUNNER_TEMP/mpy-cross:$PATH"
           {
             echo '### Image size'
             echo
@@ -277,6 +361,13 @@ jobs:
             idf.py size 2>/dev/null | sed -n '/Memory Type/,/^└/p'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          SCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_STEP_SUMMARY -e RUNNER_TEMP \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/size-summary.sh"
 
       - name: Upload build output
         uses: actions/upload-artifact@v4
