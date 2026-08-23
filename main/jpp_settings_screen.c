@@ -12,7 +12,6 @@
 
 #include "esp_vfs_fat.h"
 #include "ff.h"
-#include "esp_app_desc.h"
 
 /* ---- Drawing helpers ---------------------------------------------------- */
 
@@ -125,7 +124,7 @@ static size_t volume_step_index(uint8_t pct)
 static const char *SECTION_NAMES[JPP_SETTINGS_SECTION_COUNT] = {
     "Shutdown/Reboot", "Wi-Fi", "Time", "Sleep timers",
     "Sound", "Controls", "SD card", "Backup settings", "Factory Reset",
-    "* Device Info *", "User's name", "Dummy Mode", "Firmware Update", "About",
+    "* Device Info *", "User's name", "Dummy Mode", "About",
 };
 
 /* Returns false for sections that should be hidden given the current state. */
@@ -855,319 +854,6 @@ static void render_factory_reset(const jpp_settings_state_t *state)
     draw_list_item(6, state->factory_reset_cursor == 1, "Reset now");
 }
 
-/* ---- Firmware Update (OTA) ----------------------------------------------- *
- *
- * This device has one app partition — no spare OTA slot — so an installed
- * update overwrites the partition it is running from with no fallback if
- * power is lost mid-write. See AGENTS.md "Firmware update (OTA)" and
- * main/jpp_ota_update.h for the full design and its risks; this file only
- * owns the UI around it. The multi-step check -> confirm -> download ->
- * install flow follows the same "render the in-progress screen, flush it,
- * then run the blocking call" idiom as Wi-Fi scan/connect above.
- */
-
-/* Text-only progress bar: 20 chars, '#' filled / '-' empty. */
-static void draw_progress_bar(uint8_t page, uint8_t col, uint8_t pct)
-{
-    char bar[21];
-    uint8_t p = pct > 100u ? 100u : pct;
-    int filled = (p * 20) / 100;
-    for (int i = 0; i < 20; i++) { bar[i] = (i < filled) ? '#' : '-'; }
-    bar[20] = '\0';
-    ssd1306_draw_string(page, col, bar, false);
-}
-
-void jpp_settings_screen_render_ota_progress(jpp_ota_progress_phase_t phase,
-                                              const char *tag, uint8_t pct)
-{
-    cls();
-    if (phase == JPP_OTA_PROGRESS_INSTALLING) {
-        draw_centred_2x(0, "UPDATING");
-        draw_centred_2x(2, "JPPDOS");
-        jpp_draw_rule(4u);
-        draw_centred(5, "Do NOT power off");
-    } else {
-        draw_section_heading("Firmware Update");
-        draw_centred(2, "Downloading update");
-        if (tag != NULL && tag[0] != '\0') {
-            draw_centred(3, tag);
-        }
-        jpp_draw_rule(4u);
-    }
-    draw_progress_bar(6u, 4u, pct);
-    char pct_line[8];
-    snprintf(pct_line, sizeof(pct_line), "%u%%", (unsigned)(pct > 100u ? 100u : pct));
-    draw_centred(7, pct_line);
-    ssd1306_flush();
-}
-
-static void render_ota_main(const jpp_settings_state_t *state)
-{
-    draw_section_heading("Firmware Update");
-    draw_list_item_kv(2, state->ota_main_cursor == 0u, "Auto-check",
-                       state->ota_auto_check ? "On" : "Off");
-    draw_list_item_kv(3, state->ota_main_cursor == 1u, "Pre-releases",
-                       state->ota_prerelease_opt_in ? "On" : "Off");
-    draw_list_item(4, state->ota_main_cursor == 2u, "Check for updates");
-    jpp_draw_rule(5u);
-    /* JPPDOS_VERSION is a hand-maintained #define — accurate at a tagged
-       release (release.yml's CI gate enforces that) but stale for any build
-       in between. esp_app_desc_t.version is populated by ESP-IDF itself from
-       `git describe --tags --always --dirty` (see project.cmake — no
-       version.txt/PROJECT_VER override exists in this repo, so that is the
-       live fallback), with zero extra build plumbing: exactly the tag at a
-       tagged build, and something like "1.2-rc.5-2-gc161f76-dirty" for any
-       other checkout, local or CI — which is what actually answers "what am
-       I running" for this screen. */
-    const esp_app_desc_t *app_desc = esp_app_get_description();
-    /* Sized for "Running " (8) + esp_app_desc_t.version's max content (31,
-       it is char[32]) + NUL, not the 21-char row — see the tag_line/hint
-       buffers above for the same reasoning. */
-    char ver_line[8u + 32u];
-    snprintf(ver_line, sizeof(ver_line), "Running %s", app_desc->version);
-    /* A git-describe string routinely runs past the 21-char row (e.g.
-       "Running 1.2-rc.5-2-gc161f76-dirty"), unlike the old fixed "vX.Y" —
-       scroll it the same way render_about() scrolls the device URL below.
-       jpp_ui_marquee_offset() already no-ops (always returns 0) when the
-       text fits the window, so this is safe for a short exact-tag build too. */
-    static const size_t ver_window = SSD1306_WIDTH / SSD1306_CHAR_W;  /* 21 chars */
-    static uint32_t     ver_marquee = 0u;
-    size_t ver_off = jpp_ui_marquee_offset(ver_marquee, strlen(ver_line),
-                                            ver_window, 6u);
-    ssd1306_draw_string(6, 0, ver_line + ver_off, false);
-    ver_marquee++;
-    /* An auto-check result (do_ota_sync_auto_check, on section open) takes
-       priority over the build line — it is more actionable — but only while
-       it is still fresh: ota_ss stays MAIN here so this line alone can go
-       stale if the user lingers without pressing "Check for updates". */
-    if (state->ota_check_status == JPP_OTA_CHECK_OK && state->ota_candidate.available) {
-        /* Sized for the worst case ("Update: " + JPP_OTA_TAG_MAX), not the
-           21-char row — a long tag just clips on screen like any other
-           string here; this only needs to avoid -Werror=format-truncation. */
-        char hint[JPP_OTA_TAG_MAX + 8u];
-        snprintf(hint, sizeof(hint), "Update: %s", state->ota_candidate.tag);
-        ssd1306_draw_string(7, 0, hint, false);
-    } else {
-        char build_line[22];
-        snprintf(build_line, sizeof(build_line), "Build %s", jpp_ota_build_commit());
-        ssd1306_draw_string(7, 0, build_line, false);
-    }
-}
-
-static void render_ota_checking(const jpp_settings_state_t *state)
-{
-    draw_section_heading("Firmware Update");
-    draw_centred(3, "Checking for");
-    draw_centred(4, "updates...");
-    jpp_draw_rule(5u);
-    draw_centred(6, "Contacting GitHub");
-    draw_centred(7, state->ota_prerelease_opt_in ? "(incl. pre-releases)"
-                                                  : "(stable only)");
-}
-
-static void render_ota_result(const jpp_settings_state_t *state)
-{
-    draw_section_heading("Firmware Update");
-    if (state->ota_check_status != JPP_OTA_CHECK_OK) {
-        draw_centred(3, "Check failed:");
-        draw_centred(4, jpp_ota_check_status_str(state->ota_check_status));
-        draw_centred(7, "OK to continue");
-        return;
-    }
-    if (!state->ota_candidate.available) {
-        draw_centred_2x(1, "Up to date");
-        char line[22];
-        snprintf(line, sizeof(line), "Running v%s", JPPDOS_VERSION);
-        draw_centred(4, line);
-        draw_centred(7, "OK to continue");
-        return;
-    }
-    draw_centred_2x(0, "Update!");
-    /* Sized for the worst case (JPP_OTA_TAG_MAX + " (pre)"), same reasoning
-       as the hint buffer in render_ota_main() above. */
-    char tag_line[JPP_OTA_TAG_MAX + 8u];
-    snprintf(tag_line, sizeof(tag_line), "%s%s", state->ota_candidate.tag,
-             state->ota_candidate.is_prerelease ? " (pre)" : "");
-    draw_centred(3, tag_line);
-    jpp_draw_rule(4u);
-    draw_list_item(5, state->ota_result_cursor == 0u, "Install");
-    draw_list_item(6, state->ota_result_cursor == 1u, "Cancel");
-}
-
-static void render_ota_confirm(const jpp_settings_state_t *state)
-{
-    draw_section_heading("Firmware Update");
-    draw_centred(2, "Install update?");
-    draw_centred(3, state->ota_candidate.tag);
-    ssd1306_draw_string(4, 0, "Device must NOT lose", false);
-    ssd1306_draw_string(5, 0, "power during install.", false);
-    draw_list_item(6, state->ota_confirm_cursor == 0u, "No, cancel");
-    draw_list_item(7, state->ota_confirm_cursor == 1u, "Yes, install now");
-}
-
-static void render_ota_error(const jpp_settings_state_t *state)
-{
-    draw_section_heading("Firmware Update");
-    draw_centred(3, state->ota_error_fatal ? "UPDATE FAILED" : "Error:");
-    draw_centred(4, state->ota_error_msg);
-    if (state->ota_error_fatal) {
-        draw_centred(5, "Device may not boot.");
-        draw_centred(6, "Reflash via USB/SMP.");
-    }
-    draw_centred(7, "OK to continue");
-}
-
-static void render_ota(const jpp_settings_state_t *state)
-{
-    switch (state->ota_ss) {
-    case JPP_OTA_SS_MAIN:     render_ota_main(state);     break;
-    case JPP_OTA_SS_CHECKING: render_ota_checking(state); break;
-    case JPP_OTA_SS_RESULT:   render_ota_result(state);   break;
-    case JPP_OTA_SS_CONFIRM:  render_ota_confirm(state);  break;
-    case JPP_OTA_SS_ERROR:    render_ota_error(state);    break;
-    case JPP_OTA_SS_DOWNLOADING:
-    case JPP_OTA_SS_INSTALLING:
-        /* Self-contained (clears + flushes itself) — see the doc comment on
-           jpp_settings_screen_render_ota_progress() in the header. Called
-           the same way here as from the do_ota_download/do_ota_install
-           progress callback, so the very first frame in this subscreen
-           looks identical to every frame the blocking call paints after it. */
-        jpp_settings_screen_render_ota_progress(
-            state->ota_ss == JPP_OTA_SS_INSTALLING ? JPP_OTA_PROGRESS_INSTALLING
-                                                    : JPP_OTA_PROGRESS_DOWNLOADING,
-            state->ota_candidate.tag, state->ota_progress_pct);
-        break;
-    default:
-        break;
-    }
-}
-
-static bool handle_ota_main(jpp_settings_state_t *state,
-                             const jpp_settings_deps_t *deps,
-                             jpp_ui_action_t action)
-{
-    switch (action) {
-    case JPP_UI_ACTION_UP:
-        if (state->ota_main_cursor > 0u) { state->ota_main_cursor--; }
-        break;
-    case JPP_UI_ACTION_DOWN:
-        if (state->ota_main_cursor < 2u) { state->ota_main_cursor++; }
-        break;
-    case JPP_UI_ACTION_LEFT:
-    case JPP_UI_ACTION_RIGHT:
-        if (state->ota_main_cursor == 0u) {
-            state->ota_auto_check = !state->ota_auto_check;
-            if (deps->do_ota_auto_check_change) {
-                deps->do_ota_auto_check_change(state->ota_auto_check);
-            }
-        } else if (state->ota_main_cursor == 1u) {
-            state->ota_prerelease_opt_in = !state->ota_prerelease_opt_in;
-            if (deps->do_ota_prerelease_change) {
-                deps->do_ota_prerelease_change(state->ota_prerelease_opt_in);
-            }
-        }
-        break;
-    case JPP_UI_ACTION_OK:
-        if (state->ota_main_cursor == 2u) {
-            state->ota_ss = JPP_OTA_SS_CHECKING;
-            state->ota_check_pending = true;
-        }
-        break;
-    case JPP_UI_ACTION_BACK:
-        return true;
-    default:
-        break;
-    }
-    return false;
-}
-
-static bool handle_ota_result(jpp_settings_state_t *state, jpp_ui_action_t action)
-{
-    if (state->ota_check_status != JPP_OTA_CHECK_OK || !state->ota_candidate.available) {
-        if (action == JPP_UI_ACTION_OK || action == JPP_UI_ACTION_BACK) {
-            state->ota_ss = JPP_OTA_SS_MAIN;
-        }
-        return false;
-    }
-    switch (action) {
-    case JPP_UI_ACTION_UP:
-    case JPP_UI_ACTION_DOWN:
-        state->ota_result_cursor = (state->ota_result_cursor == 0u) ? 1u : 0u;
-        break;
-    case JPP_UI_ACTION_OK:
-        if (state->ota_result_cursor == 0u) {
-            state->ota_confirm_cursor = 0u;   /* default to "No, cancel" */
-            state->ota_ss = JPP_OTA_SS_CONFIRM;
-        } else {
-            state->ota_ss = JPP_OTA_SS_MAIN;
-        }
-        break;
-    case JPP_UI_ACTION_BACK:
-        state->ota_ss = JPP_OTA_SS_MAIN;
-        break;
-    default:
-        break;
-    }
-    return false;
-}
-
-static bool handle_ota_confirm(jpp_settings_state_t *state, jpp_ui_action_t action)
-{
-    switch (action) {
-    case JPP_UI_ACTION_UP:
-    case JPP_UI_ACTION_DOWN:
-        state->ota_confirm_cursor = (state->ota_confirm_cursor == 0u) ? 1u : 0u;
-        break;
-    case JPP_UI_ACTION_OK:
-        if (state->ota_confirm_cursor == 1u) {
-            state->ota_progress_pct   = 0u;
-            state->ota_ss             = JPP_OTA_SS_DOWNLOADING;
-            state->ota_download_pending = true;
-        } else {
-            state->ota_ss = JPP_OTA_SS_RESULT;
-        }
-        break;
-    case JPP_UI_ACTION_BACK:
-        state->ota_ss = JPP_OTA_SS_RESULT;
-        break;
-    default:
-        break;
-    }
-    return false;
-}
-
-static bool handle_ota_error(jpp_settings_state_t *state, jpp_ui_action_t action)
-{
-    if (action == JPP_UI_ACTION_OK || action == JPP_UI_ACTION_BACK) {
-        state->ota_ss = JPP_OTA_SS_MAIN;
-    }
-    return false;
-}
-
-static bool handle_ota(jpp_settings_state_t *state,
-                        const jpp_settings_deps_t *deps,
-                        jpp_ui_action_t action)
-{
-    switch (state->ota_ss) {
-    case JPP_OTA_SS_MAIN:
-        return handle_ota_main(state, deps, action);
-    case JPP_OTA_SS_RESULT:
-        return handle_ota_result(state, action);
-    case JPP_OTA_SS_CONFIRM:
-        return handle_ota_confirm(state, action);
-    case JPP_OTA_SS_ERROR:
-        return handle_ota_error(state, action);
-    case JPP_OTA_SS_CHECKING:
-    case JPP_OTA_SS_DOWNLOADING:
-    case JPP_OTA_SS_INSTALLING:
-    default:
-        /* Blocking op in progress (pending flag set) or already resolved by
-           jpp_settings_screen_render() before input is next processed —
-           nothing to do with input here either way. */
-        return false;
-    }
-}
-
 /* ======================================================================== */
 /* Public entry points                                                         */
 /* ======================================================================== */
@@ -1211,7 +897,6 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
         case JPP_SETTINGS_SECTION_DEVICE_INFO:   render_device_info(state);            break;
         case JPP_SETTINGS_SECTION_USERNAME:      render_username(state);               break;
         case JPP_SETTINGS_SECTION_DUMMY_MODE:   render_dummy_mode(state, deps);       break;
-        case JPP_SETTINGS_SECTION_OTA:           render_ota(state);                    break;
         case JPP_SETTINGS_SECTION_ABOUT:         render_about();                       break;
         default: break;
         }
@@ -1251,56 +936,6 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
         render_wifi(state);
         ssd1306_flush();
     }
-
-    /* Firmware Update: same "render the in-progress screen, flush it, then
-       run the blocking call" idiom as Wi-Fi scan/connect above. Each of the
-       three blocking calls transitions ota_ss itself (to RESULT/ERROR, or —
-       for do_ota_install on success — not at all, since the device reboots
-       from inside that call and this function never gets to re-render). */
-    if (state->section_open &&
-        state->selected_section == JPP_SETTINGS_SECTION_OTA &&
-        state->ota_ss == JPP_OTA_SS_CHECKING &&
-        state->ota_check_pending) {
-        state->ota_check_pending = false;
-        if (deps->do_ota_check) { deps->do_ota_check(state); }
-        state->ota_ss = JPP_OTA_SS_RESULT;
-        state->ota_result_cursor = 0u;
-        cls();
-        render_ota(state);
-        ssd1306_flush();
-    }
-
-    if (state->section_open &&
-        state->selected_section == JPP_SETTINGS_SECTION_OTA &&
-        state->ota_ss == JPP_OTA_SS_DOWNLOADING &&
-        state->ota_download_pending) {
-        state->ota_download_pending = false;
-        if (deps->do_ota_download) { deps->do_ota_download(state); }
-        if (state->ota_staged_path[0] != '\0') {
-            state->ota_progress_pct   = 0u;
-            state->ota_ss             = JPP_OTA_SS_INSTALLING;
-            state->ota_install_pending = true;
-        } else {
-            state->ota_ss = JPP_OTA_SS_ERROR;
-        }
-        cls();
-        render_ota(state);
-        ssd1306_flush();
-    }
-
-    if (state->section_open &&
-        state->selected_section == JPP_SETTINGS_SECTION_OTA &&
-        state->ota_ss == JPP_OTA_SS_INSTALLING &&
-        state->ota_install_pending) {
-        state->ota_install_pending = false;
-        if (deps->do_ota_install) { deps->do_ota_install(state); }
-        /* Reached only on failure — do_ota_install reboots the device on
-           success and this line never runs. */
-        state->ota_ss = JPP_OTA_SS_ERROR;
-        cls();
-        render_ota(state);
-        ssd1306_flush();
-    }
 }
 
 /* ---- Action handlers ---------------------------------------------------- */
@@ -1334,17 +969,6 @@ static bool handle_top_level(jpp_settings_state_t *state,
         state->backup_ss     = JPP_BACKUP_SS_MAIN;
         state->wifi_ss = JPP_WIFI_SS_MAIN;
         state->time_ss = JPP_TIME_SS_MAIN;
-        /* Firmware Update: always reopen on the toggles/"Check now" screen,
-           never mid-flow — there is no in-progress check/download/install to
-           resume across a section close, and stale ota_candidate/
-           ota_error_msg from a previous visit should not carry over. */
-        if (state->selected_section == JPP_SETTINGS_SECTION_OTA) {
-            state->ota_ss          = JPP_OTA_SS_MAIN;
-            state->ota_main_cursor = 0u;
-            if (deps && deps->do_ota_sync_auto_check) {
-                deps->do_ota_sync_auto_check(state);
-            }
-        }
         /* Initialise Device Info subscreen state on open. */
         if (state->selected_section == JPP_SETTINGS_SECTION_DEVICE_INFO) {
             state->lrv_ss = JPP_LRV_SS_MAIN;
@@ -1855,8 +1479,6 @@ bool jpp_settings_screen_handle_action(jpp_settings_state_t *state,
         close_section = handle_username(state, deps, action); break;
     case JPP_SETTINGS_SECTION_DUMMY_MODE:
         close_section = handle_dummy_mode(state, deps, action); break;
-    case JPP_SETTINGS_SECTION_OTA:
-        close_section = handle_ota(state, deps, action); break;
     case JPP_SETTINGS_SECTION_ABOUT:
         close_section = (action == JPP_UI_ACTION_BACK || action == JPP_UI_ACTION_OK); break;
     default:
