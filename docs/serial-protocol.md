@@ -163,7 +163,7 @@ Returns Limited Run Verification data for the certificate verification flow. Req
 | Host → device | — |
 | Device → host | `[cert: NUL-terminated]` `[cert_sig: 64 B]` `[device_pubkey: 32 B]` `[challenge: NUL-terminated]` `[resp_sig: 64 B]` |
 
-**Challenge format:** `{username}|{YYYY-MM-DDTHH:MM:SSZ}` where `username` is taken from the device's stored user name and the timestamp is the device RTC at the moment of the request.
+**Challenge format:** `{username}|{YYYY-MM-DDTHH:MM:SSZ}` where `username` is taken from the device's stored user name and the timestamp is the device RTC reading at the moment of the request, converted to UTC (the RTC keeps local time; the configured timezone offset is subtracted) so the trailing `Z` is accurate.
 
 `resp_sig` is a 64-byte raw Ed25519 signature of the challenge bytes using the device's private key.
 

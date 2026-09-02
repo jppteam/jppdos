@@ -89,12 +89,15 @@ jpp_lrv_result_t jpp_lrv_get_run_size(uint16_t *out_run_size);
  *   "{username}|{YYYY-MM-DDTHH:MM:SSZ}"
  * username comes from NVS jpp_user/username (empty when unset).  The timestamp
  * is read from `rtc`; if rtc is NULL or unreadable the epoch placeholder
- * "1970-01-01T00:00:00Z" is used.  Every challenge producer (settings verify,
- * serial manager, HTTP verification server) must use this builder so the
+ * "1970-01-01T00:00:00Z" is used.  The RTC holds local wall-clock time, so the
+ * builder converts it to UTC (subtracting the NVS jpp_time/tz_h offset) before
+ * emitting the "Z"-suffixed timestamp.  Every challenge producer (settings
+ * verify, serial manager, HTTP verification server) must use this builder so the
  * signed bytes match what the verification service reconstructs.
  *
  * Optional out-parameters (any may be NULL): out_username receives the raw
- * username, out_dt/out_has_time the datetime used for the timestamp.
+ * username, out_dt/out_has_time the local datetime read from the RTC (not the
+ * UTC-adjusted value that goes into the challenge).
  */
 void jpp_lrv_build_challenge(jpp_rtc_state_t *rtc,
                               char *out, size_t out_len,
