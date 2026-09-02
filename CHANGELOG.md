@@ -19,6 +19,16 @@ each build, not an API diff.
   fill 80 KB will not load on v1.1, and there is no way to say "needs 80 KB" in
   a manifest.
 
+### Device UI
+
+- **The first-boot welcome screens now show the time and battery level.** The
+  bottom row of "Welcome to J++Device!" — both the opening screen and the
+  "Connect to Wi-Fi now?" one after it — carries the current clock on the left
+  and the battery percentage on the right, so you can see the device's state
+  before you have reached the launcher. The clock ticks live while you sit on
+  either screen. A unit with no RTC fitted (and no time synced yet) shows
+  `--:--`, and the battery figure is omitted if the reading failed.
+
 ### File transfer & device verification
 
 - **WebDAV transfers are faster and no longer fight the Wi-Fi radio for
