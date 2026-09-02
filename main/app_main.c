@@ -1280,10 +1280,32 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     /* Load persisted username. */
     load_username(&settings_state);
 
+    /* Initial RTC and battery reads.  With no DS1307 fitted (hw_attached ==
+       false) or a failed read the time is unknown, so seed the status clock
+       with "--:--"; likewise an invalid ADC read leaves the battery unknown
+       (-1).  The per-second/5 s ticks in the loop below keep both in sync (and
+       pick up an NTP sync later) — this seeds them beforehand because the
+       onboarding flow blocks the loop and shows both on its status line. */
+    {
+        char time_buf[JPP_UI_STATUS_TIME_LEN];
+        if (rtc_state != NULL && rtc_state->hw_attached &&
+            jpp_rtc_hw_read(rtc_state) == JPP_RTC_STATUS_OK) {
+            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
+                     rtc_state->datetime.hour, rtc_state->datetime.minute);
+        } else {
+            snprintf(time_buf, sizeof(time_buf), "--:--");
+        }
+        xSemaphoreTake(s_kpad_ctx.adc_mutex, portMAX_DELAY);
+        jpp_battery_read(adc, &bat_cfg, &bat_state);
+        xSemaphoreGive(s_kpad_ctx.adc_mutex);
+        jpp_ui_shell_set_status(shell, time_buf,
+                                bat_state.valid ? bat_state.percent : -1);
+    }
+
     /* First-boot welcome flow (no-op on every later boot). Runs after the
-       keypad task/action queue and LRV/username state above are ready, before
-       the launcher UI takes over. */
-    jpp_onboarding_run(shell, &settings_state);
+       keypad task/action queue, LRV/username state, and the status seed above
+       are ready, before the launcher UI takes over. */
+    jpp_onboarding_run(shell, &settings_state, rtc_state);
 
     /* Populate dummy mode state from NVS (loaded early in app_main). */
     settings_state.dummy_enabled = s_dummy_enabled;
@@ -1341,21 +1363,6 @@ static void run_main_loop(jpp_ui_shell_t *shell,
        server are themselves mutually exclusive, so "any running" is the right
        gate.  See jpp_ble_native_suspend(). */
     bool server_running_last = false;
-
-    /* Initial RTC read.  With no DS1307 fitted (hw_attached == false) or a failed
-       read the time is unknown, so seed the status clock with "--:--"; the
-       per-second tick below keeps it in sync (and picks up an NTP sync later). */
-    {
-        char time_buf[JPP_UI_STATUS_TIME_LEN];
-        if (rtc_state != NULL && rtc_state->hw_attached &&
-            jpp_rtc_hw_read(rtc_state) == JPP_RTC_STATUS_OK) {
-            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
-                     rtc_state->datetime.hour, rtc_state->datetime.minute);
-        } else {
-            snprintf(time_buf, sizeof(time_buf), "--:--");
-        }
-        jpp_ui_shell_set_status(shell, time_buf, shell->status_battery_pct);
-    }
 
     while (true) {
         /* Drain action queue */
