@@ -217,8 +217,8 @@ Return type for most SDK calls:
 | `JPP_SDK_KEY_OK_DOUBLE` | Raw OK double-click — only if claimed |
 
 !!! info "Which gesture means “back” is not your app’s business."
-    The user chooses hold or double-click in Settings → Controls, and the
-    firmware translates it to `JPP_SDK_KEY_BACK` before you see it. Take a
+    The user chooses hold or double-click in Settings → Personalisation, and
+    the firmware translates it to `JPP_SDK_KEY_BACK` before you see it. Take a
     gesture over as your own input only with
     [`jpp_sdk_claim_ok`](../sdk/app-control.md#claim_ok) — and then your
     app owns its own way out. `JPP_SDK_KEY_BACK` and the claim API need

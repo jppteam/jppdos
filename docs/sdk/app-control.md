@@ -242,7 +242,7 @@ jppsdk.claim_ok(mask: int) -> None
 | `DOUBLE` | `KEY_OK` + `KEY_OK_DOUBLE` | your own |
 | `HOLD \| DOUBLE` | `KEY_OK` + both | your own |
 
-**Notes:** The device has a user preference (Settings > Controls) for whether a long hold or a double-click means "Back". **Your app never needs to read it.** Claim nothing and you get `JPP_SDK_KEY_BACK` whenever the user asks to go back, with the firmware deciding which physical gesture that was — settings-agnostic by construction.
+**Notes:** The device has a user preference (Settings > Personalisation) for whether a long hold or a double-click means "Back". **Your app never needs to read it.** Claim nothing and you get `JPP_SDK_KEY_BACK` whenever the user asks to go back, with the firmware deciding which physical gesture that was — settings-agnostic by construction.
 
 Claim a gesture and it becomes yours: it arrives as `JPP_SDK_KEY_OK_HOLD` / `JPP_SDK_KEY_OK_DOUBLE`, `JPP_SDK_KEY_BACK` stops being delivered, and **your app is responsible for its own way out** (a pause menu, an on-screen Exit item). That is the trade for owning the gesture, and it applies whichever gesture you claimed.
 

@@ -126,11 +126,12 @@ both flags.
 ## 4. Configure it
 
 The J++Device is configured **from its own screen** — open the **Settings** app
-in the launcher. Settings covers shutdown/reboot, Wi-Fi (scan and connect),
-time (NTP, timezone), sleep timers (standby and power-off durations), sound
-(buzzer volume and startup jingle), SD card status, backup and restore of saved
-settings, factory reset, the user's name, and an About screen. You do not need
-to edit any files by hand.
+in the launcher. Settings covers shutdown/reboot, personalisation (the Back
+button action, your name, and whether the system apps sit at the top or the
+bottom of the launcher), Wi-Fi (scan and connect), time (NTP, timezone), sleep
+timers (standby and power-off durations), sound (buzzer volume and startup
+jingle), SD card status, backup and restore of saved settings, factory reset,
+and an About screen. You do not need to edit any files by hand.
 
 Under the hood, settings are stored on internal flash at `/data/settings.json`
 and are self-healing: if the file is ever missing or corrupt, the device resets

@@ -50,6 +50,62 @@ static bool jpp_ui_is_direction(const char *key, jpp_ui_action_t *action)
     return false;
 }
 
+/* ---- Launcher list geometry --------------------------------------------- */
+
+/* The launcher list occupies frame rows 2–7 (row 0 is the status bar, row 1
+   carries the header rule). */
+#define JPP_UI_LAUNCHER_FIRST_ROW 2u
+#define JPP_UI_LAUNCHER_ROWS      6u
+
+/* True when apps of this source are rendered above the other group. */
+static bool jpp_ui_source_is_first_group(const jpp_ui_shell_t *shell,
+                                          jpp_ui_app_source_t source)
+{
+    bool builtin = (source == JPP_UI_APP_SOURCE_BUILTIN);
+    return builtin != shell->system_apps_bottom;
+}
+
+/* Number of apps in the group rendered first, i.e. the index of the boundary
+   between the two groups. */
+static size_t jpp_ui_launcher_split(const jpp_ui_shell_t *shell)
+{
+    size_t n = 0u;
+    while (n < shell->app_count &&
+           jpp_ui_source_is_first_group(shell, shell->apps[n].source)) {
+        n++;
+    }
+    return n;
+}
+
+/* Index range of the app entries currently visible in the list window. */
+static void jpp_ui_launcher_window(const jpp_ui_shell_t *shell,
+                                    size_t *start, size_t *end)
+{
+    size_t s = shell->selected_app > 2u ? shell->selected_app - 2u : 0u;
+    if (shell->app_count > JPP_UI_LAUNCHER_ROWS &&
+        s + JPP_UI_LAUNCHER_ROWS > shell->app_count) {
+        s = shell->app_count - JPP_UI_LAUNCHER_ROWS;
+    }
+    *start = s;
+    *end = shell->app_count < s + JPP_UI_LAUNCHER_ROWS ? shell->app_count
+                                                       : s + JPP_UI_LAUNCHER_ROWS;
+}
+
+int jpp_ui_shell_launcher_divider_row(const jpp_ui_shell_t *shell)
+{
+    size_t split, start, end, boundary_row;
+
+    if (shell == NULL || shell->app_count == 0u) { return -1; }
+    split = jpp_ui_launcher_split(shell);
+    /* Nothing to divide when either group is empty. */
+    if (split == 0u || split >= shell->app_count) { return -1; }
+
+    jpp_ui_launcher_window(shell, &start, &end);
+    boundary_row = split - 1u;  /* last row of the group rendered first */
+    if (boundary_row < start || boundary_row >= end) { return -1; }
+    return (int)(JPP_UI_LAUNCHER_FIRST_ROW + boundary_row - start);
+}
+
 /* ---- Status bar --------------------------------------------------------- */
 
 static void jpp_ui_build_status_bar(const jpp_ui_shell_t *shell,
@@ -258,13 +314,64 @@ jpp_ui_status_t jpp_ui_shell_add_app(jpp_ui_shell_t *shell,
     }
     if (jpp_str_eq(app_id, "launcher")) { return JPP_UI_STATUS_OK; }
     if (shell->app_count >= JPP_UI_APP_LIMIT) { return JPP_UI_STATUS_CATALOG_FULL; }
-    entry = &shell->apps[shell->app_count];
+
+    /* apps[] is kept in display order, so the entry goes at the end of its own
+       group rather than the end of the list: the group rendered first is the
+       builtins, or the SD apps when system_apps_bottom is set. */
+    size_t insert = shell->app_count;
+    if (jpp_ui_source_is_first_group(shell, source)) {
+        insert = 0u;
+        while (insert < shell->app_count && shell->apps[insert].source == source) {
+            insert++;
+        }
+        for (size_t i = shell->app_count; i > insert; i--) {
+            shell->apps[i] = shell->apps[i - 1u];
+        }
+        /* Keep the cursor on the app it was already pointing at. */
+        if (shell->app_count > 0u && insert <= shell->selected_app) {
+            shell->selected_app += 1u;
+        }
+    }
+
+    entry = &shell->apps[insert];
     jpp_str_copy(entry->app_id, sizeof(entry->app_id), app_id);
     jpp_str_copy(entry->name, sizeof(entry->name),
                  name != NULL && name[0] != '\0' ? name : app_id);
     entry->source  = source;
     shell->app_count += 1u;
     return JPP_UI_STATUS_OK;
+}
+
+void jpp_ui_shell_set_system_apps_bottom(jpp_ui_shell_t *shell, bool bottom)
+{
+    jpp_ui_app_entry_t ordered[JPP_UI_APP_LIMIT];
+    char selected_id[JPP_UI_TEXT_LIMIT];
+    size_t n = 0u;
+
+    if (shell == NULL || shell->system_apps_bottom == bottom) { return; }
+    shell->system_apps_bottom = bottom;
+
+    selected_id[0] = '\0';
+    if (shell->selected_app < shell->app_count) {
+        jpp_str_copy(selected_id, sizeof(selected_id),
+                     shell->apps[shell->selected_app].app_id);
+    }
+
+    /* Stable partition: first group, then the other, each in its existing order. */
+    for (size_t pass = 0u; pass < 2u; pass++) {
+        for (size_t i = 0u; i < shell->app_count; i++) {
+            bool first = jpp_ui_source_is_first_group(shell, shell->apps[i].source);
+            if (first == (pass == 0u)) { ordered[n++] = shell->apps[i]; }
+        }
+    }
+    memcpy(shell->apps, ordered, n * sizeof(ordered[0]));
+
+    for (size_t i = 0u; i < shell->app_count; i++) {
+        if (jpp_str_eq(shell->apps[i].app_id, selected_id)) {
+            shell->selected_app = i;
+            break;
+        }
+    }
 }
 
 void jpp_ui_shell_clear_sd_apps(jpp_ui_shell_t *shell)
@@ -321,14 +428,10 @@ static void jpp_ui_shell_launcher_lines(
         jpp_ui_set_line(lines, 2u, ">(no apps)");
         return;
     }
-    start = shell->selected_app > 2u ? shell->selected_app - 2u : 0u;
-    if (shell->app_count > 6u && start + 6u > shell->app_count) {
-        start = shell->app_count - 6u;
-    }
-    end = shell->app_count < start + 6u ? shell->app_count : start + 6u;
+    jpp_ui_launcher_window(shell, &start, &end);
     for (row = start; row < end; row++) {
         const jpp_ui_app_entry_t *app = &shell->apps[row];
-        size_t frame_row = 2u + row - start;
+        size_t frame_row = JPP_UI_LAUNCHER_FIRST_ROW + row - start;
         char item[JPP_UI_TEXT_LIMIT + 4u];
         (void)snprintf(item, sizeof(item), "%c%s",
                        (row == shell->selected_app) ? '>' : ' ',

@@ -280,7 +280,7 @@ jppsdk.device_status() -> dict
 ///
 
 **Returns:**
-- C: `JPP_SDK_OK`; `result` fields `battery_pct` (integer as string, `-1` if unknown), `charging` (`"1"` if charging, `"0"` if not, `"-1"` if unknown), and `username` (the device's stored user name, `Settings > User's name` — empty string if unset).
+- C: `JPP_SDK_OK`; `result` fields `battery_pct` (integer as string, `-1` if unknown), `charging` (`"1"` if charging, `"0"` if not, `"-1"` if unknown), and `username` (the device's stored user name, `Settings > Personalisation > User's name` — empty string if unset).
 - Python: `{"battery_pct": int, "charging": str, "username": str}`.
 
 ---

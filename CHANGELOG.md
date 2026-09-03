@@ -4,6 +4,26 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
+## Unreleased
+
+### Device UI
+
+- **The launcher separates the system apps from your own.** A thin rule now
+  runs under the last system app (Settings and WebDAV server), so the built-in
+  entries read as their own group instead of blending into the list of apps on
+  the SD card. It sits in the spare pixel row at the bottom of a list row, so
+  it costs no space — the launcher still shows six apps at a time.
+
+- **New "Personalisation" settings section.** It sits right below
+  Shutdown/Reboot and gathers the settings that are about how the device
+  behaves for *you*: **Back action** (moved out of the old "Controls" section
+  and renamed — still Hold or 2x Click), **User's name** (moved out of its own
+  top-level section; OK opens the keyboard), and a new **System apps** setting
+  that moves Settings and WebDAV server — and the divider with them — to the
+  **top** or the **bottom** of the launcher list. All three save the moment you
+  change them, and the launcher re-orders immediately, keeping the cursor on
+  whichever app it was on.
+
 ## v1.2 — 2026-09-03
 
 ### Apps

@@ -22,21 +22,21 @@ extern "C" {
 #endif
 
 /* ---- Version string ----------------------------------------------------- */
-#define JPPDOS_VERSION "1.2"
+#define JPPDOS_VERSION "1.3"
 
 /* ---- Settings sections -------------------------------------------------- */
 typedef enum {
     JPP_SETTINGS_SECTION_SHUTDOWN_REBOOT = 0,
+    /* Back action, user's name, system apps location */
+    JPP_SETTINGS_SECTION_PERSONALISATION,
     JPP_SETTINGS_SECTION_WIFI,
     JPP_SETTINGS_SECTION_TIME,
     JPP_SETTINGS_SECTION_SLEEP_TIMERS,
     JPP_SETTINGS_SECTION_SOUND,       /* buzzer volume, startup jingle, test */
-    JPP_SETTINGS_SECTION_CONTROLS,    /* back button gesture: Hold / Double-click */
     JPP_SETTINGS_SECTION_SD_CARD,
     JPP_SETTINGS_SECTION_BACKUP,
     JPP_SETTINGS_SECTION_FACTORY_RESET,
     JPP_SETTINGS_SECTION_DEVICE_INFO, /* hidden when no LRV data present */
-    JPP_SETTINGS_SECTION_USERNAME,    /* user's display name */
     JPP_SETTINGS_SECTION_DUMMY_MODE,  /* single-app lock; disable by holding OK on boot */
     JPP_SETTINGS_SECTION_ABOUT,
     JPP_SETTINGS_SECTION_COUNT,
@@ -123,8 +123,10 @@ typedef struct {
     uint8_t sound_volume_pct;       /* active volume: 0 / 25 / 50 / 75 / 100 */
     uint8_t sound_jingle;           /* selected startup jingle (jpp_startup_jingle_t) */
 
-    /* Controls section */
+    /* Personalisation section */
+    size_t  personalisation_cursor; /* 0 = Back action, 1 = User's name, 2 = System apps */
     uint8_t back_gesture_mode;      /* jpp_keypad_back_gesture_t: 0=Hold, 1=Double-click */
+    bool    system_apps_bottom;     /* launcher: system apps at the bottom of the list */
 
     /* Device Info / LRV section */
     bool               lrv_has_data;
@@ -135,7 +137,7 @@ typedef struct {
     bool               lrv_server_running;
     char               lrv_server_addr[28];  /* "x.x.x.x:3000\0" */
 
-    /* User's name section */
+    /* User's name (Personalisation section) */
     char               username_current[JPP_SETTINGS_USERNAME_MAX];
 
     /* Dummy Mode section */
@@ -177,8 +179,11 @@ typedef struct {
        The new jingle is played immediately as a preview. */
     void (*do_jingle_change)(uint8_t jingle);
     /* Called when the user changes the Back button gesture (Hold/Double-click
-       in the Controls section). Applies live and persists to NVS. */
+       in the Personalisation section). Applies live and persists to NVS. */
     void (*do_back_gesture_change)(uint8_t mode);
+    /* Called when the user moves the system apps to the top or bottom of the
+       launcher list. Re-orders the shell catalogue live and persists to NVS. */
+    void (*do_system_apps_pos_change)(bool bottom);
 
     /* Backup all settings (settings.json + NVS) to the SD card.
        Writes a human-readable result into state->backup_result_msg on return. */
@@ -195,7 +200,7 @@ typedef struct {
     /* LRV: stop the HTTP verification server if running. */
     void (*do_lrv_server_stop)(void);
 
-    /* User's name: persist the new username.  Also populates
+    /* User's name (Personalisation): persist the new username.  Also populates
        state->username_current with the saved value. */
     void (*do_username_save)(jpp_settings_state_t *state, const char *username);
 
