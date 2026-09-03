@@ -319,7 +319,7 @@ static int handle_key(jpp_sdk_key_event_t key)
         switch (key) {
         case JPP_SDK_KEY_LEFT:  try_move(-1); break;
         case JPP_SDK_KEY_RIGHT: try_move(1);  break;
-        case JPP_SDK_KEY_UP:    try_rotate(); break;
+        case JPP_SDK_KEY_UP:    hard_drop(); break;
         case JPP_SDK_KEY_DOWN:  soft_drop();  break;
         case JPP_SDK_KEY_OK: try_rotate(); break;
         default: break;
