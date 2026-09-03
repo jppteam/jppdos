@@ -1,0 +1,76 @@
+# =============================================================================
+# Keeps a default-branch-scoped actions/cache entry warm for the espressif/idf
+# image release.yml's build job runs its toolchain steps in.
+#
+# Why this workflow exists at all: GitHub scopes an actions/cache entry to the
+# ref that created it, plus a fallback to the repository's default branch —
+# but "tags only have access to caches created in default branch" (there is no
+# tag-to-tag fallback). release.yml only ever runs on a tag push, and tags are
+# never reused, so a cache saved *during* a release run would only ever be
+# visible to a re-run of that exact same tag (the workflow_dispatch retry
+# path), never to the next tag. Running the same pull+cache here instead, on
+# pushes to master — this repo's actual default branch, checked via git
+# remote show, independent of which branch a given tag was cut from — is what
+# makes every later tag-triggered build actually get a cache hit.
+#
+# Cheap in the steady state: once warm, this only restores the cache (a few
+# seconds) and skips the pull entirely.
+# =============================================================================
+name: cache-idf-image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      # The pinned image tag lives in release.yml's IDF_IMAGE env var; any
+      # change to it (or to this file) is exactly when the cache key changes
+      # and a fresh warm-up is needed.
+      - '.github/workflows/release.yml'
+      - '.github/workflows/cache-idf-image.yml'
+  schedule:
+    # A cache entry unused for 7+ days is evicted, and real releases are cut
+    # far less often than weekly — this keeps it accessed so it survives the
+    # gap between releases instead of going cold right when it's needed.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Read out of release.yml rather than duplicated here, so the two
+      # cannot drift — the same "single source of truth" pattern release.yml
+      # itself uses to read the mpy-cross tag from the Dockerfile.
+      - name: Resolve pinned IDF image
+        id: image
+        run: |
+          set -euo pipefail
+          IMG=$(grep -m1 '^[[:space:]]*IDF_IMAGE:' .github/workflows/release.yml \
+                | sed 's/^[[:space:]]*IDF_IMAGE:[[:space:]]*//')
+          if [ -z "$IMG" ]; then
+            echo "::error file=.github/workflows/release.yml::Could not read" \
+                 "IDF_IMAGE from the workflow's env block."
+            exit 1
+          fi
+          echo "image=$IMG" >> "$GITHUB_OUTPUT"
+          echo "Pinned image: $IMG"
+
+      # Key must match release.yml's "Cache IDF Docker image" step exactly —
+      # both resolve to "idf-docker-image-espressif/idf:v5.5.1" today.
+      - name: Cache IDF Docker image
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/idf-image.tar
+          key: idf-docker-image-${{ steps.image.outputs.image }}
+
+      - name: Pull and save image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.image.outputs.image }}"
+          docker pull "$IMG"
+          docker save "$IMG" -o "$RUNNER_TEMP/idf-image.tar"

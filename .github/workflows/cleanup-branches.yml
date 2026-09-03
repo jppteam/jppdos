@@ -1,0 +1,150 @@
+# Deletes the feature/fix branches that a full release has absorbed.
+#
+# Two placement facts worth knowing before editing this file:
+#
+#   * `workflow_run` and `workflow_dispatch` only ever fire from the repository's
+#     DEFAULT BRANCH (master). Unlike release.yml — which is tag-triggered and so
+#     runs from the tagged commit whatever branch it lives on — this workflow does
+#     nothing at all until it has been merged to master.
+#   * GitHub is the primary host and `origin` here is authoritative: this is the
+#     only branch sweep there is, and a branch deleted here is gone for good.
+#     The git.nova.tokyo mirror picks each deletion up from mirror-gitlab.yml,
+#     which pushes with --prune on the `delete` events this job raises — there
+#     is deliberately no cleanup job on the GitLab side any more.
+name: cleanup branches
+
+on:
+  # Deliberately NOT `release: [published]`. release.yml creates the release with
+  # the built-in GITHUB_TOKEN, and events raised by that token do not trigger
+  # further workflow runs — so that event would never fire for our own releases.
+  # Hooking the release workflow's completion fires either way, and still runs
+  # strictly after the release exists to be inspected.
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted, delete nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cleanup-branches
+  cancel-in-progress: false
+
+env:
+  # Kept in step with release.yml's STABLE_BRANCH: only a release cut from this
+  # branch sweeps anything, and merged-ness is measured against it.
+  STABLE_BRANCH: master
+  # Branch prefixes eligible for the sweep, as an ERE alternation.
+  SWEEP_PREFIXES: 'feature|fix'
+  # Never deleted, whatever else matches.
+  PROTECTED_BRANCHES: 'master|develop|HEAD'
+
+jobs:
+  sweep:
+    # A release that failed to build is not a release; leave its branches alone.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The full merge graph. `--merged` has nothing to test against in the
+          # default shallow clone.
+          fetch-depth: 0
+
+      - name: Decide whether this release sweeps
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          # For a tag push, workflow_run.head_branch is the tag name.
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "Manual run — sweeping what is merged into $STABLE_BRANCH."
+            echo "sweep=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # release.yml can also be dispatched by hand, in which case head_branch
+          # is a branch name and no release answers to it.
+          if ! gh release view "$TAG" --json isPrerelease,isDraft > release.json 2>/dev/null; then
+            echo "::notice::No release published for '$TAG' — nothing to sweep."
+            echo "sweep=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PRERELEASE=$(jq -r .isPrerelease release.json)
+          DRAFT=$(jq -r .isDraft release.json)
+
+          # The published release's own flag is the authority, so the channel
+          # rules live in exactly one place (release.yml) rather than being
+          # re-derived — and differently — here.
+          if [ "$PRERELEASE" = "true" ] || [ "$DRAFT" = "true" ]; then
+            echo "$TAG is a pre-release/draft — leaving branches alone."
+            echo "sweep=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG is a full release — sweeping."
+            echo "sweep=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Delete merged branches
+        if: steps.gate.outputs.sweep == 'true'
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+
+          # Merged-ness, not the name pattern, is what authorises a deletion: an
+          # unmerged branch (a reverted feature; a squash- or rebase-merged one,
+          # which --merged cannot see) is left alone rather than destroyed.
+          mapfile -t merged < <(
+            git for-each-ref --format='%(refname:strip=3)' \
+                --merged "origin/$STABLE_BRANCH" refs/remotes/origin
+          )
+
+          doomed=()
+          for br in "${merged[@]}"; do
+            if [[ ! "$br" =~ ^($SWEEP_PREFIXES)/ ]]; then
+              continue
+            fi
+            if [[ "$br" =~ ^($PROTECTED_BRANCHES)$ ]]; then
+              continue
+            fi
+            doomed+=("$br")
+          done
+
+          if [ ${#doomed[@]} -eq 0 ]; then
+            echo "Nothing merged into $STABLE_BRANCH left to sweep."
+            echo "Nothing to delete." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "### Merged into \`$STABLE_BRANCH\`"
+            echo
+            for br in "${doomed[@]}"; do
+              echo "- \`$br\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN — would delete: ${doomed[*]}"
+            printf '\n_Dry run — nothing was deleted._\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Deleting: ${doomed[*]}"
+          git push origin --delete "${doomed[@]}"

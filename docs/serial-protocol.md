@@ -57,6 +57,35 @@ Every message — in both directions — is wrapped in the same envelope:
 
 ---
 
+## Device-initiated events
+
+The device can also send a frame the host never asked for — currently just to
+announce that a session ended without a `SESSION_END` command. It reuses the
+response shape with one reserved value standing in for `SEQ`:
+
+```
+[SEQ    1 B]   always 0xFF — a value the host must never assign to a command
+[EVENT  1 B]   event code (see below)
+[BODY   …  ]   event-specific body
+```
+
+`0xFF` is not a valid response `SEQ` for anything a host sent, so a frame
+carrying it is unambiguously an event, not a reply — check `SEQ` first, before
+looking at the second byte. A host implementation must reserve `0xFF` on its
+own side too (skip it when assigning sequence numbers to outgoing commands) so
+a real response can never coincidentally collide with it; `scripts/jppd_upload.py`'s
+`_next_seq()` does this.
+
+| Event | Code | Body | Meaning |
+|-------|------|------|---------|
+| `SESSION_ENDED` | `0x01` | — | The device closed the session without a `SESSION_END` command — the user held **OK** on the device. Any command already in flight will fail with `ERR_NO_SESSION`; a new session needs a fresh `SESSION_START`. |
+
+An event can arrive at any point while a session is open, including between a
+command and its response. A host implementation should treat any frame whose
+`SEQ` is `0xFF` as an event first, regardless of what it was waiting for.
+
+---
+
 !!! danger "Every session needs physical consent."
     `SESSION_START` puts a Deny/Allow dialog on the device's OLED and blocks
     until someone presses a button. There is no way for a host tool to open a
@@ -70,7 +99,7 @@ A host must open a session before issuing any command other than `SESSION_START`
 2. The device displays an OLED consent dialog (**Allow / Deny**) and plays a notification chime. The host blocks until the user responds.
 3. If the user allows, `SESSION_START` returns `OK` and commands may flow.
 4. If the user denies, `SESSION_START` returns `ERR_DENIED`. No session is opened.
-5. The host sends `SESSION_END` when done, or the session times out after **30 seconds** of inactivity.
+5. The host sends `SESSION_END` when done, the session times out after **30 seconds** of inactivity, or the user ends it from the device by holding **OK** — which also sends a `SESSION_ENDED` [event](#device-initiated-events) so the host doesn't have to find out from a failed command or a timeout. Any valid command resets the inactivity timer, including the no-op `KEEPALIVE`, which exists for a host that has nothing else to send during a long idle stretch.
 
 **Mutual exclusion:**
 - A session cannot be opened while an SD app is running (`ERR_APP_RUNNING`).
@@ -134,7 +163,7 @@ Returns Limited Run Verification data for the certificate verification flow. Req
 | Host → device | — |
 | Device → host | `[cert: NUL-terminated]` `[cert_sig: 64 B]` `[device_pubkey: 32 B]` `[challenge: NUL-terminated]` `[resp_sig: 64 B]` |
 
-**Challenge format:** `{username}|{YYYY-MM-DDTHH:MM:SSZ}` where `username` is taken from the device's stored user name and the timestamp is the device RTC at the moment of the request.
+**Challenge format:** `{username}|{YYYY-MM-DDTHH:MM:SSZ}` where `username` is taken from the device's stored user name and the timestamp is the device RTC reading at the moment of the request, converted to UTC (the RTC keeps local time; the configured timezone offset is subtracted) so the trailing `Z` is accurate.
 
 `resp_sig` is a 64-byte raw Ed25519 signature of the challenge bytes using the device's private key.
 
@@ -150,6 +179,22 @@ Sets the device's RTC (in-RAM state, and the DS1307 hardware if one is attached)
 | Device → host | — |
 
 `weekday` is `0`–`6`; the firmware does not interpret its meaning beyond storing it. Returns `ERR_INVALID` if the body is not exactly 8 bytes or the fields fail range validation (year ≥ 2000, month 1–12, day 1–31, hour 0–23, minute/second 0–59).
+
+---
+
+### 0x05 — KEEPALIVE
+
+A no-op the host can send to reset the session's inactivity timeout without
+doing anything else. Use it during a stretch where the host has no other
+command to send — waiting on user input, redrawing a UI — and would
+otherwise let the session lapse after 30 seconds. Any valid command already
+resets the timeout; `KEEPALIVE` just exists for when there's nothing else to
+say.
+
+| Direction | Body |
+|-----------|------|
+| Host → device | — |
+| Device → host | — |
 
 ---
 

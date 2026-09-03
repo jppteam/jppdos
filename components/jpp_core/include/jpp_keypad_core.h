@@ -16,7 +16,7 @@ extern "C" {
 #define JPP_KEYPAD_DEFAULT_REPEAT_INTERVAL_MS 500
 #define JPP_KEYPAD_DEFAULT_DOUBLE_CLICK_MS    300
 
-/* Which physical CENTER gesture the user has chosen to mean "Back".
+/* Which physical OK gesture the user has chosen to mean "Back".
    This is a *policy* type: the detector below never reads it. It is owned by
    the settings layer and resolved into a Back action by keypad_task in
    main/app_main.c, which is the only place that knows both the user
@@ -31,9 +31,9 @@ typedef enum {
     JPP_KEYPAD_KIND_PRESS,
     JPP_KEYPAD_KIND_RELEASE,
     JPP_KEYPAD_KIND_REPEAT,
-    JPP_KEYPAD_KIND_CENTER_SHORT,
-    JPP_KEYPAD_KIND_CENTER_LONG,
-    JPP_KEYPAD_KIND_CENTER_DOUBLE,
+    JPP_KEYPAD_KIND_OK_SHORT,
+    JPP_KEYPAD_KIND_OK_LONG,
+    JPP_KEYPAD_KIND_OK_DOUBLE,
 } jpp_keypad_event_kind_t;
 
 typedef struct {
@@ -53,10 +53,10 @@ typedef struct {
     bool repeat_enabled;
     int repeat_delay_ms;
     int repeat_interval_ms;
-    /* When set, a short CENTER click is withheld for double_click_ms so a
-       second click can be reported as CENTER_DOUBLE instead. When clear,
-       CENTER_SHORT is emitted the moment the button is released and
-       CENTER_DOUBLE never fires. This is the only latency knob: pay for
+    /* When set, a short OK click is withheld for double_click_ms so a
+       second click can be reported as OK_DOUBLE instead. When clear,
+       OK_SHORT is emitted the moment the button is released and
+       OK_DOUBLE never fires. This is the only latency knob: pay for
        double-click discrimination exactly when something needs it. */
     bool detect_double_click;
     int double_click_ms;
@@ -87,7 +87,7 @@ typedef struct {
     int candidate_count;
     int press_started_ms;
     int last_repeat_ms;
-    bool center_long_emitted;
+    bool ok_long_emitted;
     size_t sample_index;
     /* A deferred short click waiting to see if a second click follows within
        double_click_ms. Survives across the idle gap between two separate

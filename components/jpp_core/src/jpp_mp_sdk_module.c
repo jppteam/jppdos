@@ -13,6 +13,7 @@
 #include "../include/jpp_mp_sdk_module.h"
 #include "../include/jpp_sdk_bridge.h"
 #include "../include/jpp_buzzer_core.h"
+#include "jpp_crypto_core.h"
 
 /* STATIC was removed from MicroPython v1.20+; define it here for jpp_core usage. */
 #define STATIC static
@@ -137,6 +138,20 @@ STATIC mp_obj_t mp_sdk_log(mp_obj_t event_obj)
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_log_obj, mp_sdk_log);
+
+/* request_cap(cap) — proactively raise the consent prompt for one declared
+ * capability. Returns None when granted; raises SdkPermissionError when the
+ * user declined (a normal outcome — catch it and degrade). */
+STATIC mp_obj_t mp_sdk_request_cap(mp_obj_t cap_obj)
+{
+    const char *cap = mp_obj_str_get_str(cap_obj);
+    jpp_sdk_status_t st = jpp_sdk_request_cap(get_ctx(), cap);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_request_cap_obj, mp_sdk_request_cap);
 
 /* -------------------------------------------------------------------------- */
 /* Device                                                                      */
@@ -364,20 +379,20 @@ STATIC mp_obj_t mp_sdk_wait_key(mp_obj_t timeout_obj)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_wait_key_obj, mp_sdk_wait_key);
 
-/* claim_center(mask) → None */
-STATIC mp_obj_t mp_sdk_claim_center(mp_obj_t mask_obj)
+/* claim_ok(mask) → None */
+STATIC mp_obj_t mp_sdk_claim_ok(mp_obj_t mask_obj)
 {
     mp_int_t mask = mp_obj_get_int(mask_obj);
     if (mask < 0 || mask > 0xFF) {
         raise_sdk_error(JPP_SDK_STATUS_INVALID_ARGUMENT, NULL);
     }
-    jpp_sdk_status_t st = jpp_sdk_claim_center(get_ctx(), (uint8_t)mask);
+    jpp_sdk_status_t st = jpp_sdk_claim_ok(get_ctx(), (uint8_t)mask);
     if (st != JPP_SDK_STATUS_OK) {
         raise_sdk_error(st, NULL);
     }
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_claim_center_obj, mp_sdk_claim_center);
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_claim_ok_obj, mp_sdk_claim_ok);
 
 /* -------------------------------------------------------------------------- */
 /* BLE — scan  (requires: ble.scan)                                           */
@@ -450,6 +465,20 @@ STATIC mp_obj_t mp_sdk_ble_advertise_stop(void)
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_ble_advertise_stop_obj, mp_sdk_ble_advertise_stop);
+
+/* ble_set_connectable(connectable) — connectable vs. non-connectable mode for
+ * subsequent ble_advertise_start() calls. Default is non-connectable. */
+STATIC mp_obj_t mp_sdk_ble_set_connectable(mp_obj_t on_obj)
+{
+    jpp_broker_result_t result;
+    bool connectable = mp_obj_is_true(on_obj);
+    jpp_sdk_status_t st = jpp_sdk_ble_set_connectable(get_ctx(), connectable, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_ble_set_connectable_obj, mp_sdk_ble_set_connectable);
 
 /* -------------------------------------------------------------------------- */
 /* ESP-NOW  (requires: esp_now)                                               */
@@ -591,6 +620,60 @@ STATIC mp_obj_t mp_sdk_ble_service_unregister(void)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_ble_service_unregister_obj, mp_sdk_ble_service_unregister);
 
+/* ble_host_set_value(data) — publish up to JPP_SDK_BLE_HOST_RX_MAX bytes on the
+ * host TX characteristic for a connected peer to read. */
+STATIC mp_obj_t mp_sdk_ble_host_set_value(mp_obj_t data_obj)
+{
+    jpp_broker_result_t result;
+    mp_buffer_info_t buf;
+    mp_get_buffer_raise(data_obj, &buf, MP_BUFFER_READ);
+    if (buf.len > JPP_SDK_BLE_HOST_RX_MAX) {
+        mp_raise_ValueError(MP_ERROR_TEXT("data too long"));
+    }
+    jpp_sdk_status_t st = jpp_sdk_ble_host_set_value(
+        get_ctx(), (const uint8_t *)buf.buf, buf.len, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_ble_host_set_value_obj, mp_sdk_ble_host_set_value);
+
+/* ble_host_wait_write(timeout_ms) -> bytes | None
+ * Blocks until a peer writes the host RX characteristic (timeout_ms = 0 waits
+ * forever); returns None if the timeout elapsed with no write. */
+STATIC mp_obj_t mp_sdk_ble_host_wait_write(mp_obj_t timeout_obj)
+{
+    jpp_broker_result_t result;
+    uint32_t timeout_ms = (uint32_t)mp_obj_get_int(timeout_obj);
+
+    uint8_t *buf = m_new(uint8_t, JPP_SDK_BLE_HOST_RX_MAX);
+    size_t len = JPP_SDK_BLE_HOST_RX_MAX;
+    bool received = false;
+    jpp_sdk_status_t st = jpp_sdk_ble_host_wait_write(
+        get_ctx(), buf, &len, timeout_ms, &received, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        m_del(uint8_t, buf, JPP_SDK_BLE_HOST_RX_MAX);
+        raise_sdk_error(st, &result);
+    }
+    mp_obj_t out = received ? mp_obj_new_bytes(buf, len) : mp_const_none;
+    m_del(uint8_t, buf, JPP_SDK_BLE_HOST_RX_MAX);
+    return out;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_ble_host_wait_write_obj, mp_sdk_ble_host_wait_write);
+
+/* ble_host_clear() — discard any pending/buffered RX write. */
+STATIC mp_obj_t mp_sdk_ble_host_clear(void)
+{
+    jpp_broker_result_t result;
+    jpp_sdk_status_t st = jpp_sdk_ble_host_clear(get_ctx(), &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_ble_host_clear_obj, mp_sdk_ble_host_clear);
+
 /* -------------------------------------------------------------------------- */
 /* Background tasks  (requires: background.register)                          */
 /* -------------------------------------------------------------------------- */
@@ -682,6 +765,27 @@ STATIC mp_obj_t mp_sdk_net_accept(mp_obj_t timeout_obj)
     return mp_obj_new_int(sock);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_net_accept_obj, mp_sdk_net_accept);
+
+/* net_connect(host, port, timeout_ms) -> int socket id  (requires network.connect)
+ * The returned socket is used with the same net_recv / net_send / net_close. */
+STATIC mp_obj_t mp_sdk_net_connect(mp_obj_t host_obj, mp_obj_t port_obj, mp_obj_t timeout_obj)
+{
+    jpp_broker_result_t result;
+    const char *host = mp_obj_str_get_str(host_obj);
+    mp_int_t port = mp_obj_get_int(port_obj);
+    if (port <= 0 || port > 65535) {
+        mp_raise_ValueError(MP_ERROR_TEXT("port must be 1-65535"));
+    }
+    uint32_t timeout_ms = (uint32_t)mp_obj_get_int(timeout_obj);
+    int sock = -1;
+    jpp_sdk_status_t st = jpp_sdk_net_connect(get_ctx(), host, (uint16_t)port,
+                                              timeout_ms, &sock, &result);
+    if (st != JPP_SDK_STATUS_OK || !result.ok) {
+        raise_sdk_error(st, &result);
+    }
+    return mp_obj_new_int(sock);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_net_connect_obj, mp_sdk_net_connect);
 
 /* net_recv(sock, max_len, timeout_ms) → bytes (b"" on timeout or peer close) */
 STATIC mp_obj_t mp_sdk_net_recv(mp_obj_t sock_obj, mp_obj_t max_obj, mp_obj_t timeout_obj)
@@ -981,6 +1085,87 @@ STATIC mp_obj_t mp_sdk_input(size_t n_args, const mp_obj_t *pos_args, mp_map_t *
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mp_sdk_input_obj, 1, mp_sdk_input);
 
+/* confirm(title, lines, default_allow=True) -> bool
+ * lines — list or tuple of str, already wrapped (see wrap_text). */
+STATIC mp_obj_t mp_sdk_confirm(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+{
+    enum { ARG_title, ARG_lines, ARG_default_allow };
+    static const mp_arg_t allowed[] = {
+        { MP_QSTR_title,         MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_lines,         MP_ARG_REQUIRED | MP_ARG_OBJ, {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_default_allow, MP_ARG_BOOL,                  {.u_bool = true} },
+    };
+    mp_arg_val_t vals[MP_ARRAY_SIZE(allowed)];
+    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed), allowed, vals);
+
+    const char *title = mp_obj_str_get_str(vals[ARG_title].u_obj);
+
+    size_t count;
+    mp_obj_t *items;
+    mp_obj_get_array(vals[ARG_lines].u_obj, &count, &items);
+    if (count > JPP_SDK_FRAME_LINE_CAPACITY) {
+        count = JPP_SDK_FRAME_LINE_CAPACITY;
+    }
+    const char *lines[JPP_SDK_FRAME_LINE_CAPACITY];
+    for (size_t i = 0u; i < count; i++) {
+        lines[i] = mp_obj_str_get_str(items[i]);
+    }
+
+    bool allow = false;
+    jpp_sdk_status_t st = jpp_sdk_confirm(get_ctx(), title, lines, count,
+                                          vals[ARG_default_allow].u_bool, &allow);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    return mp_obj_new_bool(allow);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_KW(mp_sdk_confirm_obj, 2, mp_sdk_confirm);
+
+/* wrap_text(text, max_lines=7) -> list[str]
+ * Ungated pure computation — word-wraps to rows of at most 21 visible chars. */
+#define MP_SDK_WRAP_LINES_MAX 32u
+STATIC mp_obj_t mp_sdk_wrap_text(size_t n_args, const mp_obj_t *args)
+{
+    const char *text = mp_obj_str_get_str(args[0]);
+    mp_int_t max_lines = (n_args >= 2) ? mp_obj_get_int(args[1])
+                                       : (mp_int_t)JPP_SDK_FRAME_LINE_CAPACITY;
+    if (max_lines <= 0 || (size_t)max_lines > MP_SDK_WRAP_LINES_MAX) {
+        mp_raise_ValueError(MP_ERROR_TEXT("max_lines must be 1-32"));
+    }
+
+    size_t bytes = (size_t)max_lines * JPP_SDK_FRAME_TEXT_MAX;
+    char (*lines)[JPP_SDK_FRAME_TEXT_MAX] =
+        (char (*)[JPP_SDK_FRAME_TEXT_MAX])m_new(char, bytes);
+    size_t used = jpp_sdk_wrap_text(text, lines, (size_t)max_lines);
+
+    mp_obj_t lst = mp_obj_new_list((mp_uint_t)used, NULL);
+    for (size_t i = 0u; i < used; i++) {
+        mp_obj_list_store(lst, mp_obj_new_int((mp_int_t)i),
+                          mp_obj_new_str(lines[i], strlen(lines[i])));
+    }
+    m_del(char, (char *)lines, bytes);
+    return lst;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_sdk_wrap_text_obj, 1, 2, mp_sdk_wrap_text);
+
+/* file_pick() -> str | None  (requires files.full)
+ * Browse /sd and pick a file; None when the user backs out. */
+STATIC mp_obj_t mp_sdk_file_pick(void)
+{
+    char path[JPP_SDK_PATH_MAX];
+    path[0] = '\0';
+    jpp_sdk_ui_result_t res = JPP_SDK_UI_BACK;
+    jpp_sdk_status_t st = jpp_sdk_file_pick(get_ctx(), path, sizeof(path), &res);
+    if (st != JPP_SDK_STATUS_OK) {
+        raise_sdk_error(st, NULL);
+    }
+    if (res == JPP_SDK_UI_BACK) {
+        return mp_const_none;
+    }
+    return mp_obj_new_str(path, strlen(path));
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_file_pick_obj, mp_sdk_file_pick);
+
 /* -------------------------------------------------------------------------- */
 /* Wakelock                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -1107,6 +1292,141 @@ STATIC mp_obj_t mp_sdk_led_off(void)
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_sdk_led_off_obj, mp_sdk_led_off);
 
 /* -------------------------------------------------------------------------- */
+/* Crypto primitives  (ungated — pure computation, no I/O)                    */
+/* -------------------------------------------------------------------------- */
+
+/* INVALID_ARG is a caller mistake (bad key/iv/length) → ValueError; anything
+   else is a backend failure → SdkError, matching raise_sdk_error's contract. */
+static NORETURN void raise_crypto_error(jpp_crypto_status_t status)
+{
+    if (status == JPP_CRYPTO_ERR_INVALID_ARG) {
+        mp_raise_ValueError(MP_ERROR_TEXT("crypto: invalid argument"));
+    }
+    mp_raise_msg(&mp_type_SdkError, MP_ERROR_TEXT("crypto: internal error"));
+}
+
+/* crypto_sha256(data) -> bytes (32) */
+STATIC mp_obj_t mp_sdk_crypto_sha256(mp_obj_t data_obj)
+{
+    mp_buffer_info_t data;
+    mp_get_buffer_raise(data_obj, &data, MP_BUFFER_READ);
+    uint8_t out[JPP_CRYPTO_SHA256_BYTES];
+    jpp_crypto_status_t st = jpp_crypto_sha256((const uint8_t *)data.buf, data.len, out);
+    if (st != JPP_CRYPTO_OK) { raise_crypto_error(st); }
+    return mp_obj_new_bytes(out, sizeof(out));
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_crypto_sha256_obj, mp_sdk_crypto_sha256);
+
+/* crypto_sha1(data) -> bytes (20) */
+STATIC mp_obj_t mp_sdk_crypto_sha1(mp_obj_t data_obj)
+{
+    mp_buffer_info_t data;
+    mp_get_buffer_raise(data_obj, &data, MP_BUFFER_READ);
+    uint8_t out[JPP_CRYPTO_SHA1_BYTES];
+    jpp_crypto_status_t st = jpp_crypto_sha1((const uint8_t *)data.buf, data.len, out);
+    if (st != JPP_CRYPTO_OK) { raise_crypto_error(st); }
+    return mp_obj_new_bytes(out, sizeof(out));
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_sdk_crypto_sha1_obj, mp_sdk_crypto_sha1);
+
+typedef jpp_crypto_status_t (*mp_sdk_aes_ige_fn_t)(
+    const uint8_t *in, size_t length,
+    const uint8_t *key, const uint8_t *iv, uint8_t *out);
+
+/* Shared body for crypto_aes256_ige_encrypt / _decrypt. Unlike the C API the
+   binding always allocates a fresh output buffer, so there is no in-place
+   aliasing case to worry about. */
+STATIC mp_obj_t mp_sdk_crypto_aes_ige(mp_sdk_aes_ige_fn_t fn, mp_obj_t data_obj,
+                                      mp_obj_t key_obj, mp_obj_t iv_obj)
+{
+    mp_buffer_info_t data, key, iv;
+    mp_get_buffer_raise(data_obj, &data, MP_BUFFER_READ);
+    mp_get_buffer_raise(key_obj, &key, MP_BUFFER_READ);
+    mp_get_buffer_raise(iv_obj, &iv, MP_BUFFER_READ);
+
+    if (key.len != JPP_CRYPTO_AES256_KEY_BYTES) {
+        mp_raise_ValueError(MP_ERROR_TEXT("key must be 32 bytes"));
+    }
+    if (iv.len != JPP_CRYPTO_AES_IGE_IV_BYTES) {
+        mp_raise_ValueError(MP_ERROR_TEXT("iv must be 32 bytes"));
+    }
+    if (data.len == 0u || (data.len % JPP_CRYPTO_AES_BLOCK_BYTES) != 0u) {
+        mp_raise_ValueError(MP_ERROR_TEXT("data must be a non-zero multiple of 16 bytes"));
+    }
+
+    uint8_t *out = m_new(uint8_t, data.len);
+    jpp_crypto_status_t st = fn((const uint8_t *)data.buf, data.len,
+                                (const uint8_t *)key.buf, (const uint8_t *)iv.buf, out);
+    if (st != JPP_CRYPTO_OK) {
+        m_del(uint8_t, out, data.len);
+        raise_crypto_error(st);
+    }
+    mp_obj_t res = mp_obj_new_bytes(out, data.len);
+    m_del(uint8_t, out, data.len);
+    return res;
+}
+
+/* crypto_aes256_ige_encrypt(data, key, iv) -> bytes */
+STATIC mp_obj_t mp_sdk_crypto_aes256_ige_encrypt(mp_obj_t data_obj, mp_obj_t key_obj, mp_obj_t iv_obj)
+{
+    return mp_sdk_crypto_aes_ige(jpp_crypto_aes256_ige_encrypt, data_obj, key_obj, iv_obj);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_crypto_aes256_ige_encrypt_obj, mp_sdk_crypto_aes256_ige_encrypt);
+
+/* crypto_aes256_ige_decrypt(data, key, iv) -> bytes */
+STATIC mp_obj_t mp_sdk_crypto_aes256_ige_decrypt(mp_obj_t data_obj, mp_obj_t key_obj, mp_obj_t iv_obj)
+{
+    return mp_sdk_crypto_aes_ige(jpp_crypto_aes256_ige_decrypt, data_obj, key_obj, iv_obj);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_crypto_aes256_ige_decrypt_obj, mp_sdk_crypto_aes256_ige_decrypt);
+
+/* Shared body for modexp / rsa_encrypt / dh_compute — all three compute
+   base^exp mod modulus and differ only in argument naming. */
+STATIC mp_obj_t mp_sdk_crypto_modexp_do(mp_obj_t base_obj, mp_obj_t exp_obj, mp_obj_t mod_obj)
+{
+    mp_buffer_info_t base, exp, mod;
+    mp_get_buffer_raise(base_obj, &base, MP_BUFFER_READ);
+    mp_get_buffer_raise(exp_obj,  &exp,  MP_BUFFER_READ);
+    mp_get_buffer_raise(mod_obj,  &mod,  MP_BUFFER_READ);
+    if (mod.len == 0u) {
+        mp_raise_ValueError(MP_ERROR_TEXT("modulus must not be empty"));
+    }
+
+    uint8_t *out = m_new(uint8_t, mod.len);
+    size_t out_len = 0u;
+    jpp_crypto_status_t st = jpp_crypto_modexp(
+        (const uint8_t *)base.buf, base.len,
+        (const uint8_t *)exp.buf,  exp.len,
+        (const uint8_t *)mod.buf,  mod.len,
+        out, &out_len);
+    if (st != JPP_CRYPTO_OK) {
+        m_del(uint8_t, out, mod.len);
+        raise_crypto_error(st);
+    }
+    mp_obj_t res = mp_obj_new_bytes(out, out_len);
+    m_del(uint8_t, out, mod.len);
+    return res;
+}
+
+/* crypto_modexp(base, exp, modulus) -> bytes (modulus-length, big-endian) */
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_crypto_modexp_obj, mp_sdk_crypto_modexp_do);
+
+/* crypto_rsa_encrypt(data, modulus, exponent) -> bytes
+   = data^exponent mod modulus. Argument order matches the C function. */
+STATIC mp_obj_t mp_sdk_crypto_rsa_encrypt(mp_obj_t data_obj, mp_obj_t mod_obj, mp_obj_t exp_obj)
+{
+    return mp_sdk_crypto_modexp_do(data_obj, exp_obj, mod_obj);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_crypto_rsa_encrypt_obj, mp_sdk_crypto_rsa_encrypt);
+
+/* crypto_dh_compute(base, exp, prime) -> bytes  = base^exp mod prime */
+STATIC mp_obj_t mp_sdk_crypto_dh_compute(mp_obj_t base_obj, mp_obj_t exp_obj, mp_obj_t prime_obj)
+{
+    return mp_sdk_crypto_modexp_do(base_obj, exp_obj, prime_obj);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_3(mp_sdk_crypto_dh_compute_obj, mp_sdk_crypto_dh_compute);
+
+/* -------------------------------------------------------------------------- */
 /* Module definition                                                           */
 /* -------------------------------------------------------------------------- */
 
@@ -1127,19 +1447,31 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_KEY_DOWN),         MP_ROM_INT(JPP_SDK_KEY_DOWN) },
     { MP_ROM_QSTR(MP_QSTR_KEY_LEFT),         MP_ROM_INT(JPP_SDK_KEY_LEFT) },
     { MP_ROM_QSTR(MP_QSTR_KEY_RIGHT),        MP_ROM_INT(JPP_SDK_KEY_RIGHT) },
-    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER),       MP_ROM_INT(JPP_SDK_KEY_CENTER) },
-    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_LONG),  MP_ROM_INT(JPP_SDK_KEY_CENTER_LONG) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_OK),       MP_ROM_INT(JPP_SDK_KEY_OK) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_OK_LONG),  MP_ROM_INT(JPP_SDK_KEY_OK_LONG) },
     { MP_ROM_QSTR(MP_QSTR_KEY_BACK),         MP_ROM_INT(JPP_SDK_KEY_BACK) },
-    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_HOLD),  MP_ROM_INT(JPP_SDK_KEY_CENTER_HOLD) },
-    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_DOUBLE), MP_ROM_INT(JPP_SDK_KEY_CENTER_DOUBLE) },
-    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_NONE),   MP_ROM_INT(JPP_SDK_CENTER_CLAIM_NONE) },
-    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_HOLD),   MP_ROM_INT(JPP_SDK_CENTER_CLAIM_HOLD) },
-    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_DOUBLE), MP_ROM_INT(JPP_SDK_CENTER_CLAIM_DOUBLE) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_OK_HOLD),  MP_ROM_INT(JPP_SDK_KEY_OK_HOLD) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_OK_DOUBLE), MP_ROM_INT(JPP_SDK_KEY_OK_DOUBLE) },
+    { MP_ROM_QSTR(MP_QSTR_OK_CLAIM_NONE),   MP_ROM_INT(JPP_SDK_OK_CLAIM_NONE) },
+    { MP_ROM_QSTR(MP_QSTR_OK_CLAIM_HOLD),   MP_ROM_INT(JPP_SDK_OK_CLAIM_HOLD) },
+    { MP_ROM_QSTR(MP_QSTR_OK_CLAIM_DOUBLE), MP_ROM_INT(JPP_SDK_OK_CLAIM_DOUBLE) },
+
+    /* Deprecated pre-rename names (5th keypad button: CENTER -> OK), same
+       values as their OK_* counterparts above — kept so .mpy files compiled
+       before the rename keep resolving without a rebuild. */
+    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER),          MP_ROM_INT(JPP_SDK_KEY_OK) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_LONG),     MP_ROM_INT(JPP_SDK_KEY_OK_LONG) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_HOLD),     MP_ROM_INT(JPP_SDK_KEY_OK_HOLD) },
+    { MP_ROM_QSTR(MP_QSTR_KEY_CENTER_DOUBLE),   MP_ROM_INT(JPP_SDK_KEY_OK_DOUBLE) },
+    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_NONE),   MP_ROM_INT(JPP_SDK_OK_CLAIM_NONE) },
+    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_HOLD),   MP_ROM_INT(JPP_SDK_OK_CLAIM_HOLD) },
+    { MP_ROM_QSTR(MP_QSTR_CENTER_CLAIM_DOUBLE), MP_ROM_INT(JPP_SDK_OK_CLAIM_DOUBLE) },
 
     /* Core */
     { MP_ROM_QSTR(MP_QSTR_set_frame),       MP_ROM_PTR(&mp_sdk_set_frame_obj) },
     { MP_ROM_QSTR(MP_QSTR_request_close),   MP_ROM_PTR(&mp_sdk_request_close_obj) },
     { MP_ROM_QSTR(MP_QSTR_log),             MP_ROM_PTR(&mp_sdk_log_obj) },
+    { MP_ROM_QSTR(MP_QSTR_request_cap),     MP_ROM_PTR(&mp_sdk_request_cap_obj) },
 
     /* Device */
     { MP_ROM_QSTR(MP_QSTR_device_status),   MP_ROM_PTR(&mp_sdk_device_status_obj) },
@@ -1166,12 +1498,18 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* Input */
     { MP_ROM_QSTR(MP_QSTR_poll_key),        MP_ROM_PTR(&mp_sdk_poll_key_obj) },
     { MP_ROM_QSTR(MP_QSTR_wait_key),        MP_ROM_PTR(&mp_sdk_wait_key_obj) },
-    { MP_ROM_QSTR(MP_QSTR_claim_center),    MP_ROM_PTR(&mp_sdk_claim_center_obj) },
+    { MP_ROM_QSTR(MP_QSTR_claim_ok),    MP_ROM_PTR(&mp_sdk_claim_ok_obj) },
+    /* Deprecated: jppsdk.claim_center, kept as an alias for .mpy files
+       compiled before the rename — same underlying function object. */
+    { MP_ROM_QSTR(MP_QSTR_claim_center), MP_ROM_PTR(&mp_sdk_claim_ok_obj) },
 
     /* High-level UI */
     { MP_ROM_QSTR(MP_QSTR_dialog),          MP_ROM_PTR(&mp_sdk_dialog_obj) },
     { MP_ROM_QSTR(MP_QSTR_list),            MP_ROM_PTR(&mp_sdk_list_obj) },
     { MP_ROM_QSTR(MP_QSTR_input),           MP_ROM_PTR(&mp_sdk_input_obj) },
+    { MP_ROM_QSTR(MP_QSTR_confirm),         MP_ROM_PTR(&mp_sdk_confirm_obj) },
+    { MP_ROM_QSTR(MP_QSTR_wrap_text),       MP_ROM_PTR(&mp_sdk_wrap_text_obj) },
+    { MP_ROM_QSTR(MP_QSTR_file_pick),       MP_ROM_PTR(&mp_sdk_file_pick_obj) },
     { MP_ROM_QSTR(MP_QSTR_INPUT_TEXT),      MP_ROM_INT(JPP_SDK_INPUT_TEXT) },
     { MP_ROM_QSTR(MP_QSTR_INPUT_NUMBER),    MP_ROM_INT(JPP_SDK_INPUT_NUMBER) },
     { MP_ROM_QSTR(MP_QSTR_INPUT_DATE),      MP_ROM_INT(JPP_SDK_INPUT_DATE) },
@@ -1183,6 +1521,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* BLE advertise */
     { MP_ROM_QSTR(MP_QSTR_ble_advertise_start),   MP_ROM_PTR(&mp_sdk_ble_advertise_start_obj) },
     { MP_ROM_QSTR(MP_QSTR_ble_advertise_stop),    MP_ROM_PTR(&mp_sdk_ble_advertise_stop_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ble_set_connectable),   MP_ROM_PTR(&mp_sdk_ble_set_connectable_obj) },
 
     /* ESP-NOW */
     { MP_ROM_QSTR(MP_QSTR_espnow_send),          MP_ROM_PTR(&mp_sdk_espnow_send_obj) },
@@ -1197,6 +1536,9 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     /* BLE GATT server */
     { MP_ROM_QSTR(MP_QSTR_ble_service_register),   MP_ROM_PTR(&mp_sdk_ble_service_register_obj) },
     { MP_ROM_QSTR(MP_QSTR_ble_service_unregister), MP_ROM_PTR(&mp_sdk_ble_service_unregister_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ble_host_set_value),     MP_ROM_PTR(&mp_sdk_ble_host_set_value_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ble_host_wait_write),    MP_ROM_PTR(&mp_sdk_ble_host_wait_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_ble_host_clear),         MP_ROM_PTR(&mp_sdk_ble_host_clear_obj) },
 
     /* Wakelock */
     { MP_ROM_QSTR(MP_QSTR_wakelock_acquire),    MP_ROM_PTR(&mp_sdk_wakelock_acquire_obj) },
@@ -1226,6 +1568,7 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_https_request),       MP_ROM_PTR(&mp_sdk_https_request_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_bind),            MP_ROM_PTR(&mp_sdk_net_bind_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_accept),          MP_ROM_PTR(&mp_sdk_net_accept_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_connect),         MP_ROM_PTR(&mp_sdk_net_connect_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_recv),            MP_ROM_PTR(&mp_sdk_net_recv_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_send),            MP_ROM_PTR(&mp_sdk_net_send_obj) },
     { MP_ROM_QSTR(MP_QSTR_net_close),           MP_ROM_PTR(&mp_sdk_net_close_obj) },
@@ -1244,6 +1587,17 @@ STATIC const mp_rom_map_elem_t jppsdk_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_kv_get),              MP_ROM_PTR(&mp_sdk_kv_get_obj) },
     { MP_ROM_QSTR(MP_QSTR_kv_set),              MP_ROM_PTR(&mp_sdk_kv_set_obj) },
     { MP_ROM_QSTR(MP_QSTR_kv_delete),           MP_ROM_PTR(&mp_sdk_kv_delete_obj) },
+
+    /* Crypto primitives */
+    { MP_ROM_QSTR(MP_QSTR_crypto_sha256), MP_ROM_PTR(&mp_sdk_crypto_sha256_obj) },
+    { MP_ROM_QSTR(MP_QSTR_crypto_sha1),   MP_ROM_PTR(&mp_sdk_crypto_sha1_obj) },
+    { MP_ROM_QSTR(MP_QSTR_crypto_aes256_ige_encrypt),
+                                          MP_ROM_PTR(&mp_sdk_crypto_aes256_ige_encrypt_obj) },
+    { MP_ROM_QSTR(MP_QSTR_crypto_aes256_ige_decrypt),
+                                          MP_ROM_PTR(&mp_sdk_crypto_aes256_ige_decrypt_obj) },
+    { MP_ROM_QSTR(MP_QSTR_crypto_modexp), MP_ROM_PTR(&mp_sdk_crypto_modexp_obj) },
+    { MP_ROM_QSTR(MP_QSTR_crypto_rsa_encrypt), MP_ROM_PTR(&mp_sdk_crypto_rsa_encrypt_obj) },
+    { MP_ROM_QSTR(MP_QSTR_crypto_dh_compute),  MP_ROM_PTR(&mp_sdk_crypto_dh_compute_obj) },
 };
 STATIC MP_DEFINE_CONST_DICT(jppsdk_module_globals, jppsdk_module_globals_table);
 

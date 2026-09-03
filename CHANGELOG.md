@@ -4,6 +4,189 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
+## Unreleased
+
+### Apps
+
+- **Apps get more room: the workspace grew from 64 KB to 80 KB.** That is the
+  single block a running app lives in — program code for a C app, or the
+  garbage-collected heap for a MicroPython one. Apps that were bumping against
+  the ceiling now have 16 KB more, and a hub-plus-modules app can keep a bigger
+  hub resident. This costs the device 16 KB of general-purpose memory, so it is
+  a trade rather than free headroom.
+
+  Note it is a property of the firmware, not of the SDK level: an app built to
+  fill 80 KB will not load on v1.1, and there is no way to say "needs 80 KB" in
+  a manifest.
+
+- **Tetris: Up now hard-drops in the upright layout too.** In the "Tetris:
+  Normal" (non-rotated) layout, Up was mistakenly bound to rotate — the same
+  as OK — leaving no hard-drop control. Up now hard-drops in both layouts, so
+  the controls match: OK rotates, Up hard-drops, Down soft-drops, Left/Right
+  move. ([#3](https://github.com/jppteam/jppdos/pull/3))
+
+### Device UI
+
+- **The first-boot welcome screens now show the time and battery level.** The
+  bottom row of "Welcome to J++Device!" — both the opening screen and the
+  "Connect to Wi-Fi now?" one after it — carries the current clock on the left
+  and the battery percentage on the right, so you can see the device's state
+  before you have reached the launcher. The clock ticks live while you sit on
+  either screen. A unit with no RTC fitted (and no time synced yet) shows
+  `--:--`, and the battery figure is omitted if the reading failed.
+
+### File transfer & device verification
+
+- **WebDAV transfers are faster and no longer fight the Wi-Fi radio for
+  memory.** The WebDAV server and the Device Info verification server used to
+  run on ESP-IDF's stock HTTP server, which takes its working memory — task
+  stack, connection state, buffers — from the same pool the Wi-Fi driver draws
+  packet buffers from. On a device with one small block of RAM shared by
+  everything, a big file transfer could starve the radio and wedge the
+  connection mid-copy. Both servers now run in the same workspace the device
+  reserves for running apps, which is otherwise sitting idle while you are on
+  the WebDAV screen. Nothing is taken from the Wi-Fi side any more, and the
+  file buffer grew from 4 KB to 32 KB, so copies do far fewer SD-card and
+  network round trips.
+
+- **The servers behave like apps now: they run in front, not behind.** Backing
+  out of the WebDAV screen stops the server instead of leaving it quietly
+  serving your SD card. Consequently the device will not sleep while either
+  server is up, and starting a server while an app is running (or vice versa)
+  is now impossible rather than merely discouraged.
+
+- WebDAV also gained proper `HEAD` support, which some file managers use to
+  check a file before downloading it.
+
+- **The "Open Certificate Page" link on the Device Info verification screen now
+  points at a real, self-contained verification page**
+  (`https://jppdevice.by.m4l3vi.ch/verify`) instead of a placeholder domain.
+  The link now carries the certificate and its manufacturer signature, not
+  just the response signature, so the page can check authenticity on its own
+  — it never needs to reach the device over the network to verify it.
+
+### Serial protocol (JPPD-SMP)
+
+- **The device now tells a connected PC when a management session ends
+  because you held OK, instead of leaving it to find out the hard way.**
+  Holding OK to end a session already closed it on the device; a host tool
+  previously only learned about that from its next command failing
+  (`ERR_NO_SESSION`) or a 30-second timeout. The device now sends an
+  unsolicited notification the moment the session closes, so a host tool that
+  is idling — waiting on the user, updating a UI — finds out immediately.
+  `scripts/jppd_upload.py` (and the manufacturing scripts built on it) already
+  understand it. See the [serial protocol reference](docs/serial-protocol.md#device-initiated-events)
+  for the wire format if you're writing your own host tooling.
+
+- **A management session no longer has to end just because nobody sent
+  anything for 30 seconds.** New no-op `KEEPALIVE` command: a host tool that
+  is idling — waiting on a user prompt, redrawing a UI — can send it to reset
+  the session's inactivity timer without doing any actual work. Any real
+  command already reset that timer; this just gives a host something to send
+  when it has nothing else to say. See
+  [0x05 — KEEPALIVE](docs/serial-protocol.md#0x05--keepalive) in the serial
+  protocol reference. `scripts/jppd_upload.py`'s `_SMPSession.keepalive()` is
+  the reference implementation.
+
+### Build & release
+
+- Pushing a version tag now builds the firmware and publishes a GitHub Release
+  with flashable images attached (`.github/workflows/release.yml`). Release
+  notes are taken from this file's section for that version.
+
+- Tags cut from `develop` publish as **pre-releases**, tags cut from `master`
+  as full releases. The branch is worked out from which one contains the tagged
+  commit, since a tag push carries no branch of its own; anything reachable
+  from neither is treated as a pre-release. `JPPDOS_VERSION` must match the tag
+  for a stable release and is only warned about for a pre-release.
+
+- Fixed the documented way to install `mpy-cross` for a host-side MicroPython
+  build (needed by the release build itself, since `testapp_mp` hard-fails
+  without it). The docs and the build's own error message said
+  `pip install mpy-cross==1.28.0`, but PyPI has never published that exact
+  version — the command could not have worked for anyone. Both now point at
+  the prerelease build that emits identical bytecode, or building from source
+  the way the project's Docker image and CI already do.
+
+- **The firmware now targets the flash chip these boards actually have.**
+  JPPDOS had been built for a 2 MB flash size — a v1.0-RTM-era correction that
+  itself turned out to be wrong — but the real chip on production units is
+  4 MB. The build now targets 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB`), and
+  `partitions.csv` restores the margin the 2 MB layout had traded away:
+  `data_fs`/`runtime_fs` are back to their original 256 KB each, the
+  `coredump` partition dropped during that squeeze is back too, and `factory`
+  grows to 3.4 MB of app headroom (from 1.9 MB) — roughly 1.6 MB (48%) free
+  right after the switch, up from single-digit percent free under the old
+  layout. `-Os` stays on regardless: it's no longer required to fit, but a
+  smaller, faster-flashing image has no downside. Because a production batch
+  is not guaranteed to be one uniform flash size, `scripts/prepare_device.py`
+  now checks each unit's actual flash size against the image before every
+  flash and refuses on a mismatch, rather than risk writing a 4 MB partition
+  table onto a genuine 2 MB unit.
+
+### App SDK & platform
+
+- **A documented SDK call that never actually worked now works.** `wrap_text`,
+  the helper that splits a long string into display-width lines, has been listed
+  in the App Developer Guide as a native-app call since v1.0-RTM — but it was
+  missing from the table the firmware uses to hand functions to apps, so any
+  native app that called it was refused at launch with `UNRESOLVED_SYM`. It now
+  loads and runs. Nothing about the function itself changed; it simply became
+  reachable. This is the same defect that affected the `confirm` dialog helper
+  in v1.1.
+
+  This raises the App SDK to level **3**. Apps that use `wrap_text` should
+  declare `sdk_min: 3` — and note that until a firmware carrying level 3 is
+  released, such an app will not load on any unit in the field. Every existing
+  app is unaffected: the surface only grows, so anything built for level 1 or 2
+  keeps running untouched.
+
+- **MicroPython apps can now do almost everything a native app can.** Sixteen
+  calls that used to be C-only are now reachable from `jppsdk` too: front-loading
+  a permission prompt, the confirm dialog, text wrapping, the file picker,
+  acting as a BLE peripheral (advertising plus the GATT-server read/write
+  handlers), opening outbound TCP connections, and all seven hardware-backed
+  crypto primitives. Nothing about the underlying functions changed — only
+  their reachability from Python did, which is why it shares SDK level 3 with
+  `wrap_text` above; a MicroPython app that needs one of these should also
+  declare `sdk_min: 3`. The only capabilities that remain native-only are
+  loading a second compiled binary as a module (MicroPython has `import`
+  instead) and a firmware-internal input hook no app calls directly. Both test
+  apps (`testapp_native`, `testapp_mp`) were extended to exercise every one of
+  the sixteen so the two stay proof that the surfaces genuinely match.
+
+- **The 5th keypad button is now called OK everywhere, not CENTER.** Every
+  identifier, on-screen label, and doc that named the button — firmware,
+  App SDK, and the App Developer Guide alike — now says OK, matching how it
+  was already labeled on the board and referred to in prose. One function and
+  its constants were renamed as part of this: `jpp_sdk_claim_center` /
+  `jppsdk.claim_center` and the `JPP_SDK_KEY_CENTER*` / `JPP_SDK_CENTER_CLAIM_*`
+  constants it used are now `jpp_sdk_claim_ok` / `jppsdk.claim_ok` /
+  `JPP_SDK_KEY_OK*` / `JPP_SDK_OK_CLAIM_*` — **but the old names still work.**
+  They're kept as deprecated aliases (same values, same underlying function),
+  so nothing already built needs to change. New C source using an old name
+  gets a compiler warning naming its replacement; new code should switch to
+  the OK-named forms, but nothing is forced to. See the
+  [SDK changelog](docs/sdk-changelog.md#the-5th-keypad-button-is-ok-not-center)
+  for the full list of renamed symbols and their aliases.
+
+### Fixes
+
+- **A placeholder in a text input looked exactly like a value you'd already
+  typed, which made it easy to submit it by mistake.** `input()`'s
+  `placeholder` text now renders in `[brackets]`, so example/hint text is
+  visually distinct from something the user actually entered. The first
+  keystroke still clears it and starts a real value, unchanged.
+
+- **A fullscreen app could get stuck showing a stale system dialog.** An app
+  that repaints its whole screen every frame — like the MTProto client — and
+  only switches to fullscreen once at startup used to stay stuck in the
+  windowed system-UI layout after showing a dialog, confirm, list, input, or
+  file-picker prompt: the prompt's text lingered at the top of the screen and
+  the bottom rows stopped updating. The five modal helpers now restore
+  fullscreen automatically when they return, so this can no longer happen
+  without the app doing anything differently.
+
 ## v1.1 — 2026-07-29
 
 The first feature release after RTM. The headline is **App SDK level 2**, which
@@ -34,14 +217,14 @@ unless you actually use the new calls.
   most of that before it did anything useful. Together these are what make a
   chat-protocol client feasible on the device at all.
 - **Choose how the Back button works.** `Settings > Controls` now offers a
-  device-wide choice between holding CENTER and double-clicking it to go back.
+  device-wide choice between holding OK and double-clicking it to go back.
   Hold stays the default and behaves exactly as before, including the instant
   OK on a short click. Picking Double-click trades a short delay on OK (the
   device has to wait and see whether a second click is coming) for a Back
   gesture that doesn't require holding a button down.
-- **Apps can take CENTER over as a game button.** An app may now claim the
+- **Apps can take OK over as a game button.** An app may now claim the
   hold and/or double-click gesture as its own input, in which case it becomes
-  responsible for its own way out — useful for games where CENTER is a
+  responsible for its own way out — useful for games where OK is a
   rapid-fire action button and a stray double-tap shouldn't drop you out to
   the launcher. Apps that don't claim anything keep receiving a single "back"
   event and never have to care which gesture the user picked.

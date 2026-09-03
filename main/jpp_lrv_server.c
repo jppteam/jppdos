@@ -4,8 +4,9 @@
 #include "jpp_wifi_init.h"
 
 #include "esp_log.h"
-#include "esp_http_server.h"
 #include "esp_netif.h"
+
+#include "jpp_http_server_core.h"
 
 #include "mbedtls/base64.h"
 
@@ -15,8 +16,17 @@
 
 static const char *TAG = "jpp_lrv_srv";
 
+/* Server task stack, carved out of the shared app pool by
+   jpp_http_server_core.  The page builder is the deepest frame here: roughly
+   6 KB of hex dumps, base64/percent-encoding scratch, and URL assembly (the
+   /verify URL now carries the certificate and its signature, not just the
+   response, and the URL buffers are sized generously so GCC's
+   -Werror=format-truncation can prove the snprintf calls can't overflow)
+   plus the LRV record itself. */
+#define LRV_STACK_BYTES 10240u
+
 /* ---- State -------------------------------------------------------------- */
-static httpd_handle_t  s_server   = NULL;
+static bool             s_running = false;
 static jpp_rtc_state_t *s_rtc     = NULL;
 static char             s_ip[16]  = {0};  /* "x.x.x.x\0" */
 
@@ -31,30 +41,6 @@ static void get_local_ip(char ip[16])
     if (esp_netif_get_ip_info(netif, &info) == ESP_OK && info.ip.addr != 0u) {
         snprintf(ip, 16u, IPSTR, IP2STR(&info.ip));
     }
-}
-
-/* Approximate seconds since Unix epoch (no leap-second correction). */
-static uint32_t datetime_to_unix(const jpp_rtc_datetime_t *dt)
-{
-    static const int mdays[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
-
-    int y   = dt->year - 1970;
-    int mon = dt->month - 1;
-    int d   = dt->day - 1;
-
-    int leaps = (dt->year - 1) / 4 - (dt->year - 1) / 100 + (dt->year - 1) / 400
-              - (1969 / 4 - 1969 / 100 + 1969 / 400);
-
-    int days  = y * 365 + leaps + mdays[mon] + d;
-    if (mon > 1) {
-        int yy = dt->year;
-        if ((yy % 4 == 0 && yy % 100 != 0) || (yy % 400 == 0)) { days++; }
-    }
-
-    return (uint32_t)((uint64_t)days * 86400u
-                      + (uint32_t)dt->hour   * 3600u
-                      + (uint32_t)dt->minute * 60u
-                      + (uint32_t)dt->second);
 }
 
 /* URL-safe base64 (RFC 4648 §5): replaces '+' with '-', '/' with '_'. */
@@ -89,23 +75,20 @@ static void url_encode(const char *src, char *dst, size_t dstmax)
 }
 
 /* Stream the verification HTML page in chunks. */
-static void send_verification_page(httpd_req_t *req)
+static void send_verification_page(jpp_http_conn_t *conn)
 {
     jpp_lrv_data_t d;
     if (jpp_lrv_get_full_data(&d) != JPP_LRV_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No LRV identity");
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "No LRV identity");
         return;
     }
 
-    /* Username, timestamp, and challenge all come from one builder call (one
-       RTC read) so the page, the URL, and the signed bytes stay consistent. */
-    char username[64] = {0};
-    jpp_rtc_datetime_t now = {0};
-    bool has_time = false;
+    /* The challenge (which already embeds username + timestamp as signed
+       text) comes from one builder call so the page, the URL, and the signed
+       bytes stay consistent — no separate ts/name fields to keep in sync. */
     char challenge[JPP_LRV_CHALLENGE_MAX];
     jpp_lrv_build_challenge(s_rtc, challenge, sizeof(challenge),
-                            username, sizeof(username), &now, &has_time);
-    uint32_t ts = has_time ? datetime_to_unix(&now) : 0u;
+                            NULL, 0u, NULL, NULL);
 
     uint8_t resp_sig[64] = {0};
     jpp_lrv_sign_challenge(challenge, resp_sig);
@@ -122,26 +105,35 @@ static void send_verification_page(httpd_req_t *req)
     jpp_lrv_hex_format(d.device_pubkey, 32u, 8u, pubkey_hex,  sizeof(pubkey_hex));
     jpp_lrv_hex_format(resp_sig,        64u, 8u, respsig_hex, sizeof(respsig_hex));
 
-    /* Build the jppdevice.com certificate page URL. */
+    /* Build the jppdevice.by.m4l3vi.ch/verify URL. cert + certsig travel
+       verbatim (base64url) so the verifier checks the exact issued bytes with
+       no reconstruction; challenge travels percent-encoded as one opaque
+       string so the site never has to reassemble it from separate parts. */
     char respsig_b64[128] = {0};
     b64url_encode(resp_sig, 64u, respsig_b64, sizeof(respsig_b64));
-    char name_enc[192] = {0};
-    url_encode(username, name_enc, sizeof(name_enc));
+    char certsig_b64[128] = {0};
+    b64url_encode(d.cert_sig, 64u, certsig_b64, sizeof(certsig_b64));
+    char cert_b64[300] = {0};
+    b64url_encode((const uint8_t *)d.cert, strnlen(d.cert, sizeof(d.cert) - 1u),
+                  cert_b64, sizeof(cert_b64));
+    char challenge_enc[400] = {0};
+    url_encode(challenge, challenge_enc, sizeof(challenge_enc));
 
-    char certpage_url[512];
+    char certpage_url[1280];
     snprintf(certpage_url, sizeof(certpage_url),
-             "https://jppdevice.com/lrv"
-             "?ts=%lu"
-             "&name=%s"
-             "&serial=%u"
+             "https://jppdevice.by.m4l3vi.ch/verify"
+             "?serial=%u"
+             "&cert=%s"
+             "&certsig=%s"
+             "&challenge=%s"
              "&resp=%s",
-             (unsigned long)ts, name_enc,
-             (unsigned)d.serial, respsig_b64);
+             (unsigned)d.serial, cert_b64, certsig_b64,
+             challenge_enc, respsig_b64);
 
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    jpp_http_resp_set_type(conn, "text/html; charset=utf-8");
 
     /* HTML header + styles */
-    httpd_resp_sendstr_chunk(req,
+    jpp_http_resp_sendstr_chunk(conn,
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>J++Device LRV</title>"
@@ -156,54 +148,61 @@ static void send_verification_page(httpd_req_t *req)
     char hdr[64];
     snprintf(hdr, sizeof(hdr), "<p><b>Serial:</b> #%u</p><hr>",
              (unsigned)d.serial);
-    httpd_resp_sendstr_chunk(req, hdr);
+    jpp_http_resp_sendstr_chunk(conn, hdr);
 
     /* LRV Certificate */
-    httpd_resp_sendstr_chunk(req, "<p><b>LRV Certificate (plaintext):</b></p><pre>");
-    httpd_resp_sendstr_chunk(req, d.cert);
-    httpd_resp_sendstr_chunk(req, "</pre>");
+    jpp_http_resp_sendstr_chunk(conn, "<p><b>LRV Certificate (plaintext):</b></p><pre>");
+    jpp_http_resp_sendstr_chunk(conn, d.cert);
+    jpp_http_resp_sendstr_chunk(conn, "</pre>");
 
-    httpd_resp_sendstr_chunk(req, "<p><b>LRV Certificate (hexadecimal):</b></p><pre>");
-    httpd_resp_sendstr_chunk(req, cert_hex);
-    httpd_resp_sendstr_chunk(req, "</pre>");
+    jpp_http_resp_sendstr_chunk(conn, "<p><b>LRV Certificate (hexadecimal):</b></p><pre>");
+    jpp_http_resp_sendstr_chunk(conn, cert_hex);
+    jpp_http_resp_sendstr_chunk(conn, "</pre>");
 
     /* Certificate signature */
-    httpd_resp_sendstr_chunk(req, "<p><b>Certificate signature:</b></p><pre>");
-    httpd_resp_sendstr_chunk(req, certsig_hex);
-    httpd_resp_sendstr_chunk(req, "</pre>");
+    jpp_http_resp_sendstr_chunk(conn, "<p><b>Certificate signature:</b></p><pre>");
+    jpp_http_resp_sendstr_chunk(conn, certsig_hex);
+    jpp_http_resp_sendstr_chunk(conn, "</pre>");
 
     /* Device public key */
-    httpd_resp_sendstr_chunk(req, "<p><b>Device public key:</b></p><pre>");
-    httpd_resp_sendstr_chunk(req, pubkey_hex);
-    httpd_resp_sendstr_chunk(req, "</pre><hr>");
+    jpp_http_resp_sendstr_chunk(conn, "<p><b>Device public key:</b></p><pre>");
+    jpp_http_resp_sendstr_chunk(conn, pubkey_hex);
+    jpp_http_resp_sendstr_chunk(conn, "</pre><hr>");
 
     /* Challenge / response */
     char chdr[192];
     snprintf(chdr, sizeof(chdr),
              "<p><b>Challenge:</b> <code>%s</code></p>", challenge);
-    httpd_resp_sendstr_chunk(req, chdr);
+    jpp_http_resp_sendstr_chunk(conn, chdr);
 
-    httpd_resp_sendstr_chunk(req, "<p><b>Response signature:</b></p><pre>");
-    httpd_resp_sendstr_chunk(req, respsig_hex);
-    httpd_resp_sendstr_chunk(req, "</pre><hr>");
+    jpp_http_resp_sendstr_chunk(conn, "<p><b>Response signature:</b></p><pre>");
+    jpp_http_resp_sendstr_chunk(conn, respsig_hex);
+    jpp_http_resp_sendstr_chunk(conn, "</pre><hr>");
 
     /* Certificate page button — direct link, no user prompt needed. */
-    char btn[560];
+    char btn[1600];
     snprintf(btn, sizeof(btn),
              "<a class='btn' href='%s'>Open Certificate Page</a>",
              certpage_url);
-    httpd_resp_sendstr_chunk(req, btn);
+    jpp_http_resp_sendstr_chunk(conn, btn);
 
-    httpd_resp_sendstr_chunk(req, "</body></html>");
-    httpd_resp_sendstr_chunk(req, NULL);  /* finalize */
+    jpp_http_resp_sendstr_chunk(conn, "</body></html>");
+    jpp_http_resp_sendstr_chunk(conn, NULL);  /* finalize */
 }
 
-/* ---- URI handler -------------------------------------------------------- */
+/* ---- Request handler ---------------------------------------------------- */
 
-static esp_err_t handle_root_get(httpd_req_t *req)
+static void lrv_dispatch(jpp_http_conn_t *conn, void *user_ctx)
 {
-    send_verification_page(req);
-    return ESP_OK;
+    (void)user_ctx;
+    const char *method = jpp_http_method(conn);
+    /* Every path serves the same page — the device advertises one URL. */
+    if (strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0) {
+        send_verification_page(conn);
+    } else {
+        jpp_http_resp_set_hdr(conn, "Allow", "GET, HEAD");
+        jpp_http_resp_send_err(conn, JPP_HTTP_405, "Method not allowed");
+    }
 }
 
 /* ---- Public API --------------------------------------------------------- */
@@ -217,61 +216,70 @@ jpp_lrv_server_result_t jpp_lrv_server_start(jpp_rtc_state_t *rtc)
         return JPP_LRV_SERVER_ERR_NO_WIFI;
     }
 
-    /* Check WebDAV isn't running. */
+    /* Check WebDAV isn't running.  Both servers run out of the shared app
+       pool, so this is also enforced there — but the dedicated error tells the
+       user what to switch off, rather than "pool busy". */
     jpp_fileserver_status_t fs_status;
     jpp_fileserver_get_status(&fs_status);
     if (fs_status.state == JPP_FILESERVER_STATE_RUNNING) {
         return JPP_LRV_SERVER_ERR_WEBDAV_RUNNING;
     }
 
-    if (s_server != NULL) {
+    if (s_running) {
         return JPP_LRV_SERVER_OK;  /* already running */
     }
 
     get_local_ip(s_ip);
 
-    httpd_config_t cfg    = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port       = JPP_LRV_SERVER_PORT;
-    cfg.uri_match_fn      = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers  = 2u;
-    cfg.max_open_sockets  = 2u;
-    cfg.stack_size        = 8192u;
+    /* s_rtc must be live before the first request can arrive. */
+    s_rtc = rtc;
 
-    if (httpd_start(&s_server, &cfg) != ESP_OK) {
-        s_server = NULL;
+    jpp_http_server_config_t cfg = {
+        .owner          = "lrv",
+        .port           = JPP_LRV_SERVER_PORT,
+        .stack_bytes    = LRV_STACK_BYTES,
+        .recv_timeout_s = 15u,
+        .send_timeout_s = 10u,
+        .handler        = lrv_dispatch,
+        .user_ctx       = NULL,
+    };
+
+    jpp_http_result_t rc = jpp_http_server_start(&cfg);
+    if (rc != JPP_HTTP_OK) {
+        ESP_LOGE(TAG, "start failed: %s", jpp_http_result_name(rc));
+        s_rtc   = NULL;
+        s_ip[0] = '\0';
         return JPP_LRV_SERVER_ERR_INTERNAL;
     }
 
-    static const httpd_uri_t uri_all = {
-        .uri = "/*", .method = HTTP_GET,
-        .handler = handle_root_get, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(s_server, &uri_all);
-
-    s_rtc = rtc;
+    s_running = true;
     ESP_LOGI(TAG, "LRV server started on http://%s:%u", s_ip, JPP_LRV_SERVER_PORT);
     return JPP_LRV_SERVER_OK;
 }
 
 void jpp_lrv_server_stop(void)
 {
-    if (s_server == NULL) { return; }
-    httpd_stop(s_server);
-    s_server = NULL;
-    s_rtc    = NULL;
-    s_ip[0]  = '\0';
+    if (!s_running) { return; }
+    jpp_http_result_t rc = jpp_http_server_stop();
+    if (rc != JPP_HTTP_OK) {
+        ESP_LOGE(TAG, "stop failed: %s", jpp_http_result_name(rc));
+        return;  /* still running, and still holding the app pool */
+    }
+    s_running = false;
+    s_rtc     = NULL;
+    s_ip[0]   = '\0';
     ESP_LOGI(TAG, "LRV server stopped");
 }
 
 bool jpp_lrv_server_is_running(void)
 {
-    return (s_server != NULL);
+    return s_running;
 }
 
 void jpp_lrv_server_get_addr(char *out, size_t len)
 {
     if (out == NULL || len == 0u) { return; }
-    if (s_server == NULL || s_ip[0] == '\0') {
+    if (!s_running || s_ip[0] == '\0') {
         snprintf(out, len, "(not running)");
     } else {
         snprintf(out, len, "%s:%u", s_ip, JPP_LRV_SERVER_PORT);

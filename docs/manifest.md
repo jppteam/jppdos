@@ -60,7 +60,7 @@ fields are ignored, so declaring it never affects loading or capabilities.
 ### `sdk_min`
 
 **Required.** The minimum SDK API level the app needs, as an integer `≥ 1`. The
-firmware exports one SDK level (`JPP_SDK_VERSION`, currently **2**); the loader
+firmware exports one SDK level (`JPP_SDK_VERSION`, currently **3**); the loader
 rejects an app whose `sdk_min` is greater than the running level with
 `SDK_TOO_OLD`. There is no upper bound: the SDK surface only ever grows in a
 backward-compatible way, so an app built for an older level keeps running on
@@ -70,10 +70,21 @@ capability your app uses:
 | `sdk_min` | Declare it if you use | Since firmware |
 |-----------|-----------------------|----------------|
 | `1` | the original SDK surface | v1.0-RTM |
-| `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · CENTER gesture claims (`claim_center`, `KEY_BACK`, `KEY_CENTER_HOLD`/`_DOUBLE`) · `jpp_sdk_confirm` from a native app | v1.1 |
+| `2` | outbound TCP (`net_connect`, capability `network.connect`) · TLS-verified HTTP (`https_request`, capability `https.request`) · the crypto primitives (`jpp_crypto_sha256`/`sha1`, `jpp_crypto_aes256_ige_*`, `jpp_crypto_modexp`/`rsa_encrypt`/`dh_compute`) · OK gesture claims, as `claim_center`/`KEY_CENTER*`/`CENTER_CLAIM_*` at this level — renamed at level 3, see below · `jpp_sdk_confirm` from a native app | v1.1 |
+| `3` | `jpp_sdk_wrap_text` from a native app · from a MicroPython app, any of the calls that gained a `jppsdk` binding at this level: `request_cap` · `confirm` · `wrap_text` · `file_pick` · `ble_set_connectable` · `ble_host_set_value`/`_wait_write`/`_clear` · `net_connect` · `crypto_sha256`/`sha1`/`aes256_ige_encrypt`/`aes256_ige_decrypt`/`modexp`/`rsa_encrypt`/`dh_compute` | *unreleased* |
 
 Declaring `sdk_min: 2` means the app will not load on a v1.0-RTM device. If you
 only use the original surface, leave it at `1` so the app runs on every unit.
+
+Level 3 is **not yet in any released firmware**, so an app declaring `sdk_min: 3`
+is rejected with `SDK_TOO_OLD` on every unit currently in the field.
+
+`sdk_min` gates **symbols and capabilities only**. It says nothing about how much
+memory a device will give your app: the [app pool](sdk/limits.md#apps-and-background)
+grew from 64 KB to 80 KB in the same firmware that exports level 3, but there is
+no manifest field for that and declaring `sdk_min: 3` does not reserve it. An app
+too large for the running firmware's pool fails at load with `NO_MEMORY`, not
+`SDK_TOO_OLD`.
 
 The [SDK changelog](sdk-changelog.md) documents each level in full.
 
@@ -203,8 +214,8 @@ These work in every app, with no manifest declaration and no user prompt:
 - LED: `led_set_color`, `led_off` (onboard WS2812 pixel)
 - Wakelock: `wakelock_acquire`, `wakelock_release`
 - Device info: `device_status`, `get_time`, `is_dummy_mode`
-- CENTER gesture claims: `claim_center` (SDK level 2)
-- Crypto primitives: `jpp_crypto_sha256`/`sha1`, `aes256_ige_*`, `modexp`/`rsa_encrypt`/`dh_compute` (SDK level 2, C only)
+- OK gesture claims: `claim_ok` (SDK level 2 as `claim_center` — that name still works, deprecated, at `sdk_min: 2`; the `claim_ok` spelling needs `sdk_min: 3` — see the [SDK changelog](sdk-changelog.md#the-5th-keypad-button-is-ok-not-center))
+- Crypto primitives: `jpp_crypto_sha256`/`sha1`, `aes256_ige_*`, `modexp`/`rsa_encrypt`/`dh_compute` (SDK level 2 in C; `jppsdk.crypto_*` from level 3)
 - Scoped file I/O: `file_read`, `file_write`, `file_list` (sandboxed to `/sd/apps/<app_id>/`)
 - Shared file I/O: `shared_read`, `shared_write`, `shared_list` (sandboxed to `/sd/shared/<app_id>/`)
 - Key-value store: `kv_get`, `kv_set`, `kv_delete`

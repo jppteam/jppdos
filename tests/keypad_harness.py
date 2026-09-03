@@ -3,7 +3,7 @@
 jpp_keypad_poll() is hardware-agnostic — one ADC sample in, debounced events
 out, and its only notion of time is sample_index * poll_interval_ms — so the
 firmware source can be compiled natively and stepped a poll at a time. That
-makes the CENTER gesture timing (long press, the double-click window, the
+makes the OK gesture timing (long press, the double-click window, the
 deferred short click) testable without hardware.
 """
 
@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 KEYPAD_SRC = REPO_ROOT / "components" / "jpp_core" / "src" / "jpp_keypad_core.c"
 
 # Mirrors the KEYPAD_BANDS table in main/app_main.c.
-CENTER_UV = 900000
+OK_UV = 900000
 UP_UV = 120000
 IDLE_UV = 2700000  # far from every band, so nothing matches
 
@@ -29,16 +29,16 @@ LONG_PRESS_MS = 700
 DOUBLE_CLICK_MS = 300
 
 KIND_NO_EVENT, KIND_PRESS, KIND_RELEASE, KIND_REPEAT, \
-    KIND_CENTER_SHORT, KIND_CENTER_LONG, KIND_CENTER_DOUBLE = range(7)
+    KIND_OK_SHORT, KIND_OK_LONG, KIND_OK_DOUBLE = range(7)
 
 KIND_NAMES = {
     KIND_NO_EVENT: "NO_EVENT",
     KIND_PRESS: "PRESS",
     KIND_RELEASE: "RELEASE",
     KIND_REPEAT: "REPEAT",
-    KIND_CENTER_SHORT: "CENTER_SHORT",
-    KIND_CENTER_LONG: "CENTER_LONG",
-    KIND_CENTER_DOUBLE: "CENTER_DOUBLE",
+    KIND_OK_SHORT: "OK_SHORT",
+    KIND_OK_LONG: "OK_LONG",
+    KIND_OK_DOUBLE: "OK_DOUBLE",
 }
 
 
@@ -95,7 +95,7 @@ class State(ctypes.Structure):
         ("candidate_count", ctypes.c_int),
         ("press_started_ms", ctypes.c_int),
         ("last_repeat_ms", ctypes.c_int),
-        ("center_long_emitted", ctypes.c_bool),
+        ("ok_long_emitted", ctypes.c_bool),
         ("sample_index", ctypes.c_size_t),
         ("short_pending", ctypes.c_bool),
         ("pending_release_ms", ctypes.c_int),
@@ -107,7 +107,7 @@ _BANDS = (Band * 5)(
     Band(b"DOWN", 300000, 40000, True),
     Band(b"LEFT", 500000, 40000, True),
     Band(b"RIGHT", 700000, 40000, True),
-    Band(b"CENTER", CENTER_UV, 40000, False),
+    Band(b"OK", OK_UV, 40000, False),
 )
 
 
@@ -179,13 +179,13 @@ class Keypad:
             out += self._poll(sample_uv)
         return out
 
-    def press(self, duration_ms, key_uv=CENTER_UV):
+    def press(self, duration_ms, key_uv=OK_UV):
         return self.run(key_uv, duration_ms)
 
     def idle(self, duration_ms):
         return self.run(IDLE_UV, duration_ms)
 
-    def tap(self, key_uv=CENTER_UV):
+    def tap(self, key_uv=OK_UV):
         """A press just long enough to register, well under the long-press."""
         return self.press(100, key_uv)
 

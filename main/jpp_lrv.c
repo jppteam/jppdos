@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 static const char *TAG = "jpp_lrv";
 
@@ -210,11 +211,37 @@ void jpp_lrv_build_challenge(jpp_rtc_state_t *rtc,
     bool has_time = (rtc != NULL) &&
                     (jpp_rtc_get_current(rtc, &now) == JPP_RTC_STATUS_OK);
 
-    char iso[32] = "1970-01-01T00:00:00Z";
+    char iso[80] = "1970-01-01T00:00:00Z";
     if (has_time) {
+        /* The RTC keeps local wall-clock time (NTP applies the timezone offset
+         * before writing it — see ntp_apply() in app_main.c), but the challenge
+         * timestamp carries a "Z" suffix and must therefore be UTC.  Convert
+         * back by subtracting the persisted offset (NVS jpp_time/tz_h). */
+        int8_t tz_h = 0;
+        nvs_handle_t th;
+        if (nvs_open("jpp_time", NVS_READONLY, &th) == ESP_OK) {
+            nvs_get_i8(th, "tz_h", &tz_h);
+            nvs_close(th);
+        }
+        /* days_from_civil (Howard Hinnant): calendar date -> days since epoch,
+         * timezone-independent so it does not depend on the newlib TZ setting. */
+        int y = now.year;
+        int m = now.month;
+        int d = now.day;
+        int yy = y - (m <= 2);
+        int era = (yy >= 0 ? yy : yy - 399) / 400;
+        unsigned yoe = (unsigned)(yy - era * 400);
+        unsigned doy = (unsigned)((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1;
+        unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        long days = (long)era * 146097 + (long)doe - 719468;
+        time_t utc = (time_t)days * 86400
+                     + now.hour * 3600 + now.minute * 60 + now.second
+                     - (time_t)tz_h * 3600;
+        struct tm tm_utc;
+        gmtime_r(&utc, &tm_utc);
         snprintf(iso, sizeof(iso), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                 now.year, now.month, now.day,
-                 now.hour, now.minute, now.second);
+                 tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                 tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
     }
     snprintf(out, out_len, "%s|%s", username, iso);
 

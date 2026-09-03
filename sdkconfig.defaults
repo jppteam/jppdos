@@ -8,10 +8,12 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_WIFI_NVS_ENABLED=y
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
-CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
-# Optimize for size (-Os): the debug default (-Og) inflates the image well past
-# what a 2 MB flash can hold. Size optimization is required to fit this layout.
+# Optimize for size (-Os) rather than the debug default (-Og). With the 4 MB
+# layout this is no longer required to fit — see the flash-budget note in
+# AGENTS.md — but it keeps the image smaller and faster to flash, and there's
+# no downside for a device with no debugger attached in the field.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
 # This board (ESP32-C6 Super Mini class) has no separate UART-to-USB bridge
@@ -56,9 +58,9 @@ CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT=n
 #
 # CMN rather than the full Mozilla set: 43 roots (Amazon, DigiCert, GlobalSign,
 # GoDaddy, Google Trust Services, IdenTrust, ISRG/Let's Encrypt, Sectigo) for
-# 17.9 KB of flash, against 69 KB for FULL.  With ~94 KB free in the factory
-# partition, FULL would consume most of the remaining budget for CAs this
-# device will never see.  See the flash-budget note in AGENTS.md.
+# 17.9 KB of flash, against 69 KB for FULL.  Flash headroom is no longer the
+# constraint here (see AGENTS.md) — CMN is kept for a smaller, more auditable
+# trust store, not because FULL wouldn't fit.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 

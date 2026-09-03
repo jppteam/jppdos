@@ -63,7 +63,7 @@
     },
     {
       "type": "wokwi-pushbutton",
-      "id": "btn-center",
+      "id": "btn-ok",
       "top": 200,
       "left": -340,
       "attrs": { "color": "blue",  "label": "OK",    "key": "Enter"      }
@@ -109,8 +109,8 @@
     ["btn-right:1.l",  "esp:GND.1", "black", []],
     ["btn-right:2.l",  "esp:21",    "green", []],
 
-    ["btn-center:1.l", "esp:GND.1", "black", []],
-    ["btn-center:2.l", "esp:22",    "green", []],
+    ["btn-ok:1.l", "esp:GND.1", "black", []],
+    ["btn-ok:2.l", "esp:22",    "green", []],
 
     ["r-kpad-pd:1",    "esp:2",     "gray",  []],
     ["r-kpad-pd:2",    "esp:GND.1", "gray",  []]

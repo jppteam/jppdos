@@ -135,10 +135,10 @@ jpp_ui_action_t jpp_ui_normalize_action(const jpp_keypad_event_t *event)
     if (event == NULL || event->kind == JPP_KEYPAD_KIND_NO_EVENT) {
         return JPP_UI_ACTION_NONE;
     }
-    if (event->kind == JPP_KEYPAD_KIND_CENTER_SHORT || jpp_str_eq(event->mapped, "OK")) {
+    if (event->kind == JPP_KEYPAD_KIND_OK_SHORT || jpp_str_eq(event->mapped, "OK")) {
         return JPP_UI_ACTION_OK;
     }
-    /* CENTER_LONG / CENTER_DOUBLE are deliberately not mapped here: whether a
+    /* OK_LONG / OK_DOUBLE are deliberately not mapped here: whether a
        hold or a double-click means "Back" depends on the user's Settings >
        Controls preference and on what the foreground app has claimed, and
        neither is visible from a single keypad event. keypad_task() in
@@ -539,6 +539,17 @@ jpp_ui_status_t jpp_ui_shell_handle_action(jpp_ui_shell_t *shell, jpp_ui_action_
 
     if (jpp_str_eq(screen, JPP_UI_SCREEN_WEBDAV)) {
         if (action == JPP_UI_ACTION_BACK) {
+            /* The server is a foreground activity: it runs out of the shared
+               app pool, so leaving the screen has to hand that memory back
+               rather than leave a task serving in the background. */
+            if (shell->fileserver_running &&
+                jpp_fileserver_stop() == JPP_FILESERVER_RESULT_OK) {
+                shell->fileserver_running     = false;
+                shell->fileserver_password[0] = '\0';
+            }
+            /* A failed stop leaves the flag alone: the main loop's 2 s status
+               poll re-reports the truth rather than showing a stopped server
+               that is in fact still holding the pool. */
             (void)jpp_ui_stack_pop(&shell->stack);
         } else if (shell->fileserver_running) {
             if (action == JPP_UI_ACTION_UP) {

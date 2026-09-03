@@ -17,7 +17,7 @@ You do not need to install ESP-IDF, a RISC-V toolchain, or Python on your host �
 
 ## How native apps work
 
-A native app binary is an **ELF32 RISC-V shared object** (`ET_DYN`) compiled with position-independent code flags. The firmware's native loader (`jpp_native_loader_core`) maps it into a 64 KB static pool in BSS at launch, resolves all undefined symbols from the firmware's exported symbol table, and calls your entry point.
+A native app binary is an **ELF32 RISC-V shared object** (`ET_DYN`) compiled with position-independent code flags. The firmware's native loader (`jpp_native_loader_core`) maps it into an 80 KB static pool in BSS at launch, resolves all undefined symbols from the firmware's exported symbol table, and calls your entry point.
 
 All firmware functions (`jpp_sdk_*`, `esp_log_write`, standard C library functions) are resolved at load time from the symbol table — you never link against a separate SDK library. This means:
 
@@ -210,17 +210,17 @@ Return type for most SDK calls:
 | `JPP_SDK_KEY_DOWN` | Down |
 | `JPP_SDK_KEY_LEFT` | Left |
 | `JPP_SDK_KEY_RIGHT` | Right |
-| `JPP_SDK_KEY_CENTER` | Center press |
+| `JPP_SDK_KEY_OK` | OK press |
 | `JPP_SDK_KEY_BACK` | The user asked to go back |
-| `JPP_SDK_KEY_CENTER_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value |
-| `JPP_SDK_KEY_CENTER_HOLD` | Raw CENTER hold — only if claimed |
-| `JPP_SDK_KEY_CENTER_DOUBLE` | Raw CENTER double-click — only if claimed |
+| `JPP_SDK_KEY_OK_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value |
+| `JPP_SDK_KEY_OK_HOLD` | Raw OK hold — only if claimed |
+| `JPP_SDK_KEY_OK_DOUBLE` | Raw OK double-click — only if claimed |
 
 !!! info "Which gesture means “back” is not your app’s business."
     The user chooses hold or double-click in Settings → Controls, and the
     firmware translates it to `JPP_SDK_KEY_BACK` before you see it. Take a
     gesture over as your own input only with
-    [`jpp_sdk_claim_center`](../sdk/app-control.md#claim_center) — and then your
+    [`jpp_sdk_claim_ok`](../sdk/app-control.md#claim_ok) — and then your
     app owns its own way out. `JPP_SDK_KEY_BACK` and the claim API need
     [`sdk_min: 2`](../sdk-changelog.md).
 
@@ -319,7 +319,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 
         if (key == JPP_SDK_KEY_BACK) {
             break;
-        } else if (key == JPP_SDK_KEY_CENTER) {
+        } else if (key == JPP_SDK_KEY_OK) {
             show_scanning(ctx);
             jpp_sdk_status_t st = jpp_sdk_ble_scan(ctx, 3000,
                                                      results, MAX_RESULTS,
@@ -358,5 +358,5 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
 - Use `jpp_sdk_wait_key(ctx, 100, &key)` with a short timeout when you need periodic updates (e.g. refreshing a clock display).
 - Check the return value of every SDK call. `JPP_SDK_ACCESS_DENIED` is expected and normal — handle it gracefully rather than treating it as a fatal error.
 - Honour `JPP_SDK_KEY_BACK` wherever it makes sense to exit or go up a level. Don't try to detect the physical gesture behind it unless you have deliberately claimed one.
-- The 64 KB app pool holds your entire binary. A typical app is 5–15 KB; complex apps with many data structures may approach 50 KB. If you need more, structure your code as a hub + loaded modules (see [Code modules](modules.md)).
+- The app pool holds your entire binary. A typical app is 5–15 KB; complex apps with many data structures may approach 50 KB. If you need more, structure your code as a hub + loaded modules (see [Code modules](modules.md)). The pool is **64 KB on firmware v1.1 and earlier** and 80 KB from SDK level 3 onward — size for 64 KB unless you know what the device runs, since the difference is not something a manifest can require (see [Resource limits](../sdk/limits.md#apps-and-background)).
 - `snprintf` is available from the standard C library via the symbol table. `malloc`/`free` work too, but prefer stack allocation — the device heap is shared with Wi-Fi and other firmware services.

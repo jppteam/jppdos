@@ -1,34 +1,35 @@
 #include "../include/jpp_fileserver_core.h"
 
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
 #include <unistd.h>
 #include <dirent.h>
 
 #include "esp_log.h"
-#include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_random.h"
 
 #include "jpp_heap_monitor.h"
+#include "../include/jpp_http_server_core.h"
 
 static const char *TAG = "fileserver";
 
-#define FILE_CHUNK_SIZE  4096u
 #define FULL_PATH_MAX    300u
 
-/* Single I/O buffer shared by handle_put and handle_get.
-   httpd processes one handler at a time so no mutex needed. */
-static char s_io_chunk[FILE_CHUNK_SIZE];
+/* The server task stack and the (much larger) file I/O buffer are carved out of
+   the shared app pool by jpp_http_server_core — this module keeps no bulk
+   buffers of its own.  8 KB matches what the old httpd task was given; the
+   recursive delete is the deepest thing that runs on it. */
+#define WEBDAV_STACK_BYTES 8192u
 
 /* ---- Internal state ------------------------------------------------------- */
 
 static struct {
     bool                    initialized;
-    httpd_handle_t          server;
     jpp_fileserver_state_t  state;
     char                    sd_root[64];
     uint16_t                port;
@@ -83,12 +84,10 @@ static int b64_decode(const char *src, char *dst, size_t dst_size)
 
 /* ---- Auth ----------------------------------------------------------------- */
 
-static bool check_auth(httpd_req_t *req)
+static bool check_auth(jpp_http_conn_t *conn)
 {
-    char hdr[64];
-    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK) {
-        return false;
-    }
+    const char *hdr = jpp_http_header(conn, "Authorization");
+    if (hdr == NULL) { return false; }
     if (strncmp(hdr, "Basic ", 6) != 0) { return false; }
     char creds[32];
     if (b64_decode(hdr + 6, creds, sizeof(creds)) < 0) { return false; }
@@ -96,13 +95,12 @@ static bool check_auth(httpd_req_t *req)
     return strcmp(creds + 5, s_fs.password) == 0;
 }
 
-static esp_err_t deny_auth(httpd_req_t *req)
+static void deny_auth(jpp_http_conn_t *conn)
 {
-    httpd_resp_set_status(req, "401 Unauthorized");
-    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"WebDAV\"");
-    static const char msg[] = "Unauthorized";
-    httpd_resp_send(req, msg, sizeof(msg) - 1);
-    return ESP_OK;
+    jpp_http_resp_set_status(conn, JPP_HTTP_401);
+    jpp_http_resp_set_hdr(conn, "WWW-Authenticate", "Basic realm=\"WebDAV\"");
+    jpp_http_resp_set_type(conn, "text/plain");
+    jpp_http_resp_send(conn, "Unauthorized", -1);
 }
 
 /* ---- Helpers -------------------------------------------------------------- */
@@ -171,10 +169,10 @@ static void xml_escape(const char *src, char *buf, size_t buf_size)
 
 /* ---- PROPFIND XML helpers ------------------------------------------------- */
 
-static esp_err_t propfind_send_entry(httpd_req_t *req,
-                                     const char  *href,
-                                     bool         is_dir,
-                                     long         file_size)
+static bool propfind_send_entry(jpp_http_conn_t *conn,
+                                const char      *href,
+                                bool             is_dir,
+                                long             file_size)
 {
     char esc[260];
     char chunk[640];
@@ -212,21 +210,21 @@ static esp_err_t propfind_send_entry(httpd_req_t *req,
             "</D:response>",
             esc, display, file_size, mime_for(display));
     }
-    if (n <= 0) { return ESP_FAIL; }
-    return httpd_resp_send_chunk(req, chunk, n);
+    if (n <= 0) { return false; }
+    return jpp_http_resp_send_chunk(conn, chunk, n);
 }
 
 /* ---- Recursive delete ----------------------------------------------------- */
 
-static esp_err_t delete_recursive(const char *path)
+static bool delete_recursive(const char *path)
 {
     struct stat st;
-    if (stat(path, &st) != 0) { return ESP_FAIL; }
+    if (stat(path, &st) != 0) { return false; }
     if (!S_ISDIR(st.st_mode)) {
-        return (unlink(path) == 0) ? ESP_OK : ESP_FAIL;
+        return (unlink(path) == 0);
     }
     DIR *dir = opendir(path);
-    if (dir == NULL) { return ESP_FAIL; }
+    if (dir == NULL) { return false; }
     struct dirent *ent;
     bool ok = true;
     while ((ent = readdir(dir)) != NULL) {
@@ -236,57 +234,54 @@ static esp_err_t delete_recursive(const char *path)
 #pragma GCC diagnostic ignored "-Wformat-truncation"
         snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
 #pragma GCC diagnostic pop
-        if (delete_recursive(child) != ESP_OK) { ok = false; }
+        if (!delete_recursive(child)) { ok = false; }
     }
     closedir(dir);
-    return (ok && rmdir(path) == 0) ? ESP_OK : ESP_FAIL;
+    return (ok && rmdir(path) == 0);
 }
 
-/* ---- URI handlers --------------------------------------------------------- */
+/* ---- Method handlers ------------------------------------------------------ */
 
-static esp_err_t handle_options(httpd_req_t *req)
+static void handle_options(jpp_http_conn_t *conn)
 {
-    httpd_resp_set_hdr(req, "Allow",
+    jpp_http_resp_set_hdr(conn, "Allow",
         "OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, PROPFIND");
-    httpd_resp_set_hdr(req, "DAV",           "1");
-    httpd_resp_set_hdr(req, "MS-Author-Via", "DAV");
-    httpd_resp_send(req, "", 0);
-    return ESP_OK;
+    jpp_http_resp_set_hdr(conn, "DAV",           "1");
+    jpp_http_resp_set_hdr(conn, "MS-Author-Via", "DAV");
+    jpp_http_resp_send(conn, NULL, 0);
 }
 
-static esp_err_t handle_propfind(httpd_req_t *req)
+static void handle_propfind(jpp_http_conn_t *conn)
 {
-    if (!check_auth(req)) { return deny_auth(req); }
-
     char full_path[FULL_PATH_MAX];
-    const char *uri = req->uri;
+    const char *uri = jpp_http_uri(conn);
     if (!build_path(uri, full_path, sizeof(full_path))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad path");
+        return;
     }
     struct stat st;
     if (stat(full_path, &st) != 0) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_404, "Not found");
+        return;
     }
 
-    char depth[8] = "1";
-    httpd_req_get_hdr_value_str(req, "Depth", depth, sizeof(depth));
-    bool list_children = (depth[0] != '0') && S_ISDIR(st.st_mode);
+    const char *depth = jpp_http_header(conn, "Depth");
+    bool list_children = (depth == NULL || depth[0] != '0') && S_ISDIR(st.st_mode);
 
-    httpd_resp_set_status(req, "207 Multi-Status");
-    httpd_resp_set_type(req, "application/xml; charset=utf-8");
-    httpd_resp_set_hdr(req, "DAV", "1");
+    jpp_http_resp_set_status(conn, JPP_HTTP_207);
+    jpp_http_resp_set_type(conn, "application/xml; charset=utf-8");
+    jpp_http_resp_set_hdr(conn, "DAV", "1");
 
     static const char XML_OPEN[] =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
         "<D:multistatus xmlns:D=\"DAV:\">";
 
     /* Track send errors throughout — on the first failure we stop sending
-       (each blocked send waits send_wait_timeout seconds before returning),
-       close any open DIR, and return ESP_FAIL so httpd closes the socket
-       immediately instead of waiting for the next request on a dead conn. */
-    bool send_ok = (httpd_resp_send_chunk(req, XML_OPEN, sizeof(XML_OPEN) - 1) == ESP_OK);
+       (each blocked send waits out the send timeout before returning) and
+       close any open DIR.  Leaving the response unfinished is what tells the
+       server core to drop the connection instead of waiting for a next
+       request on a dead one. */
+    bool send_ok = jpp_http_resp_send_chunk(conn, XML_OPEN, sizeof(XML_OPEN) - 1);
 
     bool self_is_dir = S_ISDIR(st.st_mode);
     char self_href[280];
@@ -300,7 +295,7 @@ static esp_err_t handle_propfind(httpd_req_t *req)
     }
 #pragma GCC diagnostic pop
     if (send_ok) {
-        send_ok = (propfind_send_entry(req, self_href, self_is_dir, (long)st.st_size) == ESP_OK);
+        send_ok = propfind_send_entry(conn, self_href, self_is_dir, (long)st.st_size);
     }
 
     if (list_children && send_ok) {
@@ -330,246 +325,247 @@ static esp_err_t handle_propfind(httpd_req_t *req)
                              "%s%s%s", self_href, sep, ent->d_name);
                 }
 #pragma GCC diagnostic pop
-                send_ok = (propfind_send_entry(req, child_href, c_is_dir, (long)cst.st_size) == ESP_OK);
+                send_ok = propfind_send_entry(conn, child_href, c_is_dir, (long)cst.st_size);
             }
             closedir(dir);
         }
     }
 
-    if (!send_ok) {
-        return ESP_FAIL;
-    }
+    if (!send_ok) { return; }
     static const char XML_CLOSE[] = "</D:multistatus>";
-    httpd_resp_send_chunk(req, XML_CLOSE, sizeof(XML_CLOSE) - 1);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    jpp_http_resp_send_chunk(conn, XML_CLOSE, sizeof(XML_CLOSE) - 1);
+    jpp_http_resp_send_chunk(conn, NULL, 0);
 }
 
-static esp_err_t handle_get(httpd_req_t *req)
+static void handle_get(jpp_http_conn_t *conn)
 {
-    if (!check_auth(req)) { return deny_auth(req); }
-
     char full_path[FULL_PATH_MAX];
-    const char *uri = req->uri;
+    const char *uri = jpp_http_uri(conn);
     if (!build_path(uri, full_path, sizeof(full_path))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad path");
+        return;
     }
     struct stat st;
     if (stat(full_path, &st) != 0) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_404, "Not found");
+        return;
     }
 
     if (S_ISDIR(st.st_mode)) {
-        httpd_resp_set_type(req, "text/html; charset=utf-8");
+        jpp_http_resp_set_type(conn, "text/html; charset=utf-8");
         char line[300];
         int  n;
         n = snprintf(line, sizeof(line),
             "<html><head><title>SD Card \xe2\x80\x94 %s</title></head>"
             "<body><h2>%s</h2><ul>", uri, uri);
-        httpd_resp_send_chunk(req, line, n);
+        bool send_ok = jpp_http_resp_send_chunk(conn, line, n);
         DIR *dir = opendir(full_path);
         if (dir != NULL) {
             struct dirent *ent;
-            while ((ent = readdir(dir)) != NULL) {
+            while (send_ok && (ent = readdir(dir)) != NULL) {
                 if (strcmp(ent->d_name, ".") == 0 ||
                     strcmp(ent->d_name, "..") == 0) { continue; }
                 const char *sep = (uri[strlen(uri) - 1u] == '/') ? "" : "/";
                 n = snprintf(line, sizeof(line),
                     "<li><a href=\"%s%s%s\">%s</a></li>",
                     uri, sep, ent->d_name, ent->d_name);
-                httpd_resp_send_chunk(req, line, n);
+                send_ok = jpp_http_resp_send_chunk(conn, line, n);
             }
             closedir(dir);
         }
-        const char *footer = "</ul></body></html>";
-        httpd_resp_send_chunk(req, footer, (int)strlen(footer));
-        httpd_resp_send_chunk(req, NULL, 0);
-        return ESP_OK;
+        if (!send_ok) { return; }
+        jpp_http_resp_sendstr_chunk(conn, "</ul></body></html>");
+        jpp_http_resp_send_chunk(conn, NULL, 0);
+        return;
     }
 
-    FILE *f = fopen(full_path, "rb");
-    if (f == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Cannot open file");
-        return ESP_OK;
+    /* Files stream straight off the SD card through the pool's I/O buffer.
+       Raw open/read rather than fopen/fread: no stdio layer to copy through,
+       and the buffer is far larger than any stdio buffer would be. */
+    int fd = open(full_path, O_RDONLY);
+    if (fd < 0) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "Cannot open file");
+        return;
     }
-    httpd_resp_set_type(req, mime_for(full_path));
-    char size_str[24];
-    snprintf(size_str, sizeof(size_str), "%ld", (long)st.st_size);
-    httpd_resp_set_hdr(req, "Content-Length", size_str);
+    jpp_http_resp_set_type(conn, mime_for(full_path));
+    if (!jpp_http_resp_begin(conn, (size_t)st.st_size)) {
+        close(fd);
+        return;
+    }
 
-    size_t bytes_read;
-    bool client_gone = false;
-    while ((bytes_read = fread(s_io_chunk, 1u, FILE_CHUNK_SIZE, f)) > 0u) {
-        if (httpd_resp_send_chunk(req, s_io_chunk, (ssize_t)bytes_read) != ESP_OK) {
-            client_gone = true;
-            break;
-        }
+    size_t   io_size = 0u;
+    uint8_t *io      = jpp_http_io_buf(conn, &io_size);
+    ssize_t  got;
+    while ((got = read(fd, io, io_size)) > 0) {
+        if (!jpp_http_resp_write(conn, io, (size_t)got)) { break; }
     }
-    fclose(f);
-    if (client_gone) {
-        return ESP_FAIL;
-    }
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    close(fd);
+    jpp_http_resp_finish(conn);
 }
 
-static esp_err_t handle_put(httpd_req_t *req)
+static void handle_put(jpp_http_conn_t *conn)
 {
-    if (!check_auth(req)) { return deny_auth(req); }
-
     char full_path[FULL_PATH_MAX];
-    if (!build_path(req->uri, full_path, sizeof(full_path))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
-        return ESP_OK;
+    if (!build_path(jpp_http_uri(conn), full_path, sizeof(full_path))) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad path");
+        return;
     }
     struct stat st;
     if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Cannot PUT to directory");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Cannot PUT to directory");
+        return;
     }
 
-    /* ESP-IDF httpd never sends 100 Continue automatically.  Most WebDAV
-       clients (macOS Finder, etc.) send Expect: 100-continue on PUT and
-       withhold the body until they receive it — causing a deadlock where
-       both sides wait indefinitely.  Send the interim response on the raw
-       socket before touching httpd_req_recv so the client starts sending. */
-    {
-        char expect[32] = {0};
-        if (httpd_req_get_hdr_value_str(req, "Expect", expect, sizeof(expect)) == ESP_OK
-                && strcasecmp(expect, "100-continue") == 0) {
-            int sockfd = httpd_req_to_sockfd(req);
-            static const char k100[] = "HTTP/1.1 100 Continue\r\n\r\n";
-            send(sockfd, k100, sizeof(k100) - 1u, 0);
-        }
+    /* Most WebDAV clients (macOS Finder, etc.) send Expect: 100-continue on
+       PUT and withhold the body until they receive it — without the interim
+       response both sides wait indefinitely. */
+    const char *expect = jpp_http_header(conn, "Expect");
+    if (expect != NULL && strcasecmp(expect, "100-continue") == 0) {
+        jpp_http_send_continue(conn);
     }
 
-    FILE *f = fopen(full_path, "wb");
-    if (f == NULL) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Cannot create file");
-        return ESP_OK;
+    int fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "Cannot create file");
+        return;
     }
-    size_t remaining = req->content_len;
-    bool recv_err  = false;  /* socket-level failure — connection must be closed */
-    bool fwrite_err = false; /* SD write failure — connection is still good */
+
+    size_t   io_size = 0u;
+    uint8_t *io      = jpp_http_io_buf(conn, &io_size);
+    size_t remaining = jpp_http_content_len(conn);
+    bool recv_err   = false;  /* socket-level failure — connection must close */
+    bool write_err  = false;  /* SD write failure — connection is still good  */
     while (remaining > 0u) {
-        size_t to_read = (remaining < FILE_CHUNK_SIZE) ? remaining : FILE_CHUNK_SIZE;
-        int received = httpd_req_recv(req, s_io_chunk, to_read);
-        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+        size_t to_read = (remaining < io_size) ? remaining : io_size;
+        int received = jpp_http_recv(conn, io, to_read);
+        if (received == 0) {
             /* Transient Wi-Fi stall — keep waiting as long as the peer is
-               still connected.  A real disconnect returns ECONNRESET which
-               maps to HTTPD_SOCK_ERR_FAIL and falls through to recv_err. */
+               still connected.  A real disconnect returns -1. */
             continue;
         }
-        if (received <= 0) { recv_err = true; break; }
-        if (fwrite(s_io_chunk, 1u, (size_t)received, f) != (size_t)received) {
-            fwrite_err = true; break;
+        if (received < 0) { recv_err = true; break; }
+        if (write(fd, io, (size_t)received) != (ssize_t)received) {
+            write_err = true; break;
         }
         remaining -= (size_t)received;
     }
-    fclose(f);
+    close(fd);
 
-    if (recv_err || fwrite_err) {
+    if (recv_err || write_err) {
         unlink(full_path);
     }
     if (recv_err) {
-        /* Per ESP-IDF docs: return ESP_FAIL on recv error so httpd closes and
-           frees the socket immediately.  Returning ESP_OK on a broken socket
-           leaves zombie connections that exhaust lwIP pbufs and kill pings. */
-        return ESP_FAIL;
+        /* The stream is mid-body, so this connection is unusable.  Answer and
+           close rather than leaving a zombie socket holding lwIP pbufs. */
+        jpp_http_resp_close_conn(conn);
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Receive error");
+        return;
     }
-    if (fwrite_err) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write error");
-        return ESP_OK;
+    if (write_err) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "Write error");
+        return;
     }
-    httpd_resp_set_status(req, "201 Created");
-    httpd_resp_send(req, "", 0);
-    return ESP_OK;
+    jpp_http_resp_set_status(conn, JPP_HTTP_201);
+    jpp_http_resp_send(conn, NULL, 0);
 }
 
-static esp_err_t handle_delete(httpd_req_t *req)
+static void handle_delete(jpp_http_conn_t *conn)
 {
-    if (!check_auth(req)) { return deny_auth(req); }
-
     char full_path[FULL_PATH_MAX];
-    if (!build_path(req->uri, full_path, sizeof(full_path))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
-        return ESP_OK;
+    if (!build_path(jpp_http_uri(conn), full_path, sizeof(full_path))) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad path");
+        return;
     }
     struct stat st;
     if (stat(full_path, &st) != 0) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_404, "Not found");
+        return;
     }
-    if (delete_recursive(full_path) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Delete failed");
-        return ESP_OK;
+    if (!delete_recursive(full_path)) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "Delete failed");
+        return;
     }
-    httpd_resp_set_status(req, "204 No Content");
-    httpd_resp_send(req, "", 0);
-    return ESP_OK;
+    jpp_http_resp_set_status(conn, JPP_HTTP_204);
+    jpp_http_resp_send(conn, NULL, 0);
 }
 
-static esp_err_t handle_move(httpd_req_t *req)
+static void handle_move(jpp_http_conn_t *conn)
 {
-    if (!check_auth(req)) { return deny_auth(req); }
-
     char full_src[FULL_PATH_MAX];
-    if (!build_path(req->uri, full_src, sizeof(full_src))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad source path");
-        return ESP_OK;
+    if (!build_path(jpp_http_uri(conn), full_src, sizeof(full_src))) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad source path");
+        return;
     }
 
-    char dest_hdr[300];
-    if (httpd_req_get_hdr_value_str(req, "Destination", dest_hdr,
-                                     sizeof(dest_hdr)) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing Destination");
-        return ESP_OK;
+    const char *dest_uri = jpp_http_header(conn, "Destination");
+    if (dest_uri == NULL) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Missing Destination");
+        return;
     }
     /* Strip "http[s]://host" prefix to get bare URI path. */
-    const char *dest_uri = dest_hdr;
     if (strncmp(dest_uri, "https://", 8) == 0) {
         dest_uri = strchr(dest_uri + 8, '/');
     } else if (strncmp(dest_uri, "http://", 7) == 0) {
         dest_uri = strchr(dest_uri + 7, '/');
     }
     if (dest_uri == NULL) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad Destination");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad Destination");
+        return;
     }
 
     char full_dst[FULL_PATH_MAX];
     if (!build_path(dest_uri, full_dst, sizeof(full_dst))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad destination path");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad destination path");
+        return;
     }
     if (rename(full_src, full_dst) != 0) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Move failed");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "Move failed");
+        return;
     }
-    httpd_resp_set_status(req, "201 Created");
-    httpd_resp_send(req, "", 0);
-    return ESP_OK;
+    jpp_http_resp_set_status(conn, JPP_HTTP_201);
+    jpp_http_resp_send(conn, NULL, 0);
 }
 
-static esp_err_t handle_mkcol(httpd_req_t *req)
+static void handle_mkcol(jpp_http_conn_t *conn)
 {
-    if (!check_auth(req)) { return deny_auth(req); }
-
     char full_path[FULL_PATH_MAX];
-    if (!build_path(req->uri, full_path, sizeof(full_path))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad path");
-        return ESP_OK;
+    if (!build_path(jpp_http_uri(conn), full_path, sizeof(full_path))) {
+        jpp_http_resp_send_err(conn, JPP_HTTP_400, "Bad path");
+        return;
     }
     if (mkdir(full_path, 0777) != 0) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Cannot create directory");
-        return ESP_OK;
+        jpp_http_resp_send_err(conn, JPP_HTTP_500, "Cannot create directory");
+        return;
     }
-    httpd_resp_set_status(req, "201 Created");
-    httpd_resp_send(req, "", 0);
-    return ESP_OK;
+    jpp_http_resp_set_status(conn, JPP_HTTP_201);
+    jpp_http_resp_send(conn, NULL, 0);
+}
+
+/* ---- Dispatch ------------------------------------------------------------- */
+
+static void webdav_dispatch(jpp_http_conn_t *conn, void *user_ctx)
+{
+    (void)user_ctx;
+    const char *method = jpp_http_method(conn);
+
+    /* OPTIONS stays unauthenticated: clients probe DAV support with it before
+       they have any reason to send credentials. */
+    if (strcmp(method, "OPTIONS") == 0) { handle_options(conn); return; }
+
+    if (!check_auth(conn)) { deny_auth(conn); return; }
+
+    if      (strcmp(method, "PROPFIND") == 0) { handle_propfind(conn); }
+    else if (strcmp(method, "GET")      == 0) { handle_get(conn); }
+    else if (strcmp(method, "HEAD")     == 0) { handle_get(conn); }
+    else if (strcmp(method, "PUT")      == 0) { handle_put(conn); }
+    else if (strcmp(method, "DELETE")   == 0) { handle_delete(conn); }
+    else if (strcmp(method, "MOVE")     == 0) { handle_move(conn); }
+    else if (strcmp(method, "MKCOL")    == 0) { handle_mkcol(conn); }
+    else {
+        jpp_http_resp_set_hdr(conn, "Allow",
+            "OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, PROPFIND");
+        jpp_http_resp_send_err(conn, JPP_HTTP_405, "Method not allowed");
+    }
 }
 
 /* ---- Public API ----------------------------------------------------------- */
@@ -608,46 +604,24 @@ static jpp_fileserver_result_t start_server_impl(void)
     /* Event marker: heap right as the server starts.  Sustained low-heap and
        actual alloc failures are tracked globally by jpp_heap_monitor. */
     jpp_heap_monitor_log("webdav-start");
-    httpd_config_t cfg      = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port         = s_fs.port;
-    cfg.uri_match_fn        = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers    = 8u;
-    cfg.max_open_sockets    = 1u;   /* one active TCP conn keeps lwIP pbufs free for WiFi TX */
-    cfg.stack_size          = 8192u;
-    cfg.lru_purge_enable    = false; /* refuse new conn rather than evicting an active upload */
-    cfg.recv_wait_timeout   = 30u;
-    cfg.send_wait_timeout   = 10u;
 
-    esp_err_t err = httpd_start(&s_fs.server, &cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
+    jpp_http_server_config_t cfg = {
+        .owner          = "webdav",
+        .port           = s_fs.port,
+        .stack_bytes    = WEBDAV_STACK_BYTES,
+        .recv_timeout_s = 30u,
+        .send_timeout_s = 10u,
+        .handler        = webdav_dispatch,
+        .user_ctx       = NULL,
+    };
+
+    jpp_http_result_t rc = jpp_http_server_start(&cfg);
+    if (rc != JPP_HTTP_OK) {
+        ESP_LOGE(TAG, "start failed: %s", jpp_http_result_name(rc));
         s_fs.state       = JPP_FILESERVER_STATE_ERROR;
         s_fs.password[0] = '\0';
         return JPP_FILESERVER_RESULT_START_FAILED;
     }
-
-    static const httpd_uri_t uri_options = {
-        .uri = "/*", .method = HTTP_OPTIONS,  .handler = handle_options,  .user_ctx = NULL };
-    static const httpd_uri_t uri_propfind = {
-        .uri = "/*", .method = HTTP_PROPFIND, .handler = handle_propfind, .user_ctx = NULL };
-    static const httpd_uri_t uri_get = {
-        .uri = "/*", .method = HTTP_GET,      .handler = handle_get,      .user_ctx = NULL };
-    static const httpd_uri_t uri_put = {
-        .uri = "/*", .method = HTTP_PUT,      .handler = handle_put,      .user_ctx = NULL };
-    static const httpd_uri_t uri_delete = {
-        .uri = "/*", .method = HTTP_DELETE,   .handler = handle_delete,   .user_ctx = NULL };
-    static const httpd_uri_t uri_move = {
-        .uri = "/*", .method = HTTP_MOVE,     .handler = handle_move,     .user_ctx = NULL };
-    static const httpd_uri_t uri_mkcol = {
-        .uri = "/*", .method = HTTP_MKCOL,    .handler = handle_mkcol,    .user_ctx = NULL };
-
-    httpd_register_uri_handler(s_fs.server, &uri_options);
-    httpd_register_uri_handler(s_fs.server, &uri_propfind);
-    httpd_register_uri_handler(s_fs.server, &uri_get);
-    httpd_register_uri_handler(s_fs.server, &uri_put);
-    httpd_register_uri_handler(s_fs.server, &uri_delete);
-    httpd_register_uri_handler(s_fs.server, &uri_move);
-    httpd_register_uri_handler(s_fs.server, &uri_mkcol);
 
     s_fs.state = JPP_FILESERVER_STATE_RUNNING;
     ESP_LOGI(TAG, "Started on port %u, serving %s", s_fs.port, s_fs.sd_root);
@@ -683,12 +657,11 @@ jpp_fileserver_result_t jpp_fileserver_stop(void)
     if (s_fs.state != JPP_FILESERVER_STATE_RUNNING) {
         return JPP_FILESERVER_RESULT_OK;
     }
-    esp_err_t err = httpd_stop(s_fs.server);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_stop failed: %s", esp_err_to_name(err));
+    jpp_http_result_t rc = jpp_http_server_stop();
+    if (rc != JPP_HTTP_OK) {
+        ESP_LOGE(TAG, "stop failed: %s", jpp_http_result_name(rc));
         return JPP_FILESERVER_RESULT_STOP_FAILED;
     }
-    s_fs.server      = NULL;
     s_fs.state       = JPP_FILESERVER_STATE_STOPPED;
     s_fs.password[0] = '\0';
     ESP_LOGI(TAG, "Stopped");

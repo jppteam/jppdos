@@ -1,0 +1,88 @@
+# Mirrors this repository to the GitLab remote (git.nova.tokyo).
+#
+# GitHub is the primary host; GitLab is a read-only copy. GitLab's own pull
+# mirroring would be the obvious way to do this and is deliberately not used:
+# it is a Premium/Ultimate feature, and — the part that actually disqualifies
+# it — it never removes a branch deleted upstream, so it could not propagate
+# cleanup-branches.yml's deletions. Pushing from this side with --prune does
+# remove them. That is why there is no longer a .gitlab-ci.yml: the branch
+# sweep it used to run on the GitLab side is redundant once deletions mirror
+# across on their own.
+#
+# Nothing but this workflow should ever push to GitLab. The refspecs below are
+# forced, so anything committed directly over there is overwritten.
+#
+# This file is deliberately IDENTICAL in every J++Device repository: the GitLab
+# path is derived from the GitHub repo name rather than hard-coded, and the
+# token is an org-level secret. Copy it verbatim; do not edit it per repo. If
+# one repo's GitLab slug genuinely differs, set the `GITLAB_PATH` repository
+# variable there instead of forking the file.
+name: mirror to gitlab
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  # Branch and tag deletions — this is what carries a cleanup-branches.yml sweep
+  # across. `push` does fire for a deletion, but the workflow file would then be
+  # read from a ref that no longer exists; `delete` runs from the default branch.
+  delete:
+  # Manual resync, for when the mirror has drifted.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never mirror two states at once: a cancelled push can leave GitLab with some
+  # refs updated and others not.
+  group: mirror-gitlab
+  cancel-in-progress: false
+
+env:
+  GITLAB_HOST: git.nova.tokyo
+  GITLAB_GROUP: jppdevice
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push heads and tags to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Escape hatch for a repo whose GitLab slug differs from its GitHub
+          # one. Leave the variable unset and the path is derived — which is what
+          # keeps this file byte-identical across every J++Device repo.
+          GITLAB_PATH_OVERRIDE: ${{ vars.GITLAB_PATH }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITLAB_TOKEN:-}" ]; then
+            echo "::error::GITLAB_MIRROR_TOKEN is not set (GitLab group access token, write_repository scope)."
+            exit 1
+          fi
+
+          # jppteam/<name> on GitHub maps to jppdevice/<name> on GitLab.
+          GITLAB_PATH="${GITLAB_PATH_OVERRIDE:-${GITLAB_GROUP}/${GITHUB_REPOSITORY#*/}}"
+          echo "Mirroring to ${GITLAB_HOST}/${GITLAB_PATH}"
+
+          # A --bare clone takes refs/heads/* and refs/tags/* and nothing else.
+          # Deliberately NOT --mirror: that would also drag GitHub's refs/pull/*
+          # across and push every PR ref into GitLab. Authenticated so this keeps
+          # working if the repository is ever made private.
+          git clone --quiet --bare \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo.git
+          cd repo.git
+
+          # --prune is the point of the whole workflow: it deletes refs on GitLab
+          # that no longer exist here. A protected branch on the GitLab side will
+          # refuse a delete or a non-fast-forward update, but that only bites if
+          # master/develop diverge there — and nothing pushes to GitLab but this.
+          git push --prune --quiet \
+            "https://oauth2:${GITLAB_TOKEN}@${GITLAB_HOST}/${GITLAB_PATH}.git" \
+            "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+
+          branches=$(git for-each-ref --format='%(refname)' refs/heads | wc -l)
+          tags=$(git for-each-ref --format='%(refname)' refs/tags | wc -l)
+          echo "Mirrored ${branches} branch(es) and ${tags} tag(s) to ${GITLAB_HOST}."

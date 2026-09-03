@@ -45,6 +45,7 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 #define SMP_CMD_GET_INFO        0x02u
 #define SMP_CMD_GET_LRV_DATA    0x03u
 #define SMP_CMD_SET_TIME        0x04u
+#define SMP_CMD_KEEPALIVE       0x05u
 #define SMP_CMD_FS_LIST_DIR     0x10u
 #define SMP_CMD_FS_MKDIR        0x11u
 #define SMP_CMD_FS_REMOVE       0x12u
@@ -71,6 +72,17 @@ static const uint8_t SMP_SOF[4] = {0x01u, 0x4Au, 0x50u, 0x50u};
 #define SMP_ST_ERR_TRANSFER   0x08u
 #define SMP_ST_ERR_OVERFLOW   0x09u
 #define SMP_ST_ERR_APP_RUNNING 0x0Au
+
+/*
+ * Device-initiated event frames use the same envelope as a response
+ * (SEQ|STATUS-or-EVENT|BODY) but are not sent in reply to a command. SEQ_EVENT
+ * is a value the host never assigns to a real command (see jppd_upload.py's
+ * _next_seq(), which skips it), so a frame carrying it can never be mistaken
+ * for an ordinary response — the host tells the two apart by SEQ alone, before
+ * it even looks at the second byte.
+ */
+#define SMP_SEQ_EVENT          0xFFu
+#define SMP_EVT_SESSION_ENDED  0x01u   /* device closed the session unprompted */
 
 /* ---- Module state -------------------------------------------------------- */
 
@@ -202,6 +214,16 @@ static void send_response(uint8_t seq, uint8_t status,
 }
 
 #define send_err(seq, st) send_response((seq), (st), NULL, 0u)
+
+/*
+ * Send an unsolicited device -> host event. Reuses the response frame shape
+ * with SEQ_EVENT so it needs no new wire format, just a reserved SEQ the host
+ * never assigns to a command (see SMP_SEQ_EVENT above).
+ */
+static void send_event(uint8_t event_type, const uint8_t *body, uint16_t body_len)
+{
+    send_response(SMP_SEQ_EVENT, event_type, body, body_len);
+}
 
 /* ---- Session timer ------------------------------------------------------- */
 
@@ -452,6 +474,20 @@ static void handle_set_time(uint8_t seq, const uint8_t *body, uint16_t body_len)
     send_err(seq, SMP_ST_OK);
     ESP_LOGI(TAG, "SMP_SET_TIME %04d-%02d-%02d %02d:%02d:%02d",
              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+}
+
+/*
+ * KEEPALIVE is a no-op the host can send during a stretch where it has
+ * nothing else to say to the device (idling on user input, redrawing a UI)
+ * so the session doesn't lapse after SMP_SESSION_TIMEOUT_MS. It needs no
+ * handler-side logic of its own: dispatch_command() already resets the
+ * inactivity timer before invoking *any* handler for a valid, session-gated
+ * command, and KEEPALIVE is gated the same way (ERR_NO_SESSION with no
+ * session open) so it can't be used to dodge that gate.
+ */
+static void handle_keepalive(uint8_t seq)
+{
+    send_err(seq, SMP_ST_OK);
 }
 
 static void handle_fs_list_dir(uint8_t seq, const uint8_t *body,
@@ -934,6 +970,7 @@ static void dispatch_command(const uint8_t *payload, uint16_t plen)
     case SMP_CMD_GET_INFO:        handle_get_info(seq);                          break;
     case SMP_CMD_GET_LRV_DATA:    handle_get_lrv_data(seq);                     break;
     case SMP_CMD_SET_TIME:        handle_set_time(seq, body, body_len);         break;
+    case SMP_CMD_KEEPALIVE:       handle_keepalive(seq);                        break;
     case SMP_CMD_FS_LIST_DIR:     handle_fs_list_dir(seq, body, body_len);      break;
     case SMP_CMD_FS_MKDIR:        handle_fs_mkdir(seq, body, body_len);          break;
     case SMP_CMD_FS_REMOVE:       handle_fs_remove(seq, body, body_len);         break;
@@ -1097,7 +1134,13 @@ void jpp_serial_mgr_handle_action(jpp_ui_action_t action)
         }
     } else if (s_session_active) {
         if (action == JPP_UI_ACTION_BACK) {
+            /* Tell the host before tearing down local state, so a host tool
+               blocked in a read (or idling between commands) learns the
+               session is gone instead of discovering it only via the next
+               command's ERR_NO_SESSION or a 30 s timeout. */
+            send_event(SMP_EVT_SESSION_ENDED, NULL, 0u);
             close_session();
+            ESP_LOGI(TAG, "SMP_SESSION_ENDED_BY_USER");
         }
     }
 }
@@ -1125,7 +1168,7 @@ void jpp_serial_mgr_render(void)
     } else if (s_session_active) {
         jpp_draw_title("Serial manager");
         ssd1306_draw_string(2u, 0u, "Session active", false);
-        ssd1306_draw_string(5u, 0u, "Hold CTR: end", false);
+        ssd1306_draw_string(5u, 0u, "Hold OK: end", false);
     }
 
     ssd1306_flush();

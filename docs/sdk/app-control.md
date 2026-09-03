@@ -36,7 +36,7 @@ jppsdk.set_frame(lines: list[str]) -> None
 **Returns:** `JPP_SDK_OK`, or `JPP_SDK_TEXT_TRUNCATED` if any line was clipped.
 
 **Notes:**
-- Calling `set_frame` clears fullscreen canvas mode. If you were using `canvas_fullscreen(true)`, re-enable it after each `set_frame` call.
+- Calling `set_frame` clears fullscreen canvas mode, taking the app back to the 48-row window for the duration. When the modal returns, the firmware restores fullscreen if the app was in fullscreen when the frame was shown, so apps do not need to re-enable it after every prompt.
 - Row 0 acts as the title — if non-empty, a 1-px signature rule is drawn below it.
 - The frame persists until the next `set_frame`. You do not need to call it on every idle tick; call it only when content changes.
 
@@ -90,18 +90,26 @@ jppsdk.log(event_name: str) -> None
 
 ---
 
-### `request_cap` (C only) { #request_cap }
+### `request_cap` { #request_cap }
 
 Proactively triggers the consent prompt for a single manifest-declared capability, without performing any operation. Use it to **front-load** permission requests — ask for the caps a screen or mode needs the moment the user chooses it, rather than letting the prompt fire mid-flow at first use.
 
 **Capability:** the one named by `cap` (must be declared in the manifest)
 
+/// tab | C
 ```c
 jpp_sdk_status_t jpp_sdk_request_cap(jpp_sdk_context_t *ctx,
                                      const char *cap);
 ```
+///
 
-**Returns:** `JPP_SDK_OK` if the cap is already granted or the user allows it; `JPP_SDK_ACCESS_DENIED` if the user declines or the cap was not declared in the manifest; `JPP_SDK_INVALID_ARGUMENT` if `cap` is `NULL`/empty.
+/// tab | MicroPython
+```python
+jppsdk.request_cap(cap: str) -> None
+```
+///
+
+**Returns:** `JPP_SDK_OK` if the cap is already granted or the user allows it; `JPP_SDK_ACCESS_DENIED` if the user declines or the cap was not declared in the manifest; `JPP_SDK_INVALID_ARGUMENT` if `cap` is `NULL`/empty. In MicroPython the call returns `None` when granted and raises `SdkPermissionError` when declined — catch it to branch on the answer.
 
 **Notes:**
 - This only changes *when* the prompt appears, never the policy. Tier-1 caps (e.g. `ble.scan`, `ble.advertise`, `http.request`, `background.register`) persist once granted; tier-2 caps (e.g. `files.full`, `ble.connect`, `ble.host`, `network.bind`) are granted for the session only and re-prompt on the next launch — identical to first-use consent.
@@ -183,28 +191,39 @@ Injects a synthetic key event into the queue. Useful for testing and for UI help
 void jpp_sdk_push_key(jpp_sdk_context_t *ctx, jpp_sdk_key_event_t event);
 ```
 
+**Notes:** This is really a firmware-internal hook — the keypad task uses it to
+feed the running app's queue — which is why it has no MicroPython binding. Apps
+read input with [`poll_key`](#poll_key) / [`wait_key`](#wait_key).
+
 ---
 
-### `claim_center`
+### `claim_ok`
 
-Take over CENTER gestures as your own input.
+Take over OK gestures as your own input.
 
 **Capability:** None
 
-!!! info "Requires SDK level 2."
-    `claim_center`, `KEY_BACK`, `KEY_CENTER_HOLD`, `KEY_CENTER_DOUBLE` and the
-    `CENTER_CLAIM_*` constants all arrived in firmware v1.1. Declare
-    `"sdk_min": 2` — see the [SDK changelog](../sdk-changelog.md).
+!!! info "The `OK`-named forms need level 3; the old `CENTER`-named forms still work at level 2."
+    The capability itself (`KEY_BACK`, `KEY_*_HOLD`/`_DOUBLE`, and the claim
+    call) shipped in firmware v1.1 at level 2, under the names
+    `jpp_sdk_claim_center` / `jppsdk.claim_center` / `JPP_SDK_KEY_CENTER*` /
+    `JPP_SDK_CENTER_CLAIM_*`. Level 3 renamed them to `claim_ok` /
+    `JPP_SDK_KEY_OK*` / `JPP_SDK_OK_CLAIM_*` and kept the old names as
+    deprecated aliases — same values, no rebuild forced. Declare
+    `"sdk_min": 3` only if your source actually uses the `OK`-named forms;
+    code still written against the `CENTER`-named forms keeps its existing
+    `"sdk_min": 2`. See [the SDK changelog](../sdk-changelog.md#the-5th-keypad-button-is-ok-not-center)
+    for the full list of aliases.
 
 /// tab | C
 ```c
-jpp_sdk_status_t jpp_sdk_claim_center(jpp_sdk_context_t *ctx, uint8_t mask);
+jpp_sdk_status_t jpp_sdk_claim_ok(jpp_sdk_context_t *ctx, uint8_t mask);
 ```
 ///
 
 /// tab | MicroPython
 ```python
-jppsdk.claim_center(mask: int) -> None
+jppsdk.claim_ok(mask: int) -> None
 ```
 ///
 
@@ -212,34 +231,34 @@ jppsdk.claim_center(mask: int) -> None
 
 | Name | Description |
 |------|-------------|
-| `mask` | Bitwise OR of `JPP_SDK_CENTER_CLAIM_HOLD` and `JPP_SDK_CENTER_CLAIM_DOUBLE`, or `JPP_SDK_CENTER_CLAIM_NONE` (the default on every bind). In MicroPython: `jppsdk.CENTER_CLAIM_HOLD`, `jppsdk.CENTER_CLAIM_DOUBLE`, `jppsdk.CENTER_CLAIM_NONE`. |
+| `mask` | Bitwise OR of `JPP_SDK_OK_CLAIM_HOLD` and `JPP_SDK_OK_CLAIM_DOUBLE`, or `JPP_SDK_OK_CLAIM_NONE` (the default on every bind). In MicroPython: `jppsdk.OK_CLAIM_HOLD`, `jppsdk.OK_CLAIM_DOUBLE`, `jppsdk.OK_CLAIM_NONE`. |
 
 **Behaviour:**
 
 | Claim | Your app receives | Back |
 |---|---|---|
-| *(nothing — the default)* | `KEY_CENTER` | `KEY_BACK` |
-| `HOLD` | `KEY_CENTER` + `KEY_CENTER_HOLD` | your own |
-| `DOUBLE` | `KEY_CENTER` + `KEY_CENTER_DOUBLE` | your own |
-| `HOLD \| DOUBLE` | `KEY_CENTER` + both | your own |
+| *(nothing — the default)* | `KEY_OK` | `KEY_BACK` |
+| `HOLD` | `KEY_OK` + `KEY_OK_HOLD` | your own |
+| `DOUBLE` | `KEY_OK` + `KEY_OK_DOUBLE` | your own |
+| `HOLD \| DOUBLE` | `KEY_OK` + both | your own |
 
 **Notes:** The device has a user preference (Settings > Controls) for whether a long hold or a double-click means "Back". **Your app never needs to read it.** Claim nothing and you get `JPP_SDK_KEY_BACK` whenever the user asks to go back, with the firmware deciding which physical gesture that was — settings-agnostic by construction.
 
-Claim a gesture and it becomes yours: it arrives as `JPP_SDK_KEY_CENTER_HOLD` / `JPP_SDK_KEY_CENTER_DOUBLE`, `JPP_SDK_KEY_BACK` stops being delivered, and **your app is responsible for its own way out** (a pause menu, an on-screen Exit item). That is the trade for owning the gesture, and it applies whichever gesture you claimed.
+Claim a gesture and it becomes yours: it arrives as `JPP_SDK_KEY_OK_HOLD` / `JPP_SDK_KEY_OK_DOUBLE`, `JPP_SDK_KEY_BACK` stops being delivered, and **your app is responsible for its own way out** (a pause menu, an on-screen Exit item). That is the trade for owning the gesture, and it applies whichever gesture you claimed.
 
-Claiming *only* `HOLD` additionally keeps `JPP_SDK_KEY_CENTER` instant. Telling a double-click apart requires withholding the first click for a few hundred milliseconds; when nobody needs that distinction, nothing is withheld. This is the combination for an app where CENTER is a rapid action button and hold opens a pause menu:
+Claiming *only* `HOLD` additionally keeps `JPP_SDK_KEY_OK` instant. Telling a double-click apart requires withholding the first click for a few hundred milliseconds; when nobody needs that distinction, nothing is withheld. This is the combination for an app where OK is a rapid action button and hold opens a pause menu:
 
 ```c
-jpp_sdk_claim_center(ctx, JPP_SDK_CENTER_CLAIM_HOLD);
+jpp_sdk_claim_ok(ctx, JPP_SDK_OK_CLAIM_HOLD);
 /* ... */
 switch (key) {
-case JPP_SDK_KEY_CENTER:      fire();       break;
-case JPP_SDK_KEY_CENTER_HOLD: pause_menu(); break;
+case JPP_SDK_KEY_OK:      fire();       break;
+case JPP_SDK_KEY_OK_HOLD: pause_menu(); break;
 }
 ```
 
 Never affects `UP`/`DOWN`/`LEFT`/`RIGHT`, and never affects the launcher or Settings. The claim lives on your context and is dropped when your app exits.
 
-`JPP_SDK_KEY_BACK` is the preferred spelling of `JPP_SDK_KEY_CENTER_LONG` — the same value under a name that no longer implies a particular gesture. Existing code using `JPP_SDK_KEY_CENTER_LONG` is unaffected.
+`JPP_SDK_KEY_BACK` is the preferred spelling of `JPP_SDK_KEY_OK_LONG` — the same value under a name that no longer implies a particular gesture. Existing code using `JPP_SDK_KEY_OK_LONG` is unaffected.
 
 ---

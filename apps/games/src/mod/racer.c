@@ -178,7 +178,7 @@ static bool play_session(void)
                 g.car_x += 4;
                 if (g.car_x > ROAD_R - CAR_W) { g.car_x = ROAD_R - CAR_W; }
                 break;
-            case JPP_SDK_KEY_CENTER_LONG: {
+            case JPP_SDK_KEY_OK_LONG: {
                 int action = pause_menu();
                 if (action == 1) { reset_game(); }
                 if (action == 2) { return false; }

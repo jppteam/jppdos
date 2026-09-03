@@ -455,7 +455,7 @@ static void show_result(jpp_sdk_context_t *ctx, bool ok,
     while (true) {
         jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
         jpp_sdk_wait_key(ctx, 0u, &key);
-        if (key == JPP_SDK_KEY_CENTER || key == JPP_SDK_KEY_CENTER_LONG) {
+        if (key == JPP_SDK_KEY_OK || key == JPP_SDK_KEY_OK_LONG) {
             break;
         }
     }
@@ -478,7 +478,7 @@ static void notify_ok(jpp_sdk_context_t *ctx, const char *title, const char *tex
 /*
  * Render a simple selectable list with a ">"/blank cursor (matching the rest of
  * the OS) and a footer line. Returns the chosen index, or -1 if the user backed
- * out (long-press CENTER).
+ * out (long-press OK).
  */
 static int menu_select(jpp_sdk_context_t *ctx, const char *title,
                        const char *const *items, size_t n)
@@ -510,9 +510,9 @@ static int menu_select(jpp_sdk_context_t *ctx, const char *title,
         case JPP_SDK_KEY_DOWN:
             sel = (sel + 1u) % n;
             break;
-        case JPP_SDK_KEY_CENTER:
+        case JPP_SDK_KEY_OK:
             return (int)sel;
-        case JPP_SDK_KEY_CENTER_LONG:
+        case JPP_SDK_KEY_OK_LONG:
             return -1;
         default:
             break;
@@ -566,7 +566,7 @@ static bool confirm_reset(jpp_sdk_context_t *ctx)
         case JPP_SDK_KEY_DOWN:
             sel ^= 1u;
             break;
-        case JPP_SDK_KEY_CENTER:
+        case JPP_SDK_KEY_OK:
             if (sel == 1u) {
                 return false;             /* No, cancel */
             }
@@ -574,7 +574,7 @@ static bool confirm_reset(jpp_sdk_context_t *ctx)
                 return true;              /* Yes — only after the countdown */
             }
             break;                        /* Yes pressed too early: ignore */
-        case JPP_SDK_KEY_CENTER_LONG:
+        case JPP_SDK_KEY_OK_LONG:
             return false;
         default:
             break;                        /* timeout → re-render countdown */
@@ -734,11 +734,11 @@ static void run_leader(jpp_sdk_context_t *ctx,
 
         jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
         jpp_sdk_poll_key(ctx, &key);
-        if (key == JPP_SDK_KEY_CENTER && session.peer_count > 0u) {
+        if (key == JPP_SDK_KEY_OK && session.peer_count > 0u) {
             proceed = true;
             break;
         }
-        if (key == JPP_SDK_KEY_CENTER_LONG) {
+        if (key == JPP_SDK_KEY_OK_LONG) {
             cancelled = true;
             break;
         }
@@ -955,7 +955,7 @@ static void run_participant(jpp_sdk_context_t *ctx,
         }
         jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
         jpp_sdk_poll_key(ctx, &key);
-        if (key == JPP_SDK_KEY_CENTER_LONG) {
+        if (key == JPP_SDK_KEY_OK_LONG) {
             cancelled = true;
             break;
         }
@@ -1138,7 +1138,7 @@ void meetapp_run(jpp_sdk_context_t *ctx)
     jpp_sdk_request_cap(ctx, "ble.advertise");
 
     /* Main menu loop. Each action returns here; only backing out of the menu
-       (long-press CENTER) exits the app. */
+       (long-press OK) exits the app. */
     static const char *const ITEMS[] = {
         "Join meetup",
         "Initiate meetup",

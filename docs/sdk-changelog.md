@@ -36,13 +36,130 @@ narrows the set of devices that will run your app.
 | `sdk_min` | Runs on | Notes |
 |-----------|---------|-------|
 | `1` | every shipped unit | The safe default |
-| `2` | firmware v1.1 and later | Required for TLS, outbound TCP, crypto, and CENTER claims |
+| `2` | firmware v1.1 and later | Required for TLS, outbound TCP, crypto, and OK claims |
+| `3` | *no released firmware yet* | Required for `wrap_text`, the MicroPython bindings that closed the C/Python gap, and the new OK-named forms of the CENTER-claim API (the old names still work — see below) |
+
+---
+
+## Level 3
+
+**Unreleased** · open
+
+!!! warning "No firmware has shipped this level yet."
+    An app declaring `sdk_min: 3` will be rejected with `SDK_TOO_OLD` on every
+    unit in the field, including v1.1. Do not ship one until a firmware release
+    exports level 3.
+
+### `jpp_sdk_wrap_text` became callable
+
+[`wrap_text`](sdk/display.md#wrap_text) was declared in the level-1 header and
+documented as a native SDK call from v1.0-RTM onward, but it was never listed in
+the firmware's native symbol table — so a native app that called it was rejected
+at launch with `UNRESOLVED_SYM`. It now resolves.
+
+This is the same defect that affected [`confirm`](#jpp_sdk_confirm-became-callable)
+at level 2, and it is handled the same way: the surface genuinely changed from
+an app's point of view, so it mints a level rather than being folded into a
+closed one. If your native app calls `wrap_text`, declare `sdk_min: 3` — a
+level-2 device cannot run it regardless of what the level-1 header advertised.
+
+- No capability — pure computation on caller-supplied buffers.
+- New symbol in `s_symtab`: `jpp_sdk_wrap_text`. The function itself is
+  unchanged; only its reachability from a loaded app binary is new.
+- MicroPython apps never resolve symbols through `s_symtab`, so this part is
+  C-side only — but `wrap_text` also gained a `jppsdk` binding at this level,
+  see below.
+
+### The MicroPython SDK caught up with the native one
+
+Sixteen calls that existed only in C now have `jppsdk` bindings, so a
+MicroPython app can do everything a native one can apart from loading native
+code modules. The C functions are unchanged; what is new is that they are
+reachable from Python — and `sdk_min` is the only way a MicroPython app can
+require a firmware where they exist, so this mints a level for exactly the
+reason `wrap_text` does.
+
+- [`request_cap`](sdk/app-control.md#request_cap) — front-load a capability
+  prompt. Returns `None` when granted, raises `SdkPermissionError` when denied.
+- [`confirm`](sdk/display.md#confirm) — the shared Deny/Allow consent surface,
+  as `confirm(title, lines, default_allow=True) -> bool`.
+- [`wrap_text`](sdk/display.md#wrap_text) — `wrap_text(text, max_lines=7) -> list[str]`.
+- [`file_pick`](sdk/display.md#file_pick) — SD file browser; returns the path or
+  `None`. Still requires `files.full`.
+- [`ble_set_connectable`](sdk/wireless.md#ble_set_connectable) and the GATT-server
+  trio [`ble_host_set_value`](sdk/wireless.md#ble_host_set_value) ·
+  [`ble_host_wait_write`](sdk/wireless.md#ble_host_wait_write) ·
+  [`ble_host_clear`](sdk/wireless.md#ble_host_clear) — a Python app can now be the
+  BLE peripheral, not just the central. `ble_host_wait_write` returns `bytes`, or
+  `None` on timeout.
+- [`net_connect`](sdk/network.md#net_connect) — outbound TCP, returning a socket
+  for the already-bound `net_recv`/`net_send`/`net_close`. Requires
+  `network.connect`.
+- The [crypto primitives](sdk/crypto.md), as `jppsdk.crypto_*`:
+  `crypto_sha256` · `crypto_sha1` · `crypto_aes256_ige_encrypt` ·
+  `crypto_aes256_ige_decrypt` · `crypto_modexp` · `crypto_rsa_encrypt` ·
+  `crypto_dh_compute`. All take and return `bytes`; a bad key/IV/length raises
+  `ValueError`, a backend failure raises `SdkError`.
+
+!!! info "Still C only, deliberately."
+    [Code modules](sdk/background.md#code-modules-native-apps-only)
+    (`module_load`/`module_run`/`module_unload`) page in a second native ELF —
+    a MicroPython app uses `import` instead — and `push_key` is a
+    firmware-internal input hook, not an app-facing call. Those two are the
+    whole remaining difference between the SDKs.
+
+### The 5th keypad button is "OK", not "CENTER"
+
+The physical button is renamed everywhere it's SDK-visible, to match how it's
+labeled on the board and referred to in every other part of the firmware and
+docs: `JPP_SDK_KEY_CENTER` → [`JPP_SDK_KEY_OK`](sdk/types.md), `JPP_SDK_KEY_CENTER_LONG`
+→ `JPP_SDK_KEY_OK_LONG`, `JPP_SDK_KEY_CENTER_HOLD` → `JPP_SDK_KEY_OK_HOLD`,
+`JPP_SDK_KEY_CENTER_DOUBLE` → `JPP_SDK_KEY_OK_DOUBLE`, `JPP_SDK_CENTER_CLAIM_NONE`
+/ `_HOLD` / `_DOUBLE` → `JPP_SDK_OK_CLAIM_*`, and [`jpp_sdk_claim_center`](sdk/app-control.md#claim_ok)
+→ `jpp_sdk_claim_ok` (`jppsdk.claim_center` → `jppsdk.claim_ok` in MicroPython).
+`JPP_SDK_KEY_BACK` — already the preferred spelling of the long-press/back
+event — is unaffected in name; only what it's an alias *of* was renamed
+alongside it.
+
+!!! info "The old names still work — they're deprecated, not gone."
+    Every pre-rename identifier (`JPP_SDK_KEY_CENTER*`, `JPP_SDK_CENTER_CLAIM_*`,
+    `jpp_sdk_claim_center`, `jppsdk.claim_center`, `jppsdk.KEY_CENTER*`,
+    `jppsdk.CENTER_CLAIM_*`) is kept as an alias with the same value as its
+    OK-named replacement. A native `.bin` compiled against the old names
+    resolves them through a second `s_symtab` entry pointing at the same
+    function; a MicroPython `.mpy` resolves them through a second entry in
+    the `jppsdk` module dict pointing at the same object. Nothing needs to be
+    rebuilt. Compiling new C source against an old name produces a
+    `-Wdeprecated-declarations` warning (`__attribute__((deprecated(...)))`
+    on the enum values and on `jpp_sdk_claim_center`) naming the replacement;
+    MicroPython has no equivalent compile-time warning, so an `.mpy` using an
+    old name compiles and runs silently. **Use the OK-named forms in new
+    code** — the old ones exist only to avoid breaking what's already built,
+    not as a second permanent spelling.
+
+### The app pool grew to 80 KB
+
+The single pool your app is loaded into — code for a native app, GC heap for a
+MicroPython one — went from 64 KB to **80 KB**. Nothing about the API changed,
+so this needs no `sdk_min` of its own: a bigger pool cannot break an app, and
+`sdk_min: 3` already implies a firmware that has it.
+
+It matters if you were up against the ceiling. A native hub plus one module now
+has 16 KB more to play with (see [Code modules](native/modules.md)), and a
+MicroPython app has a larger GC heap before collection pressure starts to bite.
+
+!!! warning "It does not mean a level-2 device will load a bigger app."
+    The pool size is a property of the firmware, not of the SDK level, and
+    there is no way to declare "needs an 80 KB pool" in a manifest. An app built
+    to fill 80 KB simply fails to load on firmware v1.1 with `NO_MEMORY`. If
+    that matters to you, keep the binary under 64 KB or gate the extra bulk
+    behind a module you load only when it fits.
 
 ---
 
 ## Level 2
 
-**Firmware v1.1** · released 2026-07-29 · **current**
+**Firmware v1.1** · released 2026-07-29
 
 Three independent additions plus the input-gesture work landed in the same
 release, so they all share one level.
@@ -59,7 +176,8 @@ ones.
 
 - New capability: `network.connect` (tier 2 — per-session, never persisted).
 - New symbol: `jpp_sdk_net_connect`.
-- **C only.** There is no `jppsdk.net_connect` binding.
+- C only *at this level* — the `jppsdk.net_connect` binding arrived at
+  [level 3](#the-micropython-sdk-caught-up-with-the-native-one).
 
 ### TLS-verified HTTP — `https.request`
 
@@ -86,15 +204,16 @@ accelerated on the ESP32-C6: `jpp_crypto_sha256`, `jpp_crypto_sha1`,
 `jpp_crypto_rsa_encrypt`, and `jpp_crypto_dh_compute`.
 
 They exist so an app can do transport crypto without carrying AES and bignum
-code inside the 64 KB app pool. The MTProto client skeleton is the reference
+code inside the app pool. The MTProto client skeleton is the reference
 user: it fits in roughly 11 KB of pool because the heavy crypto stayed in the
 firmware.
 
 - No capability — pure computation, nothing to gate.
-- **C only**, and they are plain functions from `jpp_crypto_core.h` rather than
-  `jpp_sdk_*` calls.
+- In C they are plain functions from `jpp_crypto_core.h` rather than `jpp_sdk_*`
+  calls. C only *at this level* — the `jppsdk.crypto_*` bindings arrived at
+  [level 3](#the-micropython-sdk-caught-up-with-the-native-one).
 
-### CENTER gesture claims
+### OK gesture claims
 
 The device gained a user preference for whether **hold** or **double-click**
 means "Back" (Settings → Controls). Apps never read that preference. Instead:
@@ -102,16 +221,16 @@ means "Back" (Settings → Controls). Apps never read that preference. Instead:
 - Claim nothing (the default) and you receive `JPP_SDK_KEY_BACK` whenever the
   user asks to go back, with the firmware deciding which physical gesture that
   was.
-- Claim a gesture with [`claim_center`](sdk/app-control.md#claim_center) and it
-  becomes yours, arriving as `JPP_SDK_KEY_CENTER_HOLD` or
-  `JPP_SDK_KEY_CENTER_DOUBLE` — and your app then owns its own way out.
+- Claim a gesture with [`claim_ok`](sdk/app-control.md#claim_ok) and it
+  becomes yours, arriving as `JPP_SDK_KEY_OK_HOLD` or
+  `JPP_SDK_KEY_OK_DOUBLE` — and your app then owns its own way out.
 
-New symbol `jpp_sdk_claim_center`; new enumerators `JPP_SDK_KEY_CENTER_HOLD`
-and `JPP_SDK_KEY_CENTER_DOUBLE`; new constants `JPP_SDK_CENTER_CLAIM_NONE` /
+New symbol `jpp_sdk_claim_ok`; new enumerators `JPP_SDK_KEY_OK_HOLD`
+and `JPP_SDK_KEY_OK_DOUBLE`; new constants `JPP_SDK_OK_CLAIM_NONE` /
 `_HOLD` / `_DOUBLE`. `JPP_SDK_KEY_BACK` is an **alias** of the pre-existing
-`JPP_SDK_KEY_CENTER_LONG` — same value, better name — so code using the old
-spelling is unaffected. Bound in MicroPython as `jppsdk.claim_center` with the
-matching `KEY_*` / `CENTER_CLAIM_*` constants.
+`JPP_SDK_KEY_OK_LONG` — same value, better name — so code using the old
+spelling is unaffected. Bound in MicroPython as `jppsdk.claim_ok` with the
+matching `KEY_*` / `OK_CLAIM_*` constants.
 
 ### `jpp_sdk_confirm` became callable
 
@@ -165,8 +284,23 @@ does not need a level-2 feature:
     had ever exported it — no app could have been built against a partial
     version of it. That window is now shut. Level 2 shipped in v1.1 and is
     **closed**: folding a fifth addition into it would leave `sdk_min: 2`
-    meaning two different surfaces in the field. The next addition to the
-    surface mints level 3.
+    meaning two different surfaces in the field.
+
+    **Level 3 is currently open.** No firmware has shipped it, so further
+    additions made before the next release belong in level 3 — do not mint
+    level 4 for them.
+
+Pick the number as **(last released level) + 1**, not (master + 1) and not the
+next unused integer. A level is closed by a *release*, not by being merged, so
+every branch in flight targets the same number and they converge by
+construction. Two branches that both mint level 3 merge cleanly to `3`.
+
+!!! warning "Re-target your level if a release lands while your branch is open."
+    This is the one case git cannot catch: both sides agree on the number, so
+    the merge succeeds silently and your addition ends up inside a level that
+    has already shipped — reintroducing the `UNRESOLVED_SYM` class of bug with
+    no up-front rejection. Rebasing past a release means re-checking this
+    number by hand.
 
 When you do add to the surface:
 

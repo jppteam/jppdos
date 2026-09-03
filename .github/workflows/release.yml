@@ -1,0 +1,467 @@
+# =============================================================================
+# Builds the firmware when a version tag is pushed and publishes it as a
+# GitHub Release with flashable binaries attached.
+#
+# Tags cut from the stable branch (master) become full releases; tags cut from
+# the development branch — or from anywhere else — become pre-releases. See the
+# "Determine release channel" step for how that is worked out, since a tag push
+# carries no branch of its own.
+#
+# Only the PRODUCTION image is built and published. The provisioning image
+# (scripts/build_images.sh, CONFIG_JPP_LRV_PROVISIONING=y) is deliberately NOT
+# released: it carries the LRV EEPROM write path, which production firmware
+# does not contain. Manufacturing builds that locally.
+#
+# Needs no secrets — the built-in GITHUB_TOKEN creates the release.
+# =============================================================================
+name: release
+
+on:
+  push:
+    # Existing tags are unprefixed ("1.0-RTM", "1.1"); "v" is accepted too in
+    # case the convention changes.
+    tags:
+      - '[0-9]+*'
+      - 'v[0-9]+*'
+  # Lets a failed publish be retried against a tag that already exists.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release'
+        required: true
+
+concurrency:
+  # One release per tag at a time, and never cancel a run mid-publish.
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Which branch a tag has to be on to count as a finished release.
+  STABLE_BRANCH: master
+  PRERELEASE_BRANCH: develop
+  # The image the firmware build runs in. Single source of truth for both
+  # the build job's docker-run steps below and cache-idf-image.yml's cache
+  # key — that workflow greps this line out rather than duplicating the tag,
+  # the same pattern the "Build mpy-cross" step uses to read its tag from
+  # the Dockerfile.
+  IDF_IMAGE: espressif/idf:v5.5.1
+
+jobs:
+  # A tagged build is the one build that must not ship broken, so the host
+  # suite gates it here rather than relying on tests.yml running in parallel.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: python3 -m pip install --upgrade pip -r requirements-test.txt
+
+      - name: Run host pytest suite
+        run: python3 -m pytest tests -v --tb=short
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    # No job-level `container:` — GitHub Actions pulls a job container
+    # *before* any step runs, which means a cache-restore step can never run
+    # early enough to intercept that pull. Toolchain steps below instead
+    # `docker run` IDF_IMAGE explicitly, after a step that restores it from
+    # an actions/cache tarball (falling back to a real pull + `docker save`
+    # on a miss). See the "Cache IDF Docker image" step for the tag-scoping
+    # wrinkle this runs into, and cache-idf-image.yml for how the cache
+    # actually gets warmed for a *new* tag rather than only a retry of the
+    # same one.
+    outputs:
+      channel: ${{ steps.channel.outputs.channel }}
+      branch: ${{ steps.channel.outputs.branch }}
+      sha: ${{ steps.channel.outputs.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # All history and all branches: the build stamps the app descriptor
+          # from `git describe`, and the release channel is decided by which
+          # branch contains the tagged commit.
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: echo "name=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      # A tag push carries no branch — github.ref is refs/tags/<name> and
+      # nothing else — so "was this tagged on develop?" has to be answered from
+      # history: is the tagged commit reachable from the stable branch, or only
+      # from the pre-release one?
+      #
+      # STABLE_BRANCH is checked first on purpose. Once develop is merged to
+      # master a commit is contained in both, and a release tagged there is a
+      # real release. Anything reachable from neither (a hotfix or topic branch)
+      # is treated as a pre-release too — erring toward "not final" is the safe
+      # direction, since a pre-release can be promoted in the UI afterwards but
+      # a premature "Latest release" has already been advertised.
+      - name: Determine release channel
+        id: channel
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse "${TAG}^{commit}")
+
+          contains() {
+            git rev-parse --verify --quiet "refs/remotes/origin/$1" >/dev/null \
+              && git merge-base --is-ancestor "$SHA" "origin/$1"
+          }
+
+          if contains "$STABLE_BRANCH"; then
+            CHANNEL=stable
+            BRANCH="$STABLE_BRANCH"
+          elif contains "$PRERELEASE_BRANCH"; then
+            CHANNEL=prerelease
+            BRANCH="$PRERELEASE_BRANCH"
+          else
+            CHANNEL=prerelease
+            BRANCH="(no tracked branch)"
+            echo "::warning::$TAG is not reachable from $STABLE_BRANCH or" \
+                 "$PRERELEASE_BRANCH — publishing as a pre-release."
+          fi
+
+          # A pre-release marker in the tag itself always wins, whatever branch
+          # it was cut from.
+          case "$TAG" in
+            *rc*|*RC*|*alpha*|*beta*) CHANNEL=prerelease ;;
+          esac
+
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH"   >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA"         >> "$GITHUB_OUTPUT"
+          echo "$TAG -> $CHANNEL (contained in $BRANCH)"
+
+      # A release whose firmware reports a different version in Settings > About
+      # than the tag it was cut from is the exact mislabelling this catches.
+      # Only fatal for a stable release: a pre-release is routinely tagged
+      # (1.2-rc1, or 1.2 on develop) before JPPDOS_VERSION is bumped, and
+      # blocking that would make the pre-release channel unusable.
+      - name: Check JPPDOS_VERSION matches the tag
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+          WANT="${TAG#v}"
+          HAVE=$(sed -n 's/^#define JPPDOS_VERSION "\(.*\)"/\1/p' main/jpp_settings_screen.h)
+          if [ "$HAVE" = "$WANT" ]; then
+            echo "JPPDOS_VERSION = $HAVE"
+          elif [ "$CHANNEL" = "stable" ]; then
+            echo "::error file=main/jpp_settings_screen.h::JPPDOS_VERSION is \"$HAVE\"" \
+                 "but the tag is \"$TAG\". Update JPPDOS_VERSION in" \
+                 "main/jpp_settings_screen.h, then re-tag."
+            exit 1
+          else
+            echo "::warning file=main/jpp_settings_screen.h::JPPDOS_VERSION is" \
+                 "\"$HAVE\" but the tag is \"$TAG\". Allowed for a pre-release;" \
+                 "it must match before the stable tag."
+          fi
+
+      # actions/cache scopes a cache to the ref that created it, plus a
+      # fallback to the repository's default branch — but NOT to other tags
+      # ("Tags only have access to caches created in default branch," per
+      # GitHub's own docs). Since this workflow only ever runs on a tag push,
+      # a cache saved by *this* run would only ever help a re-run of the
+      # exact same tag (the workflow_dispatch retry case above), never the
+      # next tag. cache-idf-image.yml is what actually keeps this warm for a
+      # new tag — it runs on pushes to master (the repo's default branch),
+      # which every tag falls back to regardless of which branch it was cut
+      # from.
+      - name: Cache IDF Docker image
+        id: idf-image-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/idf-image.tar
+          key: idf-docker-image-${{ env.IDF_IMAGE }}
+
+      - name: Load or pull IDF Docker image
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/idf-image.tar" ]; then
+            echo "Cache hit — loading $IDF_IMAGE from cache"
+            docker load -i "$RUNNER_TEMP/idf-image.tar"
+          else
+            echo "Cache miss — pulling $IDF_IMAGE"
+            docker pull "$IDF_IMAGE"
+            docker save "$IDF_IMAGE" -o "$RUNNER_TEMP/idf-image.tar"
+          fi
+
+      # testapp_mp's build step hard-fails without mpy-cross, and the stock IDF
+      # image does not carry it — only the project Dockerfile does.
+      #
+      # Built from source rather than `pip install mpy-cross==<v>`, because the
+      # released 1.28.0 is not on PyPI at all (it publishes 1.27.0.post2 and a
+      # 1.28.0rc0.post2, nothing in between), so that install can only fail.
+      # The tag is read out of the Dockerfile so this cannot drift from the
+      # image the documented local flow uses — moving the MicroPython pin means
+      # editing one line there and nothing here. Takes a few seconds.
+      #
+      # Built inside IDF_IMAGE (not on the runner host) so the binary links
+      # against the same glibc that will later run it — a host-built binary
+      # would risk a "GLIBC_x.xx not found" failure against this image's
+      # older base. Written to $RUNNER_TEMP, not /usr/local/bin, so it
+      # survives into the "Build firmware" step: each docker-run step below
+      # is a fresh container, sharing nothing but the bind-mounted host paths.
+      - name: Build mpy-cross
+        run: |
+          set -euo pipefail
+          MPY_TAG=$(sed -n 's/.*--branch \(v[0-9.]*\).*/\1/p' Dockerfile | head -1)
+          if [ -z "$MPY_TAG" ]; then
+            echo "::error file=Dockerfile::Could not read the mpy-cross tag" \
+                 "from the Dockerfile's 'git clone --branch <tag>' line."
+            exit 1
+          fi
+          echo "Building mpy-cross $MPY_TAG (per Dockerfile)"
+          mkdir -p "$RUNNER_TEMP/mpy-cross"
+          cat > "$RUNNER_TEMP/build-mpy-cross.sh" <<'SCRIPT'
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "$MPY_TAG" \
+              https://github.com/micropython/micropython.git /tmp/micropython
+          make -s -C /tmp/micropython/mpy-cross -j"$(nproc)"
+          cp /tmp/micropython/mpy-cross/build/mpy-cross "$RUNNER_TEMP/mpy-cross/mpy-cross"
+          chmod +x "$RUNNER_TEMP/mpy-cross/mpy-cross"
+          SCRIPT
+          docker run --rm \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -e RUNNER_TEMP \
+            -e MPY_TAG="$MPY_TAG" \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/build-mpy-cross.sh"
+
+      - name: Build firmware
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/build-firmware.sh" <<'SCRIPT'
+          set -euo pipefail
+          # The container runs as root over a checkout owned by the runner
+          # user; without this, `idf.py build`'s internal `git describe` call
+          # (via esp_app_get_description()) fails "dubious ownership".
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          export PATH="$RUNNER_TEMP/mpy-cross:$PATH"
+          idf.py set-target esp32c6
+          idf.py build
+          SCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_WORKSPACE -e RUNNER_TEMP \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/build-firmware.sh"
+
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/package-artifacts.sh" <<'SCRIPT'
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          # merge-bin depends on the "all" ninja target, same as `idf.py
+          # build` — and the testapp_mp custom build command has no declared
+          # outputs, so ninja always re-runs it rather than treating it as
+          # up to date. Needs mpy-cross on PATH again for that reason, exactly
+          # like the "Build firmware" step.
+          export PATH="$RUNNER_TEMP/mpy-cross:$PATH"
+          OUT="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$OUT"
+
+          # Single-file image: one esptool write at 0x0, no offsets to get wrong.
+          idf.py merge-bin -o "$OUT/jppdos-${TAG}-esp32c6-merged.bin"
+
+          # Separate images for anyone flashing partitions individually, with
+          # the offsets/flash settings the firmware was built for.
+          ( cd build && zip -q -j "$OUT/jppdos-${TAG}-esp32c6.zip" \
+              bootloader/bootloader.bin \
+              partition_table/partition-table.bin \
+              jppdos_idf.bin \
+              flasher_args.json \
+              flash_args )
+
+          # Showcase apps, ready to copy onto /sd/apps/<id>/.
+          ( cd build/apps && zip -q -r "$OUT/jppdos-${TAG}-apps.zip" . )
+
+          ( cd "$OUT" && sha256sum jppdos-* > SHA256SUMS.txt )
+          ls -l "$OUT"
+          SCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_WORKSPACE -e RUNNER_TEMP \
+            -e TAG="${{ steps.tag.outputs.name }}" \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/package-artifacts.sh"
+
+      # Flash headroom is generous on the 4 MB layout, but keep publishing the
+      # numbers where they can be read without downloading anything — the
+      # 2 MB squeeze this replaced is exactly the kind of pressure that's
+      # easier to catch early than after it silently comes back.
+      - name: Size summary
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/size-summary.sh" <<'SCRIPT'
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          # Same "all"-target rebuild wrinkle as the "Package artifacts"
+          # step above: `idf.py size` also depends on a full build, which
+          # always re-runs the output-less testapp_mp custom command.
+          export PATH="$RUNNER_TEMP/mpy-cross:$PATH"
+          {
+            echo '### Image size'
+            echo
+            echo '```'
+            idf.py size 2>/dev/null | sed -n '/Memory Type/,/^└/p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          SCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_STEP_SUMMARY -e RUNNER_TEMP \
+            "$IDF_IMAGE" bash "$RUNNER_TEMP/size-summary.sh"
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      CHANNEL: ${{ needs.build.outputs.channel }}
+      BRANCH: ${{ needs.build.outputs.branch }}
+      SHA: ${{ needs.build.outputs.sha }}
+    steps:
+      # Only CHANGELOG.md is read here, so the default shallow checkout is
+      # enough — the channel was already decided in the build job.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist
+
+      # CHANGELOG.md headings look like "## v1.1 — 2026-07-29"; take that
+      # section verbatim so the release page and the changelog cannot drift.
+      - name: Extract release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          BARE="${TAG#v}"
+          # Dots are literal here, not "any character".
+          BARE_RE=$(printf '%s' "$BARE" | sed 's/\./\\./g')
+
+          section() {
+            awk -v tag="$1" '
+              $0 ~ "^## " tag "$" { grab = 1; next }
+              grab && /^## / { exit }
+              grab { print }
+            ' CHANGELOG.md
+          }
+
+          section "v?${BARE_RE}([^0-9.].*)?" > notes.md
+
+          # A tag cut from develop normally predates its own changelog section —
+          # the work is still sitting under "## Unreleased". Use that rather
+          # than falling through to commit-list notes, which say much less.
+          if [ ! -s notes.md ] && [ "$CHANNEL" = "prerelease" ]; then
+            section "Unreleased" > notes.md
+            if [ -s notes.md ]; then
+              echo "Using the '## Unreleased' section for pre-release $TAG"
+            fi
+          fi
+
+          if [ -s notes.md ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No '## $BARE' section in CHANGELOG.md —" \
+                 "falling back to auto-generated notes."
+          fi
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_FOUND: ${{ steps.notes.outputs.found }}
+        run: |
+          set -euo pipefail
+          ARGS=(--title "JPPDOS $TAG")
+
+          if [ "$CHANNEL" = "prerelease" ]; then
+            ARGS+=(--prerelease)
+            # Say so in the body too: the "Pre-release" badge is easy to miss
+            # once someone is looking at the asset list.
+            {
+              echo "> **Pre-release** — built from \`$BRANCH\` at \`${SHA:0:8}\`."
+              echo "> Not a stable firmware release; expect the contents to"
+              echo "> change before the final tag."
+              echo
+            } > body.md
+          else
+            : > body.md
+          fi
+
+          if [ "$NOTES_FOUND" = "true" ]; then
+            cat notes.md >> body.md
+          elif [ "$CHANNEL" = "prerelease" ]; then
+            # --generate-notes cannot be combined with --notes-file, and the
+            # banner matters more here than a commit list.
+            echo "_No changelog section for this tag._" >> body.md
+          fi
+
+          if [ -s body.md ]; then
+            ARGS+=(--notes-file body.md)
+          else
+            ARGS+=(--generate-notes)
+          fi
+
+          # Add --draft here if releases should be reviewed before going public.
+          gh release create "$TAG" "${ARGS[@]}" dist/*
+
+      # A prominent call-to-action so anyone landing on the release page knows
+      # how to actually apply the update. Done as a follow-up edit rather than
+      # folded into body.md above, so it lands uniformly on every notes path
+      # the "Create release" step can take (changelog excerpt, "no changelog
+      # section" placeholder, or GitHub's own --generate-notes output) without
+      # fighting gh's --notes-file/--generate-notes mutual exclusivity.
+      - name: Prepend update-manager banner
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            echo "> [!TIP]"
+            echo "> **Update JPPDOS** on your device using [J++Device Manager](https://jppdevice.by.m4l3vi.ch/#/manager)."
+            echo
+            gh release view "$TAG" --json body -q .body
+          } > body_final.md
+          gh release edit "$TAG" --notes-file body_final.md
+
+      - name: Summary
+        run: |
+          echo "Published **$CHANNEL** (from \`$BRANCH\`):" \
+               "<${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG>" \
+            >> "$GITHUB_STEP_SUMMARY"

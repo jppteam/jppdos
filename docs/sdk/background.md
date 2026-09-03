@@ -50,7 +50,7 @@ jppsdk.background_register() -> None
     prompt for.
 
 See [Native code modules](../native/modules.md) for the full guide — how the
-64 KB pool is split, what a module may and may not do, and a worked plugin
+app pool is split, what a module may and may not do, and a worked plugin
 example. Quick reference:
 
 ### `jpp_sdk_module_load`

@@ -834,7 +834,23 @@ jppsdk.mdns_stop() -> None
 
 ## Step 12 — `http.server` (tier-1, app-owned HTTP endpoint)
 
-`esp_http_server` is already linked (used by WebDAV and LRV server).
+**`esp_http_server` is no longer linked.** WebDAV and the LRV server moved to
+the in-house `jpp_http_server_core` (`components/jpp_core/`), which runs its
+task stack and I/O buffer out of the shared 80 KB `jpp_app_pool` instead of the
+heap. Two consequences for this proposal:
+
+1. Reaching for `httpd_start()` here re-links the whole ESP-IDF HTTP server
+   (~20 KB of flash) for no reason — `jpp_http_server_core` already exists and
+   the handler-callback shape below maps onto it directly. Flash headroom
+   itself is no longer the tight constraint it once was (see AGENTS.md), but
+   there's still no reason to carry two HTTP server implementations.
+2. `jpp_http_server_start()` **acquires the app pool**, and a running app
+   already holds it. An app-owned server therefore cannot use the core as-is:
+   it needs a mode that takes its memory from the app's own pool allocation
+   (the app knows how much of its 80 KB it can spare) rather than acquiring the
+   pool itself. Design that before implementing this step. The upside is that
+   the WebDAV/LRV mutual exclusion below stops being a policy check and becomes
+   structural.
 
 The bridge mechanism: two FreeRTOS queues of depth 1 connect the httpd task
 (producer of requests, consumer of responses) to the app task (consumer of
@@ -938,10 +954,12 @@ Catch-all httpd URI handler (registered for `"/*"`, all methods):
 4. httpd_resp_set_status / httpd_resp_set_type / httpd_resp_send.
 ```
 
-- `http_server_start_cb`: check WebDAV / LRV; `httpd_start`; register handler.
-  Guard: if free heap < `JPP_HEAP_MON_WARN_BYTES` (30 KB), return
-  `"LOW_HEAP"` rather than starting another httpd instance that would
-  exacerbate WiFi frame-buffer starvation.
+- `http_server_start_cb`: check WebDAV / LRV; start the server; register the
+  handler. Written against `esp_http_server` above; see the note at the top of
+  this step for why `jpp_http_server_core` is the better base and what has to
+  change in it first. The `"LOW_HEAP"` guard (free heap <
+  `JPP_HEAP_MON_WARN_BYTES`, 30 KB) only applies to the `httpd_start()`
+  variant — a pool-backed server allocates nothing from the heap.
 - `http_server_recv_cb`: `xQueueReceive(s_http_req_q, out_req, ticks)`. On
   timeout: `jpp_broker_ok_result(result)` with no additional fields. On
   receive: put result fields `"method"`, `"uri"`, `"query"`, `"body"`.
@@ -992,8 +1010,9 @@ raised first.
 
 **`http.server` heap cost**: the request and response structs together are
 ~4.5 KB of queue storage on the heap. The start callback guards against low
-heap with `JPP_HEAP_MON_WARN_BYTES`, but this is advisory. WebDAV mutual
-exclusion ensures the two httpd instances never coexist.
+heap with `JPP_HEAP_MON_WARN_BYTES`, but this is advisory. WebDAV and LRV
+cannot coexist with an app-owned server in any case — they hold the app pool,
+and so does the running app (see the note at the top of this step).
 
 **`http.server` recv/respond contract**: the app *must* call `respond` before
 calling `recv` again. Failure to do so leaves the httpd handler blocked and the

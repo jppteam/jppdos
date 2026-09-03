@@ -2,9 +2,9 @@
  * testapp_native — exercises every App SDK capability from C.
  *
  * Top-level menu: UI | Device | Files | KV | IPC | HTTP | Network | BLE |
- * Buzzer | System | Exit.  Each section has a sub-menu of individual test
- * cases.  Every test reports pass/fail via a dialog so the result is visible
- * on hardware.
+ * ESP-NOW | Buzzer | Hardware | Crypto | System | Exit.  Each section has a
+ * sub-menu of individual test cases.  Every test reports pass/fail via a
+ * dialog so the result is visible on hardware.
  *
  * Background: the manifest declares a "heartbeat" task (every 300 s).  The
  * System menu's "Background register" item triggers the background.register
@@ -19,6 +19,7 @@
 
 #include "testapp_native.h"
 #include "jpp_sdk_bridge.h"
+#include "jpp_crypto_core.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -86,9 +87,9 @@ static void test_dialog(jpp_sdk_context_t *ctx)
     jpp_sdk_ui_result_t res;
     jpp_sdk_canvas_clear(ctx);
     jpp_sdk_dialog(ctx, "Dialog test",
-                   "Press CENTER to confirm or long-press to dismiss.", &res);
+                   "Press OK to confirm or long-press to dismiss.", &res);
     show(ctx, "Dialog result",
-         res == JPP_SDK_UI_OK ? "OK (CENTER)" : "BACK (long)");
+         res == JPP_SDK_UI_OK ? "OK (OK)" : "BACK (long)");
 }
 
 static void test_list_single(jpp_sdk_context_t *ctx)
@@ -204,7 +205,7 @@ static void test_canvas(jpp_sdk_context_t *ctx)
 
 static void test_keys(jpp_sdk_context_t *ctx)
 {
-    const char *hint[] = { "Key test", "Press 5 keys.", "UP/DN/L/R/CTR/LONG" };
+    const char *hint[] = { "Key test", "Press 5 keys.", "UP/DN/L/R/OK/LONG" };
     jpp_sdk_set_frame(ctx, hint, 3);
 
     static const char *names[] = {
@@ -213,8 +214,8 @@ static void test_keys(jpp_sdk_context_t *ctx)
         [JPP_SDK_KEY_DOWN]        = "DOWN",
         [JPP_SDK_KEY_LEFT]        = "LEFT",
         [JPP_SDK_KEY_RIGHT]       = "RIGHT",
-        [JPP_SDK_KEY_CENTER]      = "CENTER",
-        [JPP_SDK_KEY_CENTER_LONG] = "LONG",
+        [JPP_SDK_KEY_OK]      = "OK",
+        [JPP_SDK_KEY_OK_LONG] = "LONG",
     };
     char log[64] = "";
     for (int i = 0; i < 5; i++) {
@@ -239,6 +240,54 @@ static void test_file_pick(jpp_sdk_context_t *ctx)
     show(ctx, "File pick", buf);
 }
 
+static void test_poll_key(jpp_sdk_context_t *ctx)
+{
+    /* poll_key never blocks: right after entering the test the queue is
+       almost always empty, unlike wait_key which would sit here until a
+       key arrives. */
+    jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
+    jpp_sdk_status_t st = jpp_sdk_poll_key(ctx, &key);
+    show_result(ctx, "poll_key (immediate)", st,
+                key == JPP_SDK_KEY_NONE ? "NONE (queue empty)" : "had a queued key");
+
+    show(ctx, "poll_key", "Now press any key (via wait_key)...");
+    jpp_sdk_wait_key(ctx, 0, &key);
+    show(ctx, "poll_key", "Got it via wait_key — contrast confirmed.");
+}
+
+static void test_confirm(jpp_sdk_context_t *ctx)
+{
+    const char *lines[] = {
+        "This is the shared",
+        "Deny/Allow consent",
+        "surface (confirm).",
+    };
+    bool allow = false;
+    jpp_sdk_status_t st = jpp_sdk_confirm(ctx, "Confirm test", lines, 3, true, &allow);
+    show_result(ctx, "confirm", st, allow ? "Allow" : "Deny");
+}
+
+static void test_wrap_text(jpp_sdk_context_t *ctx)
+{
+    static const char *long_text =
+        "This sentence is long enough that wrap_text should split it across "
+        "several twenty-one character rows.";
+    char rows[JPP_SDK_FRAME_LINE_CAPACITY][JPP_SDK_FRAME_TEXT_MAX];
+    size_t n = jpp_sdk_wrap_text(long_text, rows, JPP_SDK_FRAME_LINE_CAPACITY);
+
+    const char *lines[JPP_SDK_FRAME_LINE_CAPACITY];
+    for (size_t i = 0; i < n; i++) {
+        lines[i] = rows[i];
+    }
+    jpp_sdk_set_frame(ctx, lines, n);
+    jpp_sdk_key_event_t key;
+    jpp_sdk_wait_key(ctx, 0, &key);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%zu line(s)", n);
+    show_result(ctx, "wrap_text", JPP_SDK_STATUS_OK, buf);
+}
+
 static void menu_ui(jpp_sdk_context_t *ctx)
 {
     static const char *items[] = {
@@ -252,6 +301,9 @@ static void menu_ui(jpp_sdk_context_t *ctx)
         "Input TIME",
         "Canvas draw",
         "Key events",
+        "Poll key",
+        "Confirm",
+        "Wrap text",
         "File pick",
     };
     for (;;) {
@@ -269,7 +321,10 @@ static void menu_ui(jpp_sdk_context_t *ctx)
         case 7:  test_input_time(ctx);   break;
         case 8:  test_canvas(ctx);       break;
         case 9:  test_keys(ctx);         break;
-        case 10: test_file_pick(ctx);    break;
+        case 10: test_poll_key(ctx);     break;
+        case 11: test_confirm(ctx);      break;
+        case 12: test_wrap_text(ctx);    break;
+        case 13: test_file_pick(ctx);    break;
         }
     }
 }
@@ -502,14 +557,34 @@ static void test_http_post(jpp_sdk_context_t *ctx)
     show_result(ctx, "http POST", JPP_SDK_STATUS_OK, buf);
 }
 
+static void test_https_get(jpp_sdk_context_t *ctx)
+{
+    jpp_broker_result_t r;
+    jpp_sdk_status_t st = jpp_sdk_https_request(
+        ctx, "GET", "https://httpbin.org/get", NULL, &r);
+    if (st != JPP_SDK_STATUS_OK || !r.ok) {
+        show_result(ctx, "https GET", st, r.ok ? "" : (r.code ? r.code : "err"));
+        return;
+    }
+    const char *code = jpp_broker_result_get(&r, "status_code");
+    char buf[32];
+    snprintf(buf, sizeof(buf), "HTTPS %s", code ? code : "?");
+    show_result(ctx, "https GET", JPP_SDK_STATUS_OK, buf);
+}
+
 static void menu_http(jpp_sdk_context_t *ctx)
 {
-    static const char *items[] = { "GET neverssl.com", "POST httpbin.org" };
+    static const char *items[] = {
+        "GET neverssl.com",
+        "POST httpbin.org",
+        "GET httpbin.org (TLS)",
+    };
     for (;;) {
-        int sel = pick(ctx, "HTTP Tests", items, 2);
+        int sel = pick(ctx, "HTTP Tests", items, 3);
         if (sel < 0) return;
-        if (sel == 0) test_http_get(ctx);
-        else          test_http_post(ctx);
+        if (sel == 0)      test_http_get(ctx);
+        else if (sel == 1) test_http_post(ctx);
+        else               test_https_get(ctx);
     }
 }
 
@@ -548,6 +623,72 @@ static void test_net_echo(jpp_sdk_context_t *ctx)
         jpp_sdk_net_close(ctx, sock, &r);
     }
     jpp_sdk_net_close(ctx, -1, &r);   /* close the listener */
+}
+
+/* Open an outbound TCP connection, send a minimal HTTP/1.0 request, and read
+   whatever comes back — exercises net_connect against the shared net_recv /
+   net_send / net_close calls used by the server side above. */
+static void test_net_connect(jpp_sdk_context_t *ctx)
+{
+    jpp_broker_result_t r;
+    int sock = -1;
+    jpp_sdk_status_t st = jpp_sdk_net_connect(ctx, "neverssl.com", 80, 5000, &sock, &r);
+    if (st != JPP_SDK_STATUS_OK || !r.ok) {
+        show_result(ctx, "net_connect", st, r.ok ? "" : (r.code ? r.code : "err"));
+        return;
+    }
+    static const char *req =
+        "GET / HTTP/1.0\r\nHost: neverssl.com\r\nConnection: close\r\n\r\n";
+    jpp_sdk_net_send(ctx, sock, (const uint8_t *)req, strlen(req), &r);
+
+    static uint8_t rx[64];
+    size_t n = 0u;
+    st = jpp_sdk_net_recv(ctx, sock, rx, sizeof(rx), &n, 5000u, &r);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "recv %u byte(s)", (unsigned)n);
+    show_result(ctx, "net_connect", st, buf);
+    jpp_sdk_net_close(ctx, sock, &r);
+}
+
+static void menu_network(jpp_sdk_context_t *ctx)
+{
+    static const char *items[] = { "TCP echo server", "TCP client connect" };
+    for (;;) {
+        int sel = pick(ctx, "Network Tests", items, 2);
+        if (sel < 0) return;
+        if (sel == 0) test_net_echo(ctx);
+        else          test_net_connect(ctx);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ESP-NOW tests                                                               */
+/* -------------------------------------------------------------------------- */
+
+static void test_espnow(jpp_sdk_context_t *ctx)
+{
+    jpp_broker_result_t r;
+    static const uint8_t broadcast[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const uint8_t payload[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+
+    jpp_sdk_status_t st = jpp_sdk_espnow_send(ctx, broadcast, payload, sizeof(payload), &r);
+    show_result(ctx, "espnow_send", st, r.ok ? "sent to broadcast" : (r.code ? r.code : "err"));
+
+    show(ctx, "espnow_recv", "Waiting 2s for a packet...");
+    uint8_t peer_mac[6];
+    uint8_t data[64];
+    size_t out_len = 0u;
+    st = jpp_sdk_espnow_recv(ctx, peer_mac, data, sizeof(data), &out_len, 2000u, &r);
+    char buf[48];
+    if (st == JPP_SDK_STATUS_NO_DATA) {
+        snprintf(buf, sizeof(buf), "no packet (timeout, expected)");
+        show_result(ctx, "espnow_recv", JPP_SDK_STATUS_OK, buf);
+    } else if (st == JPP_SDK_STATUS_OK) {
+        snprintf(buf, sizeof(buf), "got %u byte(s)", (unsigned)out_len);
+        show_result(ctx, "espnow_recv", JPP_SDK_STATUS_OK, buf);
+    } else {
+        show_result(ctx, "espnow_recv", st, "error");
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -749,6 +890,139 @@ static void test_buzzer(jpp_sdk_context_t *ctx)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Hardware tests (LED)                                                        */
+/* -------------------------------------------------------------------------- */
+
+static void test_led(jpp_sdk_context_t *ctx)
+{
+    static const struct { const char *label; uint8_t r, g, b; } colors[] = {
+        { "Red",   255, 0,   0   },
+        { "Green", 0,   255, 0   },
+        { "Blue",  0,   0,   255 },
+        { "White", 255, 255, 255 },
+    };
+    for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
+        jpp_sdk_led_set_color(ctx, colors[i].r, colors[i].g, colors[i].b);
+        char buf[24];
+        snprintf(buf, sizeof(buf), "LED: %s", colors[i].label);
+        show(ctx, "led_set_color", buf);
+    }
+    jpp_sdk_status_t st = jpp_sdk_led_off(ctx);
+    show_result(ctx, "led_off", st, "off");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Crypto tests (ungated — pure computation)                                   */
+/* -------------------------------------------------------------------------- */
+
+static void hex_encode(const uint8_t *data, size_t len, char *out, size_t out_cap)
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t n = 0u;
+    for (size_t i = 0u; i < len && n + 2u < out_cap; i++) {
+        out[n++] = hex[data[i] >> 4];
+        out[n++] = hex[data[i] & 0x0Fu];
+    }
+    out[n] = '\0';
+}
+
+static void test_crypto_hash(jpp_sdk_context_t *ctx)
+{
+    static const char *msg = "test";
+    uint8_t sha256[JPP_CRYPTO_SHA256_BYTES];
+    uint8_t sha1[JPP_CRYPTO_SHA1_BYTES];
+    char hex[80];
+    char buf[100];
+
+    jpp_crypto_sha256((const uint8_t *)msg, strlen(msg), sha256);
+    hex_encode(sha256, sizeof(sha256), hex, sizeof(hex));
+    snprintf(buf, sizeof(buf), "sha256: %s", hex);
+    show(ctx, "crypto_sha256(\"test\")", buf);
+
+    jpp_crypto_sha1((const uint8_t *)msg, strlen(msg), sha1);
+    hex_encode(sha1, sizeof(sha1), hex, sizeof(hex));
+    snprintf(buf, sizeof(buf), "sha1: %s", hex);
+    show(ctx, "crypto_sha1(\"test\")", buf);
+}
+
+static void test_crypto_aes(jpp_sdk_context_t *ctx)
+{
+    static const uint8_t key[JPP_CRYPTO_AES256_KEY_BYTES] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+    };
+    static const uint8_t iv[JPP_CRYPTO_AES_IGE_IV_BYTES] = { 0 };
+    static const uint8_t plain[32] = "0123456789abcdef0123456789abcde";
+    uint8_t cipher[32];
+    uint8_t decoded[32];
+
+    jpp_crypto_status_t st1 = jpp_crypto_aes256_ige_encrypt(
+        plain, sizeof(plain), key, iv, cipher);
+    jpp_crypto_status_t st2 = jpp_crypto_aes256_ige_decrypt(
+        cipher, sizeof(cipher), key, iv, decoded);
+    bool ok = (st1 == JPP_CRYPTO_OK) && (st2 == JPP_CRYPTO_OK) &&
+              memcmp(plain, decoded, sizeof(plain)) == 0;
+    show(ctx, "crypto_aes256_ige", ok ? "PASS: round-trip ok" : "FAIL: mismatch");
+}
+
+static void test_crypto_modexp(jpp_sdk_context_t *ctx)
+{
+    static const uint8_t base[] = { 2 };
+    static const uint8_t exp[]  = { 10 };
+    static const uint8_t mod[]  = { 0x03, 0xE8 };  /* 1000 */
+    uint8_t out[2];
+    size_t out_len = 0u;
+
+    jpp_crypto_status_t st = jpp_crypto_modexp(
+        base, sizeof(base), exp, sizeof(exp), mod, sizeof(mod), out, &out_len);
+    /* 2^10 mod 1000 = 24 = 0x0018 */
+    bool ok = (st == JPP_CRYPTO_OK) && out_len == 2u && out[0] == 0x00u && out[1] == 0x18u;
+    show(ctx, "crypto_modexp", ok ? "PASS: 2^10 mod 1000 = 24" : "FAIL: unexpected result");
+}
+
+static void test_crypto_rsa_dh(jpp_sdk_context_t *ctx)
+{
+    static const uint8_t base[] = { 2 };
+    static const uint8_t exp[]  = { 10 };
+    static const uint8_t mod[]  = { 0x03, 0xE8 };  /* 1000 */
+    uint8_t out[2];
+    size_t out_len = 0u;
+
+    jpp_crypto_status_t st1 = jpp_crypto_rsa_encrypt(
+        base, sizeof(base), mod, sizeof(mod), exp, sizeof(exp), out, &out_len);
+    bool ok1 = (st1 == JPP_CRYPTO_OK) && out_len == 2u && out[0] == 0x00u && out[1] == 0x18u;
+
+    jpp_crypto_status_t st2 = jpp_crypto_dh_compute(
+        base, sizeof(base), exp, sizeof(exp), mod, sizeof(mod), out, &out_len);
+    bool ok2 = (st2 == JPP_CRYPTO_OK) && out_len == 2u && out[0] == 0x00u && out[1] == 0x18u;
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "rsa_encrypt %s, dh_compute %s",
+             ok1 ? "PASS" : "FAIL", ok2 ? "PASS" : "FAIL");
+    show(ctx, "crypto_rsa/dh", buf);
+}
+
+static void menu_crypto(jpp_sdk_context_t *ctx)
+{
+    static const char *items[] = {
+        "SHA-256 / SHA-1",
+        "AES-256-IGE round-trip",
+        "modexp (2^10 mod 1000)",
+        "rsa_encrypt / dh_compute",
+    };
+    for (;;) {
+        int sel = pick(ctx, "Crypto Tests", items, 4);
+        if (sel < 0) return;
+        switch (sel) {
+        case 0: test_crypto_hash(ctx);   break;
+        case 1: test_crypto_aes(ctx);    break;
+        case 2: test_crypto_modexp(ctx); break;
+        case 3: test_crypto_rsa_dh(ctx); break;
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* System tests                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -776,17 +1050,56 @@ static void test_background_register(jpp_sdk_context_t *ctx)
                                         : r.code);
 }
 
+static void test_request_cap(jpp_sdk_context_t *ctx)
+{
+    /* ble.scan is already declared and granted at launch (tier 1), so this
+       demonstrates the "already granted, no prompt" fast path. */
+    jpp_sdk_status_t st = jpp_sdk_request_cap(ctx, "ble.scan");
+    show_result(ctx, "request_cap(ble.scan)", st,
+                st == JPP_SDK_STATUS_OK ? "granted" : "denied");
+}
+
+static void test_claim_ok(jpp_sdk_context_t *ctx)
+{
+    /* Claiming only HOLD keeps a short OK press instant (menu navigation
+       is unaffected) but diverts the long-press from Back to KEY_OK_HOLD.
+       Always restore OK_CLAIM_NONE before returning, or the rest of the
+       app loses its Back button. */
+    jpp_sdk_status_t st = jpp_sdk_claim_ok(ctx, JPP_SDK_OK_CLAIM_HOLD);
+    if (st != JPP_SDK_STATUS_OK) {
+        show_result(ctx, "claim_ok(HOLD)", st, "failed");
+        return;
+    }
+
+    show(ctx, "claim_ok", "Claimed HOLD. Hold OK within 3s...");
+    jpp_sdk_key_event_t key = JPP_SDK_KEY_NONE;
+    jpp_sdk_wait_key(ctx, 3000, &key);
+    show_result(ctx, "claim_ok result", JPP_SDK_STATUS_OK,
+                key == JPP_SDK_KEY_OK_HOLD ? "got KEY_OK_HOLD" : "timed out");
+
+    st = jpp_sdk_claim_ok(ctx, JPP_SDK_OK_CLAIM_NONE);
+    show_result(ctx, "claim_ok(NONE)", st, "restored");
+}
+
 static void menu_system(jpp_sdk_context_t *ctx)
 {
     static const char *items[] = {
-        "Wakelock acq/rel", "Log event", "Background register"
+        "Wakelock acq/rel",
+        "Log event",
+        "Background register",
+        "Request cap",
+        "Claim OK (HOLD)",
     };
     for (;;) {
-        int sel = pick(ctx, "System Tests", items, 3);
+        int sel = pick(ctx, "System Tests", items, 5);
         if (sel < 0) return;
-        if (sel == 0)      test_wakelock(ctx);
-        else if (sel == 1) test_log(ctx);
-        else               test_background_register(ctx);
+        switch (sel) {
+        case 0: test_wakelock(ctx);           break;
+        case 1: test_log(ctx);                break;
+        case 2: test_background_register(ctx); break;
+        case 3: test_request_cap(ctx);        break;
+        case 4: test_claim_ok(ctx);       break;
+        }
     }
 }
 
@@ -805,7 +1118,10 @@ void testapp_native_run(jpp_sdk_context_t *ctx)
         "HTTP",
         "Network",
         "BLE",
+        "ESP-NOW",
         "Buzzer",
+        "Hardware",
+        "Crypto",
         "System",
         "Exit",
     };
@@ -814,19 +1130,22 @@ void testapp_native_run(jpp_sdk_context_t *ctx)
     show(ctx, "SDK Test (C)", "All SDK caps. Use menu to run tests.");
 
     for (;;) {
-        int sel = pick(ctx, "SDK Test (C)", items, 11);
-        if (sel < 0 || sel == 10) break;
+        int sel = pick(ctx, "SDK Test (C)", items, 14);
+        if (sel < 0 || sel == 13) break;
         switch (sel) {
-        case 0: menu_ui(ctx);       break;
-        case 1: menu_device(ctx);   break;
-        case 2: menu_files(ctx);    break;
-        case 3: test_kv(ctx);       break;
-        case 4: test_ipc(ctx);      break;
-        case 5: menu_http(ctx);     break;
-        case 6: test_net_echo(ctx); break;
-        case 7: menu_ble(ctx);      break;
-        case 8: test_buzzer(ctx);   break;
-        case 9: menu_system(ctx);   break;
+        case 0:  menu_ui(ctx);       break;
+        case 1:  menu_device(ctx);   break;
+        case 2:  menu_files(ctx);    break;
+        case 3:  test_kv(ctx);       break;
+        case 4:  test_ipc(ctx);      break;
+        case 5:  menu_http(ctx);     break;
+        case 6:  menu_network(ctx);  break;
+        case 7:  menu_ble(ctx);      break;
+        case 8:  test_espnow(ctx);   break;
+        case 9:  test_buzzer(ctx);   break;
+        case 10: test_led(ctx);      break;
+        case 11: menu_crypto(ctx);   break;
+        case 12: menu_system(ctx);   break;
         }
     }
 

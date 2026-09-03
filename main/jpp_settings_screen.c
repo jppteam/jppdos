@@ -709,13 +709,13 @@ static void render_dummy_mode(const jpp_settings_state_t *state,
                  state->dummy_app_name[0] ? state->dummy_app_name
                                           : state->dummy_app_id);
         ssd1306_draw_string(3, 0, app_line, false);
-        ssd1306_draw_string(5, 0, "Hold CTR on boot", false);
+        ssd1306_draw_string(5, 0, "Hold OK on boot", false);
         ssd1306_draw_string(6, 0, "to disable.", false);
         return;
     }
 
     ssd1306_draw_string(2, 0, "Locks to 1 app.", false);
-    ssd1306_draw_string(3, 0, "Disable:hold CTR+boot", false);
+    ssd1306_draw_string(3, 0, "Disable:hold OK+boot", false);
 
     const jpp_ui_shell_t *sh = deps->shell;
     size_t sd_count = 0;

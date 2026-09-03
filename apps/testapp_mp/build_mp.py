@@ -53,8 +53,10 @@ def main(build_dir: str, src_dir: str) -> int:
     if mpy_cross is None:
         print(
             "ERROR: mpy-cross not found.\n"
-            "  Install mpy-cross 1.28.0:  pip install mpy-cross==1.28.0\n"
-            "  then re-run:               idf.py build",
+            "  PyPI has no 1.28.0 release; the rc emits the same mpy v6.3:\n"
+            "    pip install mpy-cross==1.28.0rc0.post2\n"
+            "  or build v1.28.0 from source (what the project Dockerfile does).\n"
+            "  then re-run:  idf.py build",
             file=sys.stderr,
         )
         return 1

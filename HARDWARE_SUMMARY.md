@@ -22,8 +22,8 @@ behavior.
 |---|---|
 | Target | **ESP32-C6** (`CONFIG_IDF_TARGET="esp32c6"`, RISC-V single core) |
 | CPU clock | 160 MHz |
-| Flash | 2 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y`) — a tight budget; see `partitions.csv` and the flash-budget note in AGENTS.md |
-| Partition table | `partitions.csv`; `nvs` + `phy_init`, then a maximized `factory` app at offset 0x10000 (0x1D8000 = 1,933,312 B), plus minimal `data_fs`/`runtime_fs` SPIFFS. Coredump-to-flash is disabled, so there is no coredump partition. |
+| Flash | 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`) — see `partitions.csv` and the flash-budget note in AGENTS.md |
+| Partition table | `partitions.csv`; `nvs` + `phy_init`, then a generous `factory` app at offset 0x10000 (0x360000 = 3,538,944 B), plus `data_fs`/`runtime_fs` SPIFFS (256 KB each) and a `coredump` partition (coredump-to-flash itself is a separate, disabled-by-default menuconfig choice — the partition just reserves the space it would need). The six partitions exactly fill the 4 MB flash. |
 | ESP-IDF | v5.5.1 |
 | FreeRTOS tick | 100 Hz (`CONFIG_FREERTOS_HZ=100`) |
 | Console | Native USB-Serial-JTAG (logs + JPPD-SMP binary protocol); no separate UART bridge chip on this board, so UART0 is not reachable from a host |
@@ -229,7 +229,7 @@ USB D+/D- go to the native USB-Serial-JTAG (used for flashing + serial console).
 ### 4.9 Onboard WS2812 LED (GPIO8, RMT)
 - Single-pixel addressable RGB LED, driven by the RMT TX peripheral with a
   hand-rolled bit encoder — no `led_strip` managed-component dependency, to
-  keep flash footprint minimal (see the 2 MB flash budget in §1).
+  keep flash footprint minimal (see the flash budget in §1).
 - GPIO8 is otherwise unused by this pin map, making it the only free GPIO on
   the board.
 - Ungated App SDK surface: `jpp_sdk_led_set_color(ctx, r, g, b)` /
@@ -309,5 +309,8 @@ app discovery              // /sd/apps scan, launcher handoff
 From `main/CMakeLists.txt`: `jpp_core`, `jpp_native_loader_core`,
 `jpp_crypto_core`, `spiffs`, `fatfs`, `sdmmc` (overridden, see §4.4),
 `driver`, `esp_driver_usb_serial_jtag`, `esp_adc`, `json`, `esp_wifi`,
-`esp_netif`, `lwip`, `nvs_flash`, `bt`, `esp_http_client`, `esp_http_server`,
-`esp_timer`, `esp_rom`, `espressif__libsodium`, and `mbedtls`.
+`esp_netif`, `lwip`, `nvs_flash`, `bt`, `esp_http_client`,
+`esp_timer`, `esp_rom`, `espressif__libsodium`, `mbedtls`, and `esp-tls`.
+`esp_http_server` is deliberately **not** in the list: the WebDAV and LRV
+servers run on the in-house `jpp_http_server_core` so their memory comes from
+the app pool rather than the heap the Wi-Fi driver shares (see `AGENTS.md`).

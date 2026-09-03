@@ -31,7 +31,7 @@ static void flush_pixbuf_to_ssd1306(const jpp_kbd_pixbuf_t buf)
 
 /* ---- Map jpp_ui_action_t → sdk_key integer used by jpp_kbd_step --------- */
 /* jpp_kbd_step expects jpp_sdk_key_event_t values:
- *  0=NONE 1=UP 2=DOWN 3=LEFT 4=RIGHT 5=CENTER 6=CENTER_LONG            */
+ *  0=NONE 1=UP 2=DOWN 3=LEFT 4=RIGHT 5=OK 6=OK_LONG            */
 static int action_to_sdk_key(jpp_ui_action_t action)
 {
     switch (action) {
@@ -40,7 +40,7 @@ static int action_to_sdk_key(jpp_ui_action_t action)
     case JPP_UI_ACTION_LEFT:  return 3;
     case JPP_UI_ACTION_RIGHT: return 4;
     case JPP_UI_ACTION_OK:    return 5;
-    case JPP_UI_ACTION_BACK:  return 6; /* treat as CENTER_LONG = cancel */
+    case JPP_UI_ACTION_BACK:  return 6; /* treat as OK_LONG = cancel */
     default:                  return 0;
     }
 }

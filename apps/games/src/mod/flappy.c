@@ -156,12 +156,12 @@ static bool play_session(void)
                key != JPP_SDK_KEY_NONE) {
             switch (key) {
             case JPP_SDK_KEY_UP:
-            case JPP_SDK_KEY_CENTER:
+            case JPP_SDK_KEY_OK:
                 g.started = true;
                 g.bvy = FLAP_V;
                 api->sfx_tone(600u, 12u);
                 break;
-            case JPP_SDK_KEY_CENTER_LONG: {
+            case JPP_SDK_KEY_OK_LONG: {
                 int action = pause_menu();
                 if (action == 1) { reset_game(); }
                 if (action == 2) { return false; }

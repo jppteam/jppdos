@@ -22,13 +22,24 @@ extern "C" {
  *       (sha256/sha1, aes256-ige, modexp/rsa_encrypt/dh_compute), and
  *       https.request (TLS-verified HTTP client, per-origin consent)
  *                                              (shipped in firmware v1.1)
+ *   3 — makes jpp_sdk_wrap_text callable from a loaded app binary; it was
+ *       declared and documented from v1.0-RTM but never listed in s_symtab,
+ *       so every native app calling it died at launch with UNRESOLVED_SYM
+ *                                              (UNRELEASED — still open)
  *
- * Every level above is now RELEASED, so the next addition to the surface must
- * mint level 3 — do not fold it into 2.  Level 2 was allowed to accumulate
- * three separate additions only because no released firmware ever exported it,
- * so no app could have been built against a partial version of it.
+ * Levels 1 and 2 are RELEASED and therefore CLOSED: an app declaring sdk_min
+ * for a closed level must mean exactly one surface in the field, so nothing may
+ * be folded into them.  Level 3 is open until a firmware release ships it, and
+ * further additions made before that release belong in 3 rather than minting 4
+ * — the same way level 2 accumulated four separate additions while unreleased.
+ *
+ * A branch that grows the SDK surface sets this to (last released level + 1),
+ * NOT (master + 1): concurrent branches deliberately pick the same number and
+ * merge cleanly.  If a release is cut while your branch is open, you must
+ * re-target the level — git will NOT flag it, because both sides agree on the
+ * value.  See the SDK versioning policy in AGENTS.md.
  */
-#define JPP_SDK_VERSION 2
+#define JPP_SDK_VERSION 3
 
 typedef enum {
     JPP_APP_TYPE_MICROPYTHON = 0,

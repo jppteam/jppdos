@@ -50,7 +50,7 @@ jpp_crypto_status_t jpp_crypto_verify(
  * SHA, and the MPI bignum are hardware-accelerated on the ESP32-C6).  They are
  * exposed to native apps through the symbol table (ungated — pure computation,
  * no I/O or security boundary) so an app can implement transport crypto such as
- * MTProto without carrying its own AES/bignum in the 64 KB app pool.
+ * MTProto without carrying its own AES/bignum in the app pool.
  */
 
 #define JPP_CRYPTO_SHA256_BYTES 32u

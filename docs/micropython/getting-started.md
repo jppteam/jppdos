@@ -6,24 +6,40 @@ MicroPython is the easiest way to build apps for the J++Device. You write Python
 
 ## Prerequisites
 
-!!! danger "The `mpy-cross` version must match exactly."
+!!! danger "The bytecode ABI must match exactly."
     The firmware checks the bytecode ABI version declared in the manifest's
     [`toolchain` block](../manifest.md#toolchain) against the `.mpy` you shipped.
-    A file compiled with any other version of `mpy-cross` fails that check and
-    the app will not load.
+    A file compiled by an `mpy-cross` emitting a different ABI fails that check
+    and the app will not load.
 
-Install `mpy-cross` version **1.28.0** exactly:
+What has to match is the **bytecode ABI (mpy v6.3)**, which is what the
+firmware checks. Any `mpy-cross` that emits v6.3 will do.
+
+PyPI has no `1.28.0` release — it jumps from `1.27.0.post2` to a
+`1.28.0rc0.post2` prerelease — so pin the prerelease, which emits v6.3:
 
 ```bash
-pip install mpy-cross==1.28.0
+pip install mpy-cross==1.28.0rc0.post2
 ```
 
-Confirm the version:
+Confirm what it emits — this line is the one that matters:
 
 ```bash
 mpy-cross --version
-# MicroPython v1.28.0 on ...
+# MicroPython v1.28.0-preview on ...; mpy-cross emitting mpy v6.3
 ```
+
+!!! info "Prefer an exact 1.28.0 build?"
+    Build it from source instead — this is what the firmware's own Docker
+    image and CI do, and it also emits v6.3:
+
+    ```bash
+    git clone --depth 1 --branch v1.28.0 https://github.com/micropython/micropython.git
+    make -C micropython/mpy-cross
+    ```
+
+    The binary lands at `micropython/mpy-cross/build/mpy-cross`; put it on your
+    `PATH`.
 
 ---
 
@@ -63,7 +79,7 @@ class MyApp:
         # Called approximately every 100 ms while the app is in the foreground.
         # Poll for key events and update the display here.
         key = self.sdk.poll_key()
-        if key == jppsdk.KEY_CENTER:
+        if key == jppsdk.KEY_OK:
             self.sdk.request_close()
 
     def on_stop(self):
@@ -113,17 +129,17 @@ jppsdk.KEY_UP
 jppsdk.KEY_DOWN
 jppsdk.KEY_LEFT
 jppsdk.KEY_RIGHT
-jppsdk.KEY_CENTER        # d-pad center press
+jppsdk.KEY_OK        # d-pad OK press
 jppsdk.KEY_BACK          # the user asked to go back
-jppsdk.KEY_CENTER_LONG   # older name for KEY_BACK, same value
+jppsdk.KEY_OK_LONG   # older name for KEY_BACK, same value
 ```
 
-!!! info "`KEY_BACK`, not `KEY_CENTER_LONG`."
+!!! info "`KEY_BACK`, not `KEY_OK_LONG`."
     The two are the same value, so existing code is unaffected — but the name
     matters. Which *physical* gesture means "back" is a user preference
     (Settings → Controls: hold, or double-click), and your app never sees which
-    one it was. `KEY_BACK` says what happened; `KEY_CENTER_LONG` guesses how.
-    `KEY_BACK` needs [`sdk_min: 2`](../sdk-changelog.md); `KEY_CENTER_LONG`
+    one it was. `KEY_BACK` says what happened; `KEY_OK_LONG` guesses how.
+    `KEY_BACK` needs [`sdk_min: 2`](../sdk-changelog.md); `KEY_OK_LONG`
     works at every level.
 
 ---
@@ -204,7 +220,7 @@ If you update the app while the device is running, return to the launcher first 
 This app fetches a weather summary from a local endpoint, saves it to the KV store, and displays it. It refreshes every 30 minutes via a background task.
 
 It declares `"sdk_min": 2` for one reason: it uses `KEY_BACK`. Swap that for
-`KEY_CENTER_LONG` and `"sdk_min": 1` would run it on every unit ever shipped.
+`KEY_OK_LONG` and `"sdk_min": 1` would run it on every unit ever shipped.
 
 **manifest.json:**
 
@@ -264,7 +280,7 @@ class WeatherApp:
 
     def on_idle(self):
         key = self.sdk.poll_key()
-        if key == jppsdk.KEY_CENTER:
+        if key == jppsdk.KEY_OK:
             self._fetch()
         elif key == jppsdk.KEY_BACK:
             self.sdk.request_close()

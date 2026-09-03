@@ -18,7 +18,7 @@ You do **not** need to understand firmware internals, ESP-IDF, or embedded syste
 |-----------|--------|
 | Processor | ESP32-C6, RISC-V, single-core |
 | Screen | SSD1306 128×64 monochrome OLED |
-| Input | 5-way directional pad (up/down/left/right + center) |
+| Input | 5-way directional pad (up/down/left/right + OK) |
 | Storage | microSD card (apps and data) + internal flash (device settings) |
 | Connectivity | Bluetooth LE, Wi-Fi |
 | Clock | DS1307 real-time clock (battery-backed, optional — falls back to NTP / unset) |
@@ -67,7 +67,7 @@ Both types use the same underlying SDK functions, the same capability/permission
 
 ## A minimal app
 
-The same app in both languages: show a line of text, exit on CENTER.
+The same app in both languages: show a line of text, exit on OK.
 
 /// tab | MicroPython
 ```python
@@ -104,7 +104,7 @@ void jpp_app_entry(jpp_sdk_context_t *ctx)
     jpp_sdk_key_event_t key;
     while (true) {
         jpp_sdk_wait_key(ctx, 0, &key);
-        if (key == JPP_SDK_KEY_CENTER)
+        if (key == JPP_SDK_KEY_OK)
             break;
     }
     jpp_sdk_request_close(ctx);
