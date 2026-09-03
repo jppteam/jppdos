@@ -4,7 +4,7 @@ Notable changes to JPPDOS, the firmware for the J++Device. This is a
 firmware/hardware product, not a library — entries describe what shipped in
 each build, not an API diff.
 
-## Unreleased
+## v1.2 — 2026-09-03
 
 ### Apps
 
