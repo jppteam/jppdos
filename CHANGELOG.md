@@ -19,6 +19,12 @@ each build, not an API diff.
   fill 80 KB will not load on v1.1, and there is no way to say "needs 80 KB" in
   a manifest.
 
+- **Tetris: Up now hard-drops in the upright layout too.** In the "Tetris:
+  Normal" (non-rotated) layout, Up was mistakenly bound to rotate — the same
+  as OK — leaving no hard-drop control. Up now hard-drops in both layouts, so
+  the controls match: OK rotates, Up hard-drops, Down soft-drops, Left/Right
+  move. ([#3](https://github.com/jppteam/jppdos/pull/3))
+
 ### Device UI
 
 - **The first-boot welcome screens now show the time and battery level.** The
