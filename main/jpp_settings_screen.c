@@ -122,9 +122,9 @@ static size_t volume_step_index(uint8_t pct)
 /* ======================================================================== */
 
 static const char *SECTION_NAMES[JPP_SETTINGS_SECTION_COUNT] = {
-    "Shutdown/Reboot", "Wi-Fi", "Time", "Sleep timers",
-    "Sound", "Controls", "SD card", "Backup settings", "Factory Reset",
-    "* Device Info *", "User's name", "Dummy Mode", "About",
+    "Shutdown/Reboot", "Personalisation", "Wi-Fi", "Time", "Sleep timers",
+    "Sound", "SD card", "Backup settings", "Factory Reset",
+    "* Device Info *", "Dummy Mode", "About",
 };
 
 /* Returns false for sections that should be hidden given the current state. */
@@ -452,12 +452,27 @@ static void render_sound(const jpp_settings_state_t *state)
     ssd1306_draw_string(7, 0, "OK on Test: play", false);
 }
 
-static void render_controls(const jpp_settings_state_t *state)
+static void render_personalisation(const jpp_settings_state_t *state)
 {
-    draw_section_heading("Controls");
+    draw_section_heading("Personalisation");
+
+    /* Labels are all 11 chars so ">label <value>" fills the 21-char row
+       exactly with values of up to 8 chars. */
     const char *back_label = state->back_gesture_mode ? "2x Click" : "Hold";
-    draw_list_item_kv(2, true, "Back", back_label);
+    draw_list_item_kv(2, state->personalisation_cursor == 0u,
+                      "Back action", back_label);
+
+    char uname[9];
+    snprintf(uname, sizeof(uname), "%.8s",
+             state->username_current[0] != '\0' ? state->username_current : "-");
+    draw_list_item_kv(3, state->personalisation_cursor == 1u,
+                      "User's name", uname);
+
+    draw_list_item_kv(4, state->personalisation_cursor == 2u,
+                      "System apps", state->system_apps_bottom ? "bottom" : "top");
+
     ssd1306_draw_string(6, 0, "L/R: change", false);
+    ssd1306_draw_string(7, 0, "OK on name: edit", false);
 }
 
 /* ---- Shutdown/Reboot 32×32 icons --------------------------------------- */
@@ -685,18 +700,6 @@ static void render_device_info(const jpp_settings_state_t *state)
     }
 }
 
-static void render_username(const jpp_settings_state_t *state)
-{
-    draw_section_heading("User's name");
-    ssd1306_draw_string(2, 0, "Name:", false);
-    if (state->username_current[0] != '\0') {
-        ssd1306_draw_string(3, 0, state->username_current, false);
-    } else {
-        ssd1306_draw_string(3, 0, "(not set)", false);
-    }
-    ssd1306_draw_string(6, 0, "OK to edit", false);
-}
-
 static void render_dummy_mode(const jpp_settings_state_t *state,
                                const jpp_settings_deps_t *deps)
 {
@@ -886,16 +889,15 @@ void jpp_settings_screen_render(jpp_settings_state_t *state,
     } else {
         switch (state->selected_section) {
         case JPP_SETTINGS_SECTION_SHUTDOWN_REBOOT: render_shutdown_reboot(state); break;
+        case JPP_SETTINGS_SECTION_PERSONALISATION: render_personalisation(state); break;
         case JPP_SETTINGS_SECTION_WIFI:          render_wifi(state);             break;
         case JPP_SETTINGS_SECTION_TIME:          render_time(state, deps);       break;
         case JPP_SETTINGS_SECTION_SLEEP_TIMERS:  render_sleep_timers_section(state, deps); break;
         case JPP_SETTINGS_SECTION_SOUND:         render_sound(state);                  break;
-        case JPP_SETTINGS_SECTION_CONTROLS:      render_controls(state);               break;
         case JPP_SETTINGS_SECTION_SD_CARD:       render_storage(deps);                 break;
         case JPP_SETTINGS_SECTION_BACKUP:        render_backup_settings(state);        break;
         case JPP_SETTINGS_SECTION_FACTORY_RESET: render_factory_reset(state);          break;
         case JPP_SETTINGS_SECTION_DEVICE_INFO:   render_device_info(state);            break;
-        case JPP_SETTINGS_SECTION_USERNAME:      render_username(state);               break;
         case JPP_SETTINGS_SECTION_DUMMY_MODE:   render_dummy_mode(state, deps);       break;
         case JPP_SETTINGS_SECTION_ABOUT:         render_about();                       break;
         default: break;
@@ -965,6 +967,7 @@ static bool handle_top_level(jpp_settings_state_t *state,
         state->factory_reset_cursor = state->sleep_timers_cursor = 0;
         state->shutdown_reboot_cursor = 0;
         state->sound_cursor = 0;
+        state->personalisation_cursor = 0;
         state->backup_cursor = 0;
         state->backup_ss     = JPP_BACKUP_SS_MAIN;
         state->wifi_ss = JPP_WIFI_SS_MAIN;
@@ -1365,40 +1368,52 @@ static bool handle_sound(jpp_settings_state_t *state,
     return false;
 }
 
-static bool handle_controls(jpp_settings_state_t *state,
-                             const jpp_settings_deps_t *deps,
-                             jpp_ui_action_t action)
+/* Back action and System apps are LEFT/RIGHT toggles; User's name opens the
+   on-screen keyboard on OK.  Unlike the old standalone User's name section,
+   editing the name returns to this list rather than closing the section. */
+static bool handle_personalisation(jpp_settings_state_t *state,
+                                    const jpp_settings_deps_t *deps,
+                                    jpp_ui_action_t action)
 {
     switch (action) {
+    case JPP_UI_ACTION_UP:
+        if (state->personalisation_cursor > 0u) { state->personalisation_cursor--; }
+        break;
+    case JPP_UI_ACTION_DOWN:
+        if (state->personalisation_cursor < 2u) { state->personalisation_cursor++; }
+        break;
     case JPP_UI_ACTION_LEFT:
     case JPP_UI_ACTION_RIGHT:
-        state->back_gesture_mode = state->back_gesture_mode ? 0u : 1u;
-        if (deps->do_back_gesture_change) { deps->do_back_gesture_change(state->back_gesture_mode); }
-        jpp_buzzer_play(JPP_BUZZER_SOUND_CLICK);
+        if (state->personalisation_cursor == 0u) {
+            state->back_gesture_mode = state->back_gesture_mode ? 0u : 1u;
+            if (deps->do_back_gesture_change) {
+                deps->do_back_gesture_change(state->back_gesture_mode);
+            }
+            jpp_buzzer_play(JPP_BUZZER_SOUND_CLICK);
+        } else if (state->personalisation_cursor == 2u) {
+            state->system_apps_bottom = !state->system_apps_bottom;
+            if (deps->do_system_apps_pos_change) {
+                deps->do_system_apps_pos_change(state->system_apps_bottom);
+            }
+            jpp_buzzer_play(JPP_BUZZER_SOUND_CLICK);
+        }
+        break;
+    case JPP_UI_ACTION_OK:
+        if (state->personalisation_cursor == 1u) {
+            char buf[JPP_SETTINGS_USERNAME_MAX] = {0};
+            const char *prefill = state->username_current[0] ? state->username_current : NULL;
+            bool ok = deps->do_text_input &&
+                      deps->do_text_input("User's name", prefill,
+                                          JPP_KBD_TYPE_TEXT, buf, sizeof(buf));
+            if (ok && deps->do_username_save) {
+                deps->do_username_save(state, buf);
+            }
+        }
         break;
     case JPP_UI_ACTION_BACK:
         return true;
     default: break;
     }
-    return false;
-}
-
-static bool handle_username(jpp_settings_state_t *state,
-                             const jpp_settings_deps_t *deps,
-                             jpp_ui_action_t action)
-{
-    if (action == JPP_UI_ACTION_OK) {
-        char buf[JPP_SETTINGS_USERNAME_MAX] = {0};
-        const char *prefill = state->username_current[0] ? state->username_current : NULL;
-        bool ok = deps->do_text_input &&
-                  deps->do_text_input("User's name", prefill,
-                                      JPP_KBD_TYPE_TEXT, buf, sizeof(buf));
-        if (ok && deps->do_username_save) {
-            deps->do_username_save(state, buf);
-        }
-        return true;  /* close section regardless */
-    }
-    if (action == JPP_UI_ACTION_BACK) { return true; }
     return false;
 }
 
@@ -1457,6 +1472,8 @@ bool jpp_settings_screen_handle_action(jpp_settings_state_t *state,
     switch (state->selected_section) {
     case JPP_SETTINGS_SECTION_SHUTDOWN_REBOOT:
         close_section = handle_shutdown_reboot(state, deps, action); break;
+    case JPP_SETTINGS_SECTION_PERSONALISATION:
+        close_section = handle_personalisation(state, deps, action); break;
     case JPP_SETTINGS_SECTION_WIFI:
         close_section = handle_wifi(state, deps, action); break;
     case JPP_SETTINGS_SECTION_TIME:
@@ -1465,8 +1482,6 @@ bool jpp_settings_screen_handle_action(jpp_settings_state_t *state,
         close_section = handle_sleep_timers(state, deps, action); break;
     case JPP_SETTINGS_SECTION_SOUND:
         close_section = handle_sound(state, deps, action); break;
-    case JPP_SETTINGS_SECTION_CONTROLS:
-        close_section = handle_controls(state, deps, action); break;
     case JPP_SETTINGS_SECTION_SD_CARD:
         close_section = (action == JPP_UI_ACTION_BACK);  break;
     case JPP_SETTINGS_SECTION_BACKUP:
@@ -1475,8 +1490,6 @@ bool jpp_settings_screen_handle_action(jpp_settings_state_t *state,
         close_section = handle_factory_reset(state, deps, action); break;
     case JPP_SETTINGS_SECTION_DEVICE_INFO:
         close_section = handle_device_info(state, deps, action); break;
-    case JPP_SETTINGS_SECTION_USERNAME:
-        close_section = handle_username(state, deps, action); break;
     case JPP_SETTINGS_SECTION_DUMMY_MODE:
         close_section = handle_dummy_mode(state, deps, action); break;
     case JPP_SETTINGS_SECTION_ABOUT:

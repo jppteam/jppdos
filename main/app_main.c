@@ -427,6 +427,7 @@ static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 #define JPP_NVS_USER_NS   "jpp_user"
 #define JPP_NVS_DUMMY_NS  "jpp_dummy"
 #define JPP_NVS_INPUT_NS  "jpp_input"
+#define JPP_NVS_UI_NS     "jpp_ui"
 
 typedef struct {
     bool enabled;
@@ -703,6 +704,14 @@ static void settings_do_backup(jpp_settings_state_t *state)
         cJSON_AddNumberToObject(nvs_input, "back_gesture", (double)back_gesture);
     }
 
+    cJSON *nvs_ui = cJSON_CreateObject();
+    if (nvs_open(JPP_NVS_UI_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t sysapps_bot = 0u;
+        nvs_get_u8(h, "sysapps_bot", &sysapps_bot);
+        nvs_close(h);
+        cJSON_AddNumberToObject(nvs_ui, "sysapps_bot", (double)sysapps_bot);
+    }
+
     /* Assemble the backup JSON. */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "jppdos_backup", 1.0);
@@ -713,6 +722,7 @@ static void settings_do_backup(jpp_settings_state_t *state)
     cJSON_AddItemToObject(root, "nvs_sound",  nvs_sound);
     cJSON_AddItemToObject(root, "nvs_user",   nvs_user);
     cJSON_AddItemToObject(root, "nvs_input",  nvs_input);
+    cJSON_AddItemToObject(root, "nvs_ui",     nvs_ui);
 
     /* LRV identity is intentionally NOT included in backups: it lives on the
        AT24C32 EEPROM (bound to the RTC module) and is neither user-backupable
@@ -1066,6 +1076,29 @@ static void settings_do_back_gesture_change(uint8_t mode)
     ESP_LOGI(TAG, "INPUT: back_gesture changed to %u", mode);
 }
 
+/* ---- System apps location (launcher order) ------------------------------ */
+
+static bool s_system_apps_bottom = false;
+
+static void load_system_apps_pos(void)
+{
+    s_system_apps_bottom = (bool)jpp_nvs_get_u8(JPP_NVS_UI_NS, "sysapps_bot", 0u);
+    ESP_LOGI(TAG, "UI: system_apps_bottom=%d", (int)s_system_apps_bottom);
+}
+
+/* Applied live: the shell keeps apps[] in display order, so re-ordering the
+   catalogue is all it takes — the next render picks the new order (and the
+   divider's new position) up. */
+static void settings_do_system_apps_pos_change(bool bottom)
+{
+    s_system_apps_bottom = bottom;
+    jpp_nvs_set_u8(JPP_NVS_UI_NS, "sysapps_bot", (uint8_t)bottom);
+    if (s_main_shell != NULL) {
+        jpp_ui_shell_set_system_apps_bottom(s_main_shell, bottom);
+    }
+    ESP_LOGI(TAG, "UI: system apps moved to %s", bottom ? "bottom" : "top");
+}
+
 /* ---- Dummy mode (single-app lock) --------------------------------------- */
 
 static bool s_dummy_enabled        = false;
@@ -1258,6 +1291,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
         .do_volume_change       = settings_do_volume_change,
         .do_jingle_change       = settings_do_jingle_change,
         .do_back_gesture_change = settings_do_back_gesture_change,
+        .do_system_apps_pos_change = settings_do_system_apps_pos_change,
         .do_settings_backup     = settings_do_backup,
         .do_settings_restore    = settings_do_restore,
         .do_lrv_verify          = settings_do_lrv_verify,
@@ -1332,6 +1366,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
     settings_state.sound_volume_pct = s_buzzer_volume_pct;
     settings_state.sound_jingle     = s_startup_jingle;
     settings_state.back_gesture_mode = s_back_gesture_mode;
+    settings_state.system_apps_bottom = s_system_apps_bottom;
 
     /* Load persisted NTP / timezone config and populate settings staging state. */
     ntp_cfg_load();
@@ -1868,6 +1903,15 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                     if (on_launcher || on_webdav) {
                         jpp_draw_rule(1u);
                     }
+                    /* Divider between the system apps and the SD apps. Drawn
+                       after the text: it rides the spare bottom pixel row of a
+                       list row rather than taking a row of its own. */
+                    if (on_launcher) {
+                        int div_row = jpp_ui_shell_launcher_divider_row(shell);
+                        if (div_row >= 0) {
+                            jpp_draw_underline_rule((uint8_t)div_row);
+                        }
+                    }
                     /* Checkmark on the active password mode line in passconfig. */
                     if (on_webdav_passconfig) {
                         uint8_t chk_page = shell->webdav_pass_is_static ? 3u : 2u;
@@ -2105,10 +2149,13 @@ void app_main(void)
     /* Apply persisted buzzer volume before the startup chime. */
     load_buzzer_volume();
     load_back_gesture();
+    load_system_apps_pos();
 
     /* Step 7 */
     jpp_ui_shell_t shell;
     jpp_ui_shell_init(&shell, jpp_boot_mode_name(boot.boot_mode));
+    /* Set before discovery so every app is inserted into the right group. */
+    jpp_ui_shell_set_system_apps_bottom(&shell, s_system_apps_bottom);
 
     bool normal_mode = boot.boot_mode == JPP_BOOT_MODE_NORMAL;
     jpp_boot_discovery_summary_t disc;

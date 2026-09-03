@@ -26,7 +26,7 @@
 | `JPP_SDK_KEY_LEFT` | D-pad left |
 | `JPP_SDK_KEY_RIGHT` | D-pad right |
 | `JPP_SDK_KEY_OK` | D-pad OK (short press) |
-| `JPP_SDK_KEY_BACK` | The user asked to go back. Which physical gesture produced it (hold or double-click) depends on Settings > Controls and is not your app's concern. |
+| `JPP_SDK_KEY_BACK` | The user asked to go back. Which physical gesture produced it (hold or double-click) depends on Settings > Personalisation and is not your app's concern. |
 | `JPP_SDK_KEY_OK_LONG` | Older name for `JPP_SDK_KEY_BACK`, same value — kept so existing apps are unaffected |
 | `JPP_SDK_KEY_OK_HOLD` | Raw OK hold. Delivered only if claimed via [`claim_ok`](app-control.md#claim_ok) |
 | `JPP_SDK_KEY_OK_DOUBLE` | Raw OK double-click. Delivered only if claimed via [`claim_ok`](app-control.md#claim_ok) |

@@ -216,7 +216,7 @@ firmware.
 ### OK gesture claims
 
 The device gained a user preference for whether **hold** or **double-click**
-means "Back" (Settings → Controls). Apps never read that preference. Instead:
+means "Back" (Settings → Personalisation). Apps never read that preference. Instead:
 
 - Claim nothing (the default) and you receive `JPP_SDK_KEY_BACK` whenever the
   user asks to go back, with the firmware deciding which physical gesture that

@@ -137,8 +137,9 @@ jppsdk.KEY_OK_LONG   # older name for KEY_BACK, same value
 !!! info "`KEY_BACK`, not `KEY_OK_LONG`."
     The two are the same value, so existing code is unaffected — but the name
     matters. Which *physical* gesture means "back" is a user preference
-    (Settings → Controls: hold, or double-click), and your app never sees which
-    one it was. `KEY_BACK` says what happened; `KEY_OK_LONG` guesses how.
+    (Settings → Personalisation: hold, or double-click), and your app never
+    sees which one it was. `KEY_BACK` says what happened; `KEY_OK_LONG`
+    guesses how.
     `KEY_BACK` needs [`sdk_min: 2`](../sdk-changelog.md); `KEY_OK_LONG`
     works at every level.
 

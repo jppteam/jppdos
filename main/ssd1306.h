@@ -42,6 +42,13 @@ void ssd1306_clear(void);
 void ssd1306_fill_page(uint8_t page, uint8_t pattern);
 
 /**
+ * OR a raw byte pattern into every column of an 8-px-tall page, leaving the
+ * pixels already there untouched.  Used to lay a 1-px rule into the spare
+ * bottom bit of a text row (the 5x7 font only reaches bit 6).
+ */
+void ssd1306_or_page(uint8_t page, uint8_t pattern);
+
+/**
  * Draw a single character at (page, col).
  * invert=true swaps on/off pixels (white bg, black text).
  * Returns the column after the character (i.e. col + SSD1306_CHAR_W).

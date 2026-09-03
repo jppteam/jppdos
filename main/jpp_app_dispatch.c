@@ -217,6 +217,12 @@ void discover_apps(bool normal_mode,
         summary->sd_count +
         summary->disabled_count +
         summary->rejected_count;
+
+    /* Boot population, not a rebuild: open the launcher at the top of the list.
+       (jpp_ui_shell_add_app() otherwise keeps the cursor on whichever app it
+       was already on, which in "system apps at the bottom" order would leave it
+       pinned to Settings — index 0 at the time the first SD app was inserted.) */
+    shell->selected_app = 0u;
 }
 
 /* ---- Background app re-discovery ----------------------------------------- */
@@ -291,11 +297,27 @@ bool discover_apps_background_ready(void)
 
 void discover_apps_apply_to_shell(jpp_ui_shell_t *shell)
 {
+    /* Rebuilding the catalogue shuffles indices (SD apps sit *before* the
+       system group when those are shown at the bottom), so hold the cursor by
+       app_id rather than by index. */
+    char selected_id[JPP_UI_TEXT_LIMIT] = "";
+    if (shell->selected_app < shell->app_count) {
+        strncpy(selected_id, shell->apps[shell->selected_app].app_id,
+                sizeof(selected_id) - 1u);
+    }
+
     jpp_ui_shell_clear_sd_apps(shell);
     for (size_t i = 0u; i < s_bg_disc_count; i++) {
         jpp_ui_shell_add_app(shell, s_bg_disc_apps[i].id,
                              s_bg_disc_apps[i].name,
                              JPP_UI_APP_SOURCE_SD);
+    }
+
+    for (size_t i = 0u; i < shell->app_count; i++) {
+        if (strcmp(shell->apps[i].app_id, selected_id) == 0) {
+            shell->selected_app = i;
+            break;
+        }
     }
 }
 

@@ -219,6 +219,16 @@ void ssd1306_fill_page(uint8_t page, uint8_t pattern)
     memset(s_fb[page], pattern, SSD1306_WIDTH);
 }
 
+void ssd1306_or_page(uint8_t page, uint8_t pattern)
+{
+    if (page >= SSD1306_PAGES) {
+        return;
+    }
+    for (uint8_t col = 0; col < SSD1306_WIDTH; col++) {
+        s_fb[page][col] |= pattern;
+    }
+}
+
 uint8_t ssd1306_draw_char(uint8_t page, uint8_t col, char c, bool invert)
 {
     const uint8_t *g = glyph(c);

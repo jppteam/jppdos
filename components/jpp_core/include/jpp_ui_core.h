@@ -80,6 +80,9 @@ typedef struct {
     jpp_ui_stack_t stack;
     jpp_ui_app_entry_t apps[JPP_UI_APP_LIMIT];
     size_t app_count;
+    /* Launcher order: false = system (builtin) apps first, true = last.
+       apps[] is always kept in display order, so nothing else has to know. */
+    bool   system_apps_bottom;
     size_t selected_app;
     size_t selected_setting;
     char boot_mode[JPP_UI_TEXT_LIMIT];
@@ -149,6 +152,17 @@ jpp_ui_status_t jpp_ui_shell_add_app(
     const char *name,
     jpp_ui_app_source_t source
 );
+/* Move the system (builtin) app group to the bottom of the launcher list, or
+   back to the top.  Re-orders apps[] in place, keeping the cursor on whichever
+   app it was already on. */
+void jpp_ui_shell_set_system_apps_bottom(jpp_ui_shell_t *shell, bool bottom);
+
+/* Frame row (0–7) whose bottom pixel row carries the divider between the
+   system apps and the SD apps on the launcher, or -1 when there is nothing to
+   divide (one of the two groups is empty) or the boundary is scrolled out of
+   view.  The display layer draws the rule — see jpp_draw_underline_rule(). */
+int jpp_ui_shell_launcher_divider_row(const jpp_ui_shell_t *shell);
+
 void jpp_ui_shell_set_status(
     jpp_ui_shell_t *shell,
     const char *time_str,

@@ -12,6 +12,14 @@ static inline void jpp_draw_rule(uint8_t page)
     ssd1306_fill_page(page, 0x08u);
 }
 
+/* 1-px rule on the *bottom* pixel row of a page.  The 5x7 font only reaches
+   bit 6, so this shares the row with the text drawn above it instead of
+   consuming a whole text line — used for the launcher's system-app divider. */
+static inline void jpp_draw_underline_rule(uint8_t page)
+{
+    ssd1306_or_page(page, 0x80u);
+}
+
 /* Title row + the signature rule on page 1. */
 static inline void jpp_draw_title(const char *title)
 {
