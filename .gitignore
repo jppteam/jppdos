@@ -30,6 +30,13 @@ scripts/mfr_pubkey.bin
 scripts/testbackup.json
 # Per-run manufacturing config + ledger (ledger holds per-unit serial/hwid/pubkey records)
 scripts/mfg.toml
+
+# OTA signing key (scripts/ota_publish.py keygen). The private half belongs in
+# the OTA_SIGNING_KEY repository secret and nowhere else — it cannot be rotated
+# without reflashing every fielded device over USB. The public half is ignored
+# too: what the firmware trusts is the C array pasted into it, not a file here.
+scripts/ota_seckey.pem
+scripts/ota_pubkey.pem
 scripts/ledger.csv
 
 # Temporary planning notes
