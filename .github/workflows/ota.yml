@@ -1,0 +1,316 @@
+# =============================================================================
+# Publishes a built firmware release to the OTA bucket, so devices can find and
+# install updates on their own (issue #2).
+#
+# Layout produced under s3://<bucket>/<OTA_PREFIX>/ :
+#
+#     latest              plaintext index: newest stable + newest pre-release
+#     latest.sig
+#     <version>.bin       app-partition image (what the device installs)
+#     <version>.bin.sig
+#     <version>-merged.bin        whole-flash image (J++Device Manager over USB)
+#     <version>-merged.bin.sig
+#
+# EVERY object has a detached `.sig` sibling: ECDSA P-256 / SHA-256, 64 raw
+# bytes of r || s. The bucket is read over plain HTTP by hardware too weak for
+# TLS, so the signature -- not the transport -- is what makes an update
+# trustworthy. The matching public key is hardcoded in the firmware and cannot
+# be rotated without a USB reflash; see scripts/ota_publish.py and
+# docs/ota-registry.md.
+#
+# Versioned images are never overwritten or deleted (no `sync --delete`
+# anywhere here), so an older release stays fetchable and this workflow can
+# only ever touch its own prefix.
+#
+# This is a REUSABLE workflow. release.yml calls it as its last job, which is
+# why it takes the artefacts from that run rather than rebuilding: the bits
+# that get signed are byte-for-byte the ones attached to the GitHub Release.
+# Running it directly (workflow_dispatch) re-publishes from a release's
+# published assets instead, which is the retry path for a failed upload.
+#
+# Configuration (all shared with docs.yml unless overridden):
+#   vars.OTA_S3_BUCKET      | vars.S3_BUCKET            bucket name
+#   vars.OTA_S3_PREFIX                                  defaults to "jppdos"
+#   vars.S3_ENDPOINT_URL                                defaults to Yandex
+#   vars.AWS_REGION                                     defaults to ru-central-1
+#   secrets.OTA_S3_ACCESS_KEY_ID     | secrets.S3_ACCESS_KEY_ID
+#   secrets.OTA_S3_SECRET_ACCESS_KEY | secrets.S3_SECRET_ACCESS_KEY
+#   secrets.OTA_SIGNING_KEY                             EC P-256 private key PEM
+#
+# The credentials need s3:ListBucket on the bucket plus s3:GetObject and
+# s3:PutObject under <OTA_PREFIX>/* -- no delete permission is required or
+# wanted. Objects are expected to be world-readable through the bucket's own
+# policy; no per-object ACL is set here, matching docs.yml.
+# =============================================================================
+name: ota
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag being published'
+        required: true
+        type: string
+      channel:
+        description: 'stable or prerelease (as decided by release.yml)'
+        required: true
+        type: string
+      from_artifact:
+        description: 'Take the images from this run''s "firmware" artifact'
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re-)publish to the OTA bucket'
+        required: true
+
+concurrency:
+  # Keyed on the prefix, NOT the tag: every run rewrites the same `latest`
+  # object, so two releases publishing at once would race there even though
+  # their version-stamped images never collide. Never cancel mid-publish.
+  group: ota-publish-${{ vars.OTA_S3_PREFIX || 'jppdos' }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ inputs.tag }}
+      BUCKET: ${{ vars.OTA_S3_BUCKET || vars.S3_BUCKET }}
+      PREFIX: ${{ vars.OTA_S3_PREFIX || 'jppdos' }}
+      ENDPOINT: ${{ vars.S3_ENDPOINT_URL || 'https://storage.yandexcloud.net' }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ru-central-1' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.OTA_S3_ACCESS_KEY_ID || secrets.S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.OTA_S3_SECRET_ACCESS_KEY || secrets.S3_SECRET_ACCESS_KEY }}
+    steps:
+      # OTA publishing is additive: a repository that has not been given the
+      # signing key or the bucket yet should still be able to cut releases.
+      # So a missing secret only skips the job when release.yml called us --
+      # but is a hard error when a human asked for this run specifically.
+      - name: Preflight
+        id: pre
+        env:
+          HAVE_KEY: ${{ secrets.OTA_SIGNING_KEY != '' }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel == '' }}
+        run: |
+          set -euo pipefail
+          MISSING=""
+          [ -n "$BUCKET" ]  || MISSING="$MISSING OTA_S3_BUCKET/S3_BUCKET(variable)"
+          [ -n "${AWS_ACCESS_KEY_ID:-}" ] || MISSING="$MISSING S3_ACCESS_KEY_ID(secret)"
+          [ "$HAVE_KEY" = "true" ] || MISSING="$MISSING OTA_SIGNING_KEY(secret)"
+
+          if [ -z "$MISSING" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          if [ "$MANUAL" = "true" ]; then
+            echo "::error::OTA publishing is not configured. Missing:$MISSING"
+            exit 1
+          fi
+          echo "::warning::OTA publishing skipped -- not configured. Missing:$MISSING"
+          echo "OTA publish **skipped**: not configured (missing:$MISSING)." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # The tagged commit, so the signing tool used is the one that shipped
+      # with this firmware. Full history for the commit metadata recorded in
+      # the index.
+      - name: Check out repository
+        if: steps.pre.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        if: steps.pre.outputs.ready == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install signing dependencies
+        if: steps.pre.outputs.ready == 'true'
+        run: python3 -m pip install --upgrade pip cryptography
+
+      # Called from release.yml: reuse that run's build output, so what gets
+      # signed is exactly what the release page serves.
+      - name: Download build output (from this run)
+        if: steps.pre.outputs.ready == 'true' && inputs.from_artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist
+
+      # Standalone re-publish: the build artifact is long expired, so take the
+      # release's own assets. Identical bytes, just a slower fetch.
+      - name: Download build output (from the release)
+        if: steps.pre.outputs.ready == 'true' && !inputs.from_artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "$TAG" --dir dist --pattern 'jppdos-*'
+
+      # On the manual path nobody told us which channel this tag is, so ask
+      # the published release rather than re-deriving branch containment --
+      # release.yml already made that decision and recorded it there.
+      - name: Resolve channel and version
+        id: meta
+        if: steps.pre.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          CHANNEL_IN: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          CHANNEL="$CHANNEL_IN"
+          if [ -z "$CHANNEL" ]; then
+            if [ "$(gh release view "$TAG" --json isPrerelease -q .isPrerelease)" = "true" ]; then
+              CHANNEL=prerelease
+            else
+              CHANNEL=stable
+            fi
+            echo "Channel read from the published release: $CHANNEL"
+          fi
+
+          SHA=$(git rev-parse HEAD)
+          DATE=$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)
+
+          {
+            echo "channel=$CHANNEL"
+            echo "version=${TAG#v}"
+            echo "sha=$SHA"
+            echo "date=$DATE"
+          } >> "$GITHUB_OUTPUT"
+
+      # The device installs the app partition alone; release.yml only ships it
+      # inside the separate-images zip, so unpack it here rather than growing
+      # the release asset list. Both images are renamed to the bare
+      # "<version>.bin" / "<version>-merged.bin" the storage convention calls
+      # for, so the index needs no path juggling.
+      - name: Stage images
+        id: stage
+        if: steps.pre.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          unzip -j -o "dist/jppdos-${TAG}-esp32c6.zip" jppdos_idf.bin -d staging
+          mv "staging/jppdos_idf.bin" "staging/${VERSION}.bin"
+          cp "dist/jppdos-${TAG}-esp32c6-merged.bin" "staging/${VERSION}-merged.bin"
+          ls -l staging
+
+      # A missing `latest` is the first-ever publish, not an error. Anything
+      # else -- an expired key, a policy that grants PutObject but not
+      # GetObject -- must NOT be mistaken for one: this file is read back to
+      # preserve the channel we are not publishing, so swallowing an error
+      # here would silently wipe the other channel out of the index.
+      - name: Fetch current index
+        if: steps.pre.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          if err=$(aws s3api head-object --bucket "$BUCKET" --key "${PREFIX}/latest" \
+                     --endpoint-url "$ENDPOINT" 2>&1 >/dev/null); then
+            aws s3 cp "s3://${BUCKET}/${PREFIX}/latest" current-latest \
+              --endpoint-url "$ENDPOINT" --no-progress
+            echo "Merging into the existing index:"
+            cat current-latest
+          elif printf '%s' "$err" | grep -qE '404|Not Found'; then
+            echo "No index at ${PREFIX}/latest yet -- starting a new one."
+          else
+            echo "::error::Could not read ${PREFIX}/latest: $err"
+            exit 1
+          fi
+
+      - name: Build index
+        if: steps.pre.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          DATE: ${{ steps.meta.outputs.date }}
+        run: |
+          set -euo pipefail
+          # Note the `|| true`: under `set -e` a bare failing test as the
+          # last command of an && list aborts the step, and "no index yet" is
+          # the normal first-publish case, not a failure.
+          ARGS=()
+          [ -f current-latest ] && ARGS+=(--index current-latest) || true
+          python3 scripts/ota_publish.py index-update \
+            "${ARGS[@]}" \
+            --out staging/latest \
+            --channel "$CHANNEL" \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --commit "$SHA" \
+            --date "$DATE" \
+            --app "staging/${VERSION}.bin" \
+            --merged "staging/${VERSION}-merged.bin"
+          {
+            echo '### OTA index'
+            echo '```'
+            cat staging/latest
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Verify immediately after signing, with the public key derived from the
+      # same private key: a bucket full of unverifiable objects is the one
+      # failure mode a device cannot recover from on its own.
+      - name: Sign and verify
+        if: steps.pre.outputs.ready == 'true'
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          FILES=("staging/${VERSION}.bin" "staging/${VERSION}-merged.bin" staging/latest)
+          python3 scripts/ota_publish.py sign   --key-env OTA_SIGNING_KEY "${FILES[@]}"
+          python3 scripts/ota_publish.py verify --key-env OTA_SIGNING_KEY "${FILES[@]}"
+
+      # Order matters. The version-stamped images go up first and `latest`
+      # last, so a device that reads the index never finds it pointing at an
+      # object that has not landed yet. (`latest.sig` goes just before
+      # `latest` for the same reason -- the pair is consistent from the
+      # instant the index appears.)
+      #
+      # Versioned images are immutable, so they get a year; the index has to
+      # be re-read to be useful, so it gets a minute.
+      - name: Upload to S3
+        if: steps.pre.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          DEST="s3://${BUCKET}/${PREFIX}"
+          IMMUTABLE='public, max-age=31536000, immutable'
+          VOLATILE='public, max-age=60, must-revalidate'
+
+          put() {
+            aws s3 cp "$1" "${DEST}/$2" \
+              --endpoint-url "$ENDPOINT" --no-progress \
+              --content-type "$3" --cache-control "$4"
+          }
+
+          for f in "${VERSION}.bin" "${VERSION}-merged.bin"; do
+            put "staging/$f"      "$f"      application/octet-stream "$IMMUTABLE"
+            put "staging/$f.sig"  "$f.sig"  application/octet-stream "$IMMUTABLE"
+          done
+
+          put staging/latest.sig latest.sig application/octet-stream "$VOLATILE"
+          put staging/latest     latest     'text/plain; charset=utf-8' "$VOLATILE"
+
+      - name: Summary
+        if: steps.pre.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: |
+          {
+            echo
+            echo "Published **$VERSION** to the \`$CHANNEL\` channel at" \
+                 "\`s3://${BUCKET}/${PREFIX}/\`."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -24,6 +24,31 @@ each build, not an API diff.
   change them, and the launcher re-orders immediately, keeping the cursor on
   whichever app it was on.
 
+### Build & release
+
+- **Releases are now published to an OTA bucket, signed.** Cutting a tag still
+  produces the same GitHub Release; a new final job in
+  `.github/workflows/release.yml` then mirrors those exact images to the
+  update bucket as `latest`, `<version>.bin` (the app partition, for an
+  over-the-air install) and `<version>-merged.bin` (the whole-flash image
+  J++Device Manager writes over USB). The device reads that bucket over plain
+  HTTP — it has no TLS — so **every object carries a detached ECDSA P-256
+  signature** in a `.sig` file beside it, and the verification key is compiled
+  into the firmware. Format and bucket layout are specified in
+  [OTA and App Hub](docs/ota-registry.md); the signing and index tool is
+  `scripts/ota_publish.py`.
+
+  This is the publishing half of
+  [#2](https://github.com/jppteam/jppdos/issues/2) only. Nothing in the
+  firmware fetches or installs an update yet, and the current partition table
+  has a single `factory` app partition with no OTA slots — an in-place update
+  needs that changed first. The bucket contents are useful today for the
+  web-based J++Device Manager.
+
+  Publishing is off until it is configured: without the `OTA_SIGNING_KEY`
+  secret and a bucket variable the job warns and skips, so releases still work
+  as before.
+
 ## v1.2 — 2026-09-03
 
 ### Apps

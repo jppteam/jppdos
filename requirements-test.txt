@@ -1,1 +1,4 @@
 pytest
+# scripts/ota_publish.py signs the OTA artefacts; tests/test_ota_index.py
+# skips without it, and a release must not skip that check silently.
+cryptography

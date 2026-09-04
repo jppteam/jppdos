@@ -12,7 +12,11 @@
 # released: it carries the LRV EEPROM write path, which production firmware
 # does not contain. Manufacturing builds that locally.
 #
-# Needs no secrets — the built-in GITHUB_TOKEN creates the release.
+# The release itself needs no secrets — the built-in GITHUB_TOKEN creates it.
+# The trailing `ota` job does need them (bucket credentials and the OTA signing
+# key), which is why `secrets: inherit` appears there and nowhere else; it
+# skips itself with a warning when they are not configured, so a repository
+# without OTA set up still cuts releases normally. See .github/workflows/ota.yml.
 # =============================================================================
 name: release
 
@@ -465,3 +469,22 @@ jobs:
           echo "Published **$CHANNEL** (from \`$BRANCH\`):" \
                "<${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG>" \
             >> "$GITHUB_STEP_SUMMARY"
+
+  # Mirror the same images into the OTA bucket, signed, so a device can find
+  # and install this release by itself (issue #2). Deliberately last and
+  # `needs: publish`: the GitHub Release is the canonical artefact, and a
+  # bucket advertising a version whose release page does not exist yet would
+  # be the confusing failure. It reuses the build job's artifact rather than
+  # rebuilding, so the signed bytes are the released bytes.
+  #
+  # A reusable workflow rather than more steps here: the same publish has to
+  # be runnable on its own to retry a failed upload, and `workflow_run` — the
+  # other way to chain — only ever fires from the default branch, which a tag
+  # cut from develop is not.
+  ota:
+    needs: [build, publish]
+    uses: ./.github/workflows/ota.yml
+    with:
+      tag: ${{ github.event.inputs.tag || github.ref_name }}
+      channel: ${{ needs.build.outputs.channel }}
+    secrets: inherit

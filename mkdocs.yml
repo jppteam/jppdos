@@ -89,3 +89,4 @@ nav:
           - Resource limits: sdk/limits.md
       - SDK changelog: sdk-changelog.md
       - Serial protocol: serial-protocol.md
+      - OTA and App Hub: ota-registry.md
