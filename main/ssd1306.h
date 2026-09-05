@@ -24,6 +24,12 @@
 extern "C" {
 #endif
 
+/* Left/right arrow glyphs, past the ASCII range the font otherwise covers.
+   Use them in string literals for d-pad hints, e.g.
+   SSD1306_ARROW_LEFT "/" SSD1306_ARROW_RIGHT " to change". */
+#define SSD1306_ARROW_LEFT  "\x7F"
+#define SSD1306_ARROW_RIGHT "\x80"
+
 #define SSD1306_CHAR_W      6u   /* char width at 1× (incl. gap) */
 #define SSD1306_CHAR_W_2X  12u  /* char width at 2× (incl. gap) */
 #define SSD1306_PAGES       8u

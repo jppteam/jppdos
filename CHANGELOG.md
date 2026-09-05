@@ -18,12 +18,12 @@ each build, not an API diff.
 - **New "Personalisation" settings section.** It sits right below
   Shutdown/Reboot and gathers the settings that are about how the device
   behaves for *you*: **Back action** (moved out of the old "Controls" section
-  and renamed — still Hold or 2x Click), **User's name** (moved out of its own
-  top-level section; OK opens the keyboard), and a new **System apps** setting
-  that moves Settings and WebDAV server — and the divider with them — to the
-  **top** or the **bottom** of the launcher list. All three save the moment you
-  change them, and the launcher re-orders immediately, keeping the cursor on
-  whichever app it was on.
+  and renamed — "Hold OK" or "2x Tap OK"), **User's name** (moved out of its
+  own top-level section; OK opens the keyboard), and a new **System apps**
+  setting that moves Settings and WebDAV server — and the divider with them —
+  to the **top** or the **bottom** of the launcher list. All three save the
+  moment you change them, and the launcher re-orders immediately, keeping the
+  cursor on whichever app it was on.
 
 ## v1.2 — 2026-09-03
 

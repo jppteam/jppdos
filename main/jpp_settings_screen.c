@@ -452,27 +452,45 @@ static void render_sound(const jpp_settings_state_t *state)
     ssd1306_draw_string(7, 0, "OK on Test: play", false);
 }
 
+/* Personalisation rows right-align the value in *pixels* rather than going
+   through draw_list_item_kv, which lays the row out on the 21-character grid:
+   an 11-char label plus a 9-char value plus the cursor already fills all 21,
+   leaving no column for a separator.  Right-aligning recovers the 2 px the
+   character grid leaves unused at the edge and puts a 3 px gap between the
+   longest label and the longest value. */
+#define PERSONALISATION_VALUE_MAX 9u   /* what fits beside a 11-char label */
+
+static void draw_personalisation_row(uint8_t page, bool selected,
+                                      const char *label, const char *value)
+{
+    draw_list_item(page, selected, label);
+    draw_right(page, value);
+}
+
 static void render_personalisation(const jpp_settings_state_t *state)
 {
     draw_section_heading("Personalisation");
 
-    /* Labels are all 11 chars so ">label <value>" fills the 21-char row
-       exactly with values of up to 8 chars. */
-    const char *back_label = state->back_gesture_mode ? "2x Click" : "Hold";
-    draw_list_item_kv(2, state->personalisation_cursor == 0u,
-                      "Back action", back_label);
+    draw_personalisation_row(2, state->personalisation_cursor == 0u,
+                             "Back action",
+                             state->back_gesture_mode ? "2x Tap OK" : "Hold OK");
 
-    char uname[9];
-    snprintf(uname, sizeof(uname), "%.8s",
+    char uname[PERSONALISATION_VALUE_MAX + 1u];
+    snprintf(uname, sizeof(uname), "%.*s", (int)PERSONALISATION_VALUE_MAX,
              state->username_current[0] != '\0' ? state->username_current : "-");
-    draw_list_item_kv(3, state->personalisation_cursor == 1u,
-                      "User's name", uname);
+    draw_personalisation_row(3, state->personalisation_cursor == 1u,
+                             "User's name", uname);
 
-    draw_list_item_kv(4, state->personalisation_cursor == 2u,
-                      "System apps", state->system_apps_bottom ? "bottom" : "top");
+    draw_personalisation_row(4, state->personalisation_cursor == 2u,
+                             "System apps",
+                             state->system_apps_bottom ? "on bottom" : "on top");
 
-    ssd1306_draw_string(6, 0, "L/R: change", false);
-    ssd1306_draw_string(7, 0, "OK on name: edit", false);
+    /* One hint line, for whichever row the cursor is on. */
+    ssd1306_draw_string(6, 0,
+        state->personalisation_cursor == 1u
+            ? "OK to edit"
+            : SSD1306_ARROW_LEFT "/" SSD1306_ARROW_RIGHT " to change",
+        false);
 }
 
 /* ---- Shutdown/Reboot 32×32 icons --------------------------------------- */
