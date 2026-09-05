@@ -24,6 +24,12 @@
 extern "C" {
 #endif
 
+/* Left/right arrow glyphs, past the ASCII range the font otherwise covers.
+   Use them in string literals for d-pad hints, e.g.
+   SSD1306_ARROW_LEFT "/" SSD1306_ARROW_RIGHT " to change". */
+#define SSD1306_ARROW_LEFT  "\x7F"
+#define SSD1306_ARROW_RIGHT "\x80"
+
 #define SSD1306_CHAR_W      6u   /* char width at 1× (incl. gap) */
 #define SSD1306_CHAR_W_2X  12u  /* char width at 2× (incl. gap) */
 #define SSD1306_PAGES       8u
@@ -42,11 +48,12 @@ void ssd1306_clear(void);
 void ssd1306_fill_page(uint8_t page, uint8_t pattern);
 
 /**
- * OR a raw byte pattern into every column of an 8-px-tall page, leaving the
- * pixels already there untouched.  Used to lay a 1-px rule into the spare
- * bottom bit of a text row (the 5x7 font only reaches bit 6).
+ * OR a raw byte pattern into a horizontal span of an 8-px-tall page, leaving
+ * the pixels already there untouched.  Used to lay a 1-px rule into the spare
+ * bottom bit of a text row (the 5x7 font only reaches bit 6).  The span is
+ * clipped to the display width.
  */
-void ssd1306_or_page(uint8_t page, uint8_t pattern);
+void ssd1306_or_cols(uint8_t page, uint8_t col, uint8_t width, uint8_t pattern);
 
 /**
  * Draw a single character at (page, col).

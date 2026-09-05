@@ -144,6 +144,11 @@ static const uint8_t s_font[][5] = {
     /* 0x7C */  {0x00,0x00,0x7F,0x00,0x00}, /* '|'  */
     /* 0x7D */  {0x00,0x41,0x36,0x08,0x00}, /* '}'  */
     /* 0x7E */  {0x0A,0x07,0x00,0x0A,0x07}, /* '~'  */
+    /* Past ASCII: d-pad arrows for on-screen control hints.  See the
+       SSD1306_ARROW_* macros in the header — nothing else draws bytes
+       above 0x7E, so these slots cannot collide with real text. */
+    /* 0x7F */  {0x08,0x1C,0x2A,0x08,0x08}, /* left arrow  */
+    /* 0x80 */  {0x08,0x08,0x2A,0x1C,0x08}, /* right arrow */
 };
 
 static const uint8_t *glyph(char c)
@@ -219,13 +224,17 @@ void ssd1306_fill_page(uint8_t page, uint8_t pattern)
     memset(s_fb[page], pattern, SSD1306_WIDTH);
 }
 
-void ssd1306_or_page(uint8_t page, uint8_t pattern)
+void ssd1306_or_cols(uint8_t page, uint8_t col, uint8_t width, uint8_t pattern)
 {
-    if (page >= SSD1306_PAGES) {
+    if (page >= SSD1306_PAGES || col >= SSD1306_WIDTH) {
         return;
     }
-    for (uint8_t col = 0; col < SSD1306_WIDTH; col++) {
-        s_fb[page][col] |= pattern;
+    uint16_t end = (uint16_t)col + (uint16_t)width;
+    if (end > SSD1306_WIDTH) {
+        end = SSD1306_WIDTH;
+    }
+    for (uint16_t c = col; c < end; c++) {
+        s_fb[page][c] |= pattern;
     }
 }
 
