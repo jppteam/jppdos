@@ -9,10 +9,11 @@ each build, not an API diff.
 ### Device UI
 
 - **The launcher separates the system apps from your own.** A thin rule now
-  runs under the last system app (Settings and WebDAV server), so the built-in
-  entries read as their own group instead of blending into the list of apps on
-  the SD card. It sits in the spare pixel row at the bottom of a list row, so
-  it costs no space — the launcher still shows six apps at a time.
+  sits between the system apps (Settings and WebDAV server) and the apps on
+  your SD card, so the built-in entries read as their own group instead of
+  blending into the list. The rule gets a line of its own with clear space
+  above and below, so the list shows five apps at a time rather than six while
+  it is on screen.
 
 - **New "Personalisation" settings section.** It sits right below
   Shutdown/Reboot and gathers the settings that are about how the device

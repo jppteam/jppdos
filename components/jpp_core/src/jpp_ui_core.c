@@ -77,33 +77,74 @@ static size_t jpp_ui_launcher_split(const jpp_ui_shell_t *shell)
     return n;
 }
 
-/* Index range of the app entries currently visible in the list window. */
+/* The divider is a row of its own rather than a rule tucked under the last
+   app of the first group: the 5x7 font fills bits 0-6 of every page, leaving
+   exactly one spare pixel row between text rows, so a rule sharing a text row
+   necessarily touches the glyphs above and below it.  Giving it a row buys
+   clear space on both sides, at the cost of one visible app whenever it shows.
+
+   It is modelled as a non-selectable *display item* sitting at the group
+   boundary, so scrolling, the visible window, and the divider's own position
+   all fall out of one index space instead of being computed separately. */
+
+static bool jpp_ui_launcher_has_divider(const jpp_ui_shell_t *shell)
+{
+    size_t split = jpp_ui_launcher_split(shell);
+    /* Nothing to divide when either group is empty. */
+    return shell->app_count > 0u && split > 0u && split < shell->app_count;
+}
+
+static size_t jpp_ui_launcher_display_count(const jpp_ui_shell_t *shell)
+{
+    return shell->app_count + (jpp_ui_launcher_has_divider(shell) ? 1u : 0u);
+}
+
+/* Display index of an entry in apps[]. */
+static size_t jpp_ui_launcher_app_to_display(const jpp_ui_shell_t *shell,
+                                              size_t app_index)
+{
+    if (jpp_ui_launcher_has_divider(shell) &&
+        app_index >= jpp_ui_launcher_split(shell)) {
+        return app_index + 1u;
+    }
+    return app_index;
+}
+
+/* Inverse of the above; returns SIZE_MAX for the divider's own slot. */
+static size_t jpp_ui_launcher_display_to_app(const jpp_ui_shell_t *shell,
+                                              size_t display_index)
+{
+    size_t split;
+    if (!jpp_ui_launcher_has_divider(shell)) { return display_index; }
+    split = jpp_ui_launcher_split(shell);
+    if (display_index == split)  { return (size_t)-1; }
+    return display_index > split ? display_index - 1u : display_index;
+}
+
+/* Range of display items currently visible in the list window. */
 static void jpp_ui_launcher_window(const jpp_ui_shell_t *shell,
                                     size_t *start, size_t *end)
 {
-    size_t s = shell->selected_app > 2u ? shell->selected_app - 2u : 0u;
-    if (shell->app_count > JPP_UI_LAUNCHER_ROWS &&
-        s + JPP_UI_LAUNCHER_ROWS > shell->app_count) {
-        s = shell->app_count - JPP_UI_LAUNCHER_ROWS;
+    size_t total  = jpp_ui_launcher_display_count(shell);
+    size_t cursor = jpp_ui_launcher_app_to_display(shell, shell->selected_app);
+    size_t s = cursor > 2u ? cursor - 2u : 0u;
+    if (total > JPP_UI_LAUNCHER_ROWS && s + JPP_UI_LAUNCHER_ROWS > total) {
+        s = total - JPP_UI_LAUNCHER_ROWS;
     }
     *start = s;
-    *end = shell->app_count < s + JPP_UI_LAUNCHER_ROWS ? shell->app_count
-                                                       : s + JPP_UI_LAUNCHER_ROWS;
+    *end = total < s + JPP_UI_LAUNCHER_ROWS ? total : s + JPP_UI_LAUNCHER_ROWS;
 }
 
 int jpp_ui_shell_launcher_divider_row(const jpp_ui_shell_t *shell)
 {
-    size_t split, start, end, boundary_row;
+    size_t split, start, end;
 
-    if (shell == NULL || shell->app_count == 0u) { return -1; }
-    split = jpp_ui_launcher_split(shell);
-    /* Nothing to divide when either group is empty. */
-    if (split == 0u || split >= shell->app_count) { return -1; }
+    if (shell == NULL || !jpp_ui_launcher_has_divider(shell)) { return -1; }
+    split = jpp_ui_launcher_split(shell);  /* == the divider's display index */
 
     jpp_ui_launcher_window(shell, &start, &end);
-    boundary_row = split - 1u;  /* last row of the group rendered first */
-    if (boundary_row < start || boundary_row >= end) { return -1; }
-    return (int)(JPP_UI_LAUNCHER_FIRST_ROW + boundary_row - start);
+    if (split < start || split >= end) { return -1; }
+    return (int)(JPP_UI_LAUNCHER_FIRST_ROW + split - start);
 }
 
 /* ---- Status bar --------------------------------------------------------- */
@@ -430,11 +471,18 @@ static void jpp_ui_shell_launcher_lines(
     }
     jpp_ui_launcher_window(shell, &start, &end);
     for (row = start; row < end; row++) {
-        const jpp_ui_app_entry_t *app = &shell->apps[row];
+        size_t app_index = jpp_ui_launcher_display_to_app(shell, row);
         size_t frame_row = JPP_UI_LAUNCHER_FIRST_ROW + row - start;
+        const jpp_ui_app_entry_t *app;
         char item[JPP_UI_TEXT_LIMIT + 4u];
+
+        /* The divider's own row stays blank — the display layer draws the
+           rule into it (see jpp_ui_shell_launcher_divider_row). */
+        if (app_index == (size_t)-1) { continue; }
+
+        app = &shell->apps[app_index];
         (void)snprintf(item, sizeof(item), "%c%s",
-                       (row == shell->selected_app) ? '>' : ' ',
+                       (app_index == shell->selected_app) ? '>' : ' ',
                        app->name);
         jpp_ui_set_line(lines, frame_row, item);
     }

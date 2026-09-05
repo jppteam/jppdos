@@ -1903,13 +1903,12 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                     if (on_launcher || on_webdav) {
                         jpp_draw_rule(1u);
                     }
-                    /* Divider between the system apps and the SD apps. Drawn
-                       after the text: it rides the spare bottom pixel row of a
-                       list row rather than taking a row of its own. */
+                    /* Divider between the system apps and the SD apps. The
+                       shell leaves this row blank; the rule is centred in it. */
                     if (on_launcher) {
                         int div_row = jpp_ui_shell_launcher_divider_row(shell);
                         if (div_row >= 0) {
-                            jpp_draw_underline_rule((uint8_t)div_row);
+                            jpp_draw_divider_rule((uint8_t)div_row);
                         }
                     }
                     /* Checkmark on the active password mode line in passconfig. */
