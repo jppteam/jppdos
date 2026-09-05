@@ -124,9 +124,10 @@ typedef struct {
     uint8_t sound_jingle;           /* selected startup jingle (jpp_startup_jingle_t) */
 
     /* Personalisation section */
-    size_t  personalisation_cursor; /* 0 = Back action, 1 = User's name, 2 = System apps */
+    size_t  personalisation_cursor; /* 0=Back action, 1=User's name, 2=System apps, 3=Divider */
     uint8_t back_gesture_mode;      /* jpp_keypad_back_gesture_t: 0=Hold, 1=Double-click */
     bool    system_apps_bottom;     /* launcher: system apps at the bottom of the list */
+    bool    divider_visible;        /* launcher: show the system/SD divider row */
 
     /* Device Info / LRV section */
     bool               lrv_has_data;
@@ -184,6 +185,9 @@ typedef struct {
     /* Called when the user moves the system apps to the top or bottom of the
        launcher list. Re-orders the shell catalogue live and persists to NVS. */
     void (*do_system_apps_pos_change)(bool bottom);
+    /* Called when the user shows or hides the launcher's system/SD divider.
+       Applies to the shell live and persists to NVS. */
+    void (*do_divider_change)(bool show);
 
     /* Backup all settings (settings.json + NVS) to the SD card.
        Writes a human-readable result into state->backup_result_msg on return. */

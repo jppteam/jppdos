@@ -469,24 +469,43 @@ static void draw_personalisation_row(uint8_t page, bool selected,
 
 static void render_personalisation(const jpp_settings_state_t *state)
 {
+    /* A name too wide for the value column scrolls, but only while its row is
+       focused — an animating row the cursor is not on is just noise, and the
+       counter resets on leaving so the next visit starts from the front. */
+    static uint32_t name_marquee = 0u;
+
     draw_section_heading("Personalisation");
 
     draw_personalisation_row(2, state->personalisation_cursor == 0u,
                              "Back action",
                              state->back_gesture_mode ? "2x Tap OK" : "Hold OK");
 
+    const char *name = state->username_current[0] != '\0'
+                       ? state->username_current : "-";
+    bool   name_focused = state->personalisation_cursor == 1u;
+    size_t name_offset  = 0u;
+    if (name_focused) {
+        name_offset = jpp_ui_marquee_offset(name_marquee, strlen(name),
+                                            PERSONALISATION_VALUE_MAX, 8u);
+        name_marquee++;
+    } else {
+        name_marquee = 0u;
+    }
     char uname[PERSONALISATION_VALUE_MAX + 1u];
     snprintf(uname, sizeof(uname), "%.*s", (int)PERSONALISATION_VALUE_MAX,
-             state->username_current[0] != '\0' ? state->username_current : "-");
-    draw_personalisation_row(3, state->personalisation_cursor == 1u,
-                             "User's name", uname);
+             name + name_offset);
+    draw_personalisation_row(3, name_focused, "User's name", uname);
 
     draw_personalisation_row(4, state->personalisation_cursor == 2u,
                              "System apps",
                              state->system_apps_bottom ? "on bottom" : "on top");
 
+    draw_personalisation_row(5, state->personalisation_cursor == 3u,
+                             "Divider",
+                             state->divider_visible ? "on" : "off");
+
     /* One hint line, for whichever row the cursor is on. */
-    ssd1306_draw_string(6, 0,
+    ssd1306_draw_string(7, 0,
         state->personalisation_cursor == 1u
             ? "OK to edit"
             : SSD1306_ARROW_LEFT "/" SSD1306_ARROW_RIGHT " to change",
@@ -1398,7 +1417,7 @@ static bool handle_personalisation(jpp_settings_state_t *state,
         if (state->personalisation_cursor > 0u) { state->personalisation_cursor--; }
         break;
     case JPP_UI_ACTION_DOWN:
-        if (state->personalisation_cursor < 2u) { state->personalisation_cursor++; }
+        if (state->personalisation_cursor < 3u) { state->personalisation_cursor++; }
         break;
     case JPP_UI_ACTION_LEFT:
     case JPP_UI_ACTION_RIGHT:
@@ -1412,6 +1431,12 @@ static bool handle_personalisation(jpp_settings_state_t *state,
             state->system_apps_bottom = !state->system_apps_bottom;
             if (deps->do_system_apps_pos_change) {
                 deps->do_system_apps_pos_change(state->system_apps_bottom);
+            }
+            jpp_buzzer_play(JPP_BUZZER_SOUND_CLICK);
+        } else if (state->personalisation_cursor == 3u) {
+            state->divider_visible = !state->divider_visible;
+            if (deps->do_divider_change) {
+                deps->do_divider_change(state->divider_visible);
             }
             jpp_buzzer_play(JPP_BUZZER_SOUND_CLICK);
         }

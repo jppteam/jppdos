@@ -89,7 +89,9 @@ static size_t jpp_ui_launcher_split(const jpp_ui_shell_t *shell)
 
 static bool jpp_ui_launcher_has_divider(const jpp_ui_shell_t *shell)
 {
-    size_t split = jpp_ui_launcher_split(shell);
+    size_t split;
+    if (!shell->show_divider) { return false; }
+    split = jpp_ui_launcher_split(shell);
     /* Nothing to divide when either group is empty. */
     return shell->app_count > 0u && split > 0u && split < shell->app_count;
 }
@@ -326,6 +328,7 @@ void jpp_ui_shell_init(jpp_ui_shell_t *shell, const char *boot_mode)
     jpp_str_copy(shell->boot_mode, sizeof(shell->boot_mode),
                  boot_mode != NULL ? boot_mode : "normal");
     shell->status_battery_pct = -1;
+    shell->show_divider    = true;
     shell->dim_time_s      = 60;
     shell->poweroff_time_s = 300;
     shell->last_activity_us = esp_timer_get_time();

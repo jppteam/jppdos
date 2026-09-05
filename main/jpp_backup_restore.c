@@ -125,6 +125,10 @@ bool jpp_backup_apply_json(const char *json_buf, char *msg, size_t msg_len)
         if (cJSON_IsNumber(v) && ((int)v->valuedouble == 0 || (int)v->valuedouble == 1)) {
             nvs_set_u8(h, "sysapps_bot", (uint8_t)(int)v->valuedouble);
         }
+        v = cJSON_GetObjectItem(nvs_ui, "divider");
+        if (cJSON_IsNumber(v) && ((int)v->valuedouble == 0 || (int)v->valuedouble == 1)) {
+            nvs_set_u8(h, "divider", (uint8_t)(int)v->valuedouble);
+        }
         nvs_commit(h); nvs_close(h);
     }
 

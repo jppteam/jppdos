@@ -83,6 +83,9 @@ typedef struct {
     /* Launcher order: false = system (builtin) apps first, true = last.
        apps[] is always kept in display order, so nothing else has to know. */
     bool   system_apps_bottom;
+    /* Launcher: draw the system/SD divider row. Defaults to true; with it off
+       the divider takes no display row and the list shows six apps again. */
+    bool   show_divider;
     size_t selected_app;
     size_t selected_setting;
     char boot_mode[JPP_UI_TEXT_LIMIT];
@@ -158,9 +161,10 @@ jpp_ui_status_t jpp_ui_shell_add_app(
 void jpp_ui_shell_set_system_apps_bottom(jpp_ui_shell_t *shell, bool bottom);
 
 /* Frame row (0–7) whose bottom pixel row carries the divider between the
-   system apps and the SD apps on the launcher, or -1 when there is nothing to
-   divide (one of the two groups is empty) or the boundary is scrolled out of
-   view.  The display layer draws the rule — see jpp_draw_underline_rule(). */
+   system apps and the SD apps on the launcher, or -1 when the divider is
+   switched off, there is nothing to divide (one of the two groups is empty),
+   or the boundary is scrolled out of view.  The display layer draws the rule
+   — see jpp_draw_divider_rule(). */
 int jpp_ui_shell_launcher_divider_row(const jpp_ui_shell_t *shell);
 
 void jpp_ui_shell_set_status(

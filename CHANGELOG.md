@@ -13,7 +13,8 @@ each build, not an API diff.
   your SD card, so the built-in entries read as their own group instead of
   blending into the list. The rule gets a line of its own with clear space
   above and below, so the list shows five apps at a time rather than six while
-  it is on screen.
+  it is on screen. If you would rather have the sixth row back, turn it off
+  under `Settings > Personalisation > Divider`.
 
 - **New "Personalisation" settings section.** It sits right below
   Shutdown/Reboot and gathers the settings that are about how the device
@@ -21,9 +22,12 @@ each build, not an API diff.
   and renamed — "Hold OK" or "2x Tap OK"), **User's name** (moved out of its
   own top-level section; OK opens the keyboard), and a new **System apps**
   setting that moves Settings and WebDAV server — and the divider with them —
-  to the **top** or the **bottom** of the launcher list. All three save the
-  moment you change them, and the launcher re-orders immediately, keeping the
-  cursor on whichever app it was on.
+  to the **top** or the **bottom** of the launcher list, plus a **Divider**
+  switch that shows or hides the launcher divider entirely. They all save the
+  moment you change them, and the launcher updates immediately, keeping the
+  cursor on whichever app it was on. The hint line at the bottom of the screen
+  says what the button you need does for the row you are on, and a name too
+  long for the row scrolls while you have it selected.
 
 ## v1.2 — 2026-09-03
 
