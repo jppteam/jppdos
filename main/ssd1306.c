@@ -219,13 +219,17 @@ void ssd1306_fill_page(uint8_t page, uint8_t pattern)
     memset(s_fb[page], pattern, SSD1306_WIDTH);
 }
 
-void ssd1306_or_page(uint8_t page, uint8_t pattern)
+void ssd1306_or_cols(uint8_t page, uint8_t col, uint8_t width, uint8_t pattern)
 {
-    if (page >= SSD1306_PAGES) {
+    if (page >= SSD1306_PAGES || col >= SSD1306_WIDTH) {
         return;
     }
-    for (uint8_t col = 0; col < SSD1306_WIDTH; col++) {
-        s_fb[page][col] |= pattern;
+    uint16_t end = (uint16_t)col + (uint16_t)width;
+    if (end > SSD1306_WIDTH) {
+        end = SSD1306_WIDTH;
+    }
+    for (uint16_t c = col; c < end; c++) {
+        s_fb[page][c] |= pattern;
     }
 }
 

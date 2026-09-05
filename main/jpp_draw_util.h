@@ -12,12 +12,20 @@ static inline void jpp_draw_rule(uint8_t page)
     ssd1306_fill_page(page, 0x08u);
 }
 
+/* Horizontal inset of the underline rule: one character cell per side.  Run
+   edge to edge it reads as a display artifact rather than a divider, and
+   inset by exactly one cell it lines up with the list text (which starts at
+   column 1, after the cursor character). */
+#define JPP_DRAW_UNDERLINE_INSET SSD1306_CHAR_W
+
 /* 1-px rule on the *bottom* pixel row of a page.  The 5x7 font only reaches
    bit 6, so this shares the row with the text drawn above it instead of
    consuming a whole text line — used for the launcher's system-app divider. */
 static inline void jpp_draw_underline_rule(uint8_t page)
 {
-    ssd1306_or_page(page, 0x80u);
+    ssd1306_or_cols(page, JPP_DRAW_UNDERLINE_INSET,
+                    (uint8_t)(SSD1306_WIDTH - 2u * JPP_DRAW_UNDERLINE_INSET),
+                    0x80u);
 }
 
 /* Title row + the signature rule on page 1. */
