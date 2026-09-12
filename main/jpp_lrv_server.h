@@ -4,7 +4,7 @@
  * LRV interactive verification HTTP server (port 3000).
  *
  * Serves a verification page showing the device's LRV certificate and live
- * challenge-response signatures. Mutually exclusive with the WebDAV server.
+ * challenge-response signatures. Mutually exclusive with the File Server.
  */
 
 #include <stdbool.h>
@@ -22,7 +22,7 @@ extern "C" {
 typedef enum {
     JPP_LRV_SERVER_OK = 0,
     JPP_LRV_SERVER_ERR_NO_WIFI,
-    JPP_LRV_SERVER_ERR_WEBDAV_RUNNING,
+    JPP_LRV_SERVER_ERR_FILESERVER_RUNNING,
     JPP_LRV_SERVER_ERR_NO_DATA,
     JPP_LRV_SERVER_ERR_INTERNAL,
 } jpp_lrv_server_result_t;
@@ -30,7 +30,7 @@ typedef enum {
 /*
  * Start the LRV HTTP server on port 3000.
  * rtc may be NULL; if non-NULL it is used to generate timestamp challenges.
- * Returns ERR_WEBDAV_RUNNING if the WebDAV server is already active.
+ * Returns ERR_FILESERVER_RUNNING if the File Server (WebDAV or FTP) is already active.
  * Returns ERR_NO_WIFI if the device has no IP address.
  * Returns ERR_NO_DATA if the device has no LRV identity.
  */

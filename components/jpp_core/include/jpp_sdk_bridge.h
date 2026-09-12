@@ -291,7 +291,7 @@ typedef bool (*jpp_sdk_origin_prompt_t)(
  * network.bind — TCP server sockets over lwIP. The firmware enforces
  * JPP_RESOURCE_SDK_NET_LISTENER_LIMIT listeners and
  * JPP_RESOURCE_SDK_NET_SOCKET_LIMIT accepted connections, and refuses to bind
- * while the WebDAV or LRV HTTP server is running.
+ * while the File Server (WebDAV/FTP) or LRV server is running.
  */
 typedef jpp_broker_status_t (*jpp_sdk_net_bind_fn_t)(
     void *context,
@@ -1046,7 +1046,7 @@ jpp_sdk_status_t jpp_sdk_module_unload(
  * timeout and sets result field "closed" when the peer disconnected);
  * net_close closes one socket (sock = -1 closes the listener). All sockets
  * are closed automatically when the app session ends. Binding fails with
- * SERVER_ACTIVE while the WebDAV or LRV server runs.
+ * SERVER_ACTIVE while the File Server (WebDAV/FTP) or LRV server runs.
  */
 jpp_sdk_status_t jpp_sdk_net_bind(
     jpp_sdk_context_t *context,
@@ -1064,7 +1064,7 @@ jpp_sdk_status_t jpp_sdk_net_accept(
  * On success *out_sock is a socket id for net_recv / net_send / net_close (the
  * same calls used for accepted server sockets). Fails with CONNECT_FAILED on
  * DNS/connect error or timeout, and SOCKET_LIMIT when the connection table is
- * full. Like net_bind, refused while the WebDAV or LRV server is running.
+ * full. Like net_bind, refused while the File Server or LRV server is running.
  */
 jpp_sdk_status_t jpp_sdk_net_connect(
     jpp_sdk_context_t *context,

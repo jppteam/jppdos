@@ -120,7 +120,7 @@ static struct ble_gap_adv_params s_adv_params;
 
 /* True once the NimBLE stack (controller + host task) is running.  Cleared by
    jpp_ble_native_suspend() so the controller's heap is released while WiFi needs
-   the headroom (e.g. WebDAV transfers), and restored by jpp_ble_native_resume(). */
+   the headroom (e.g. File Server transfers), and restored by jpp_ble_native_resume(). */
 static bool s_ble_active = false;
 
 void jpp_ble_native_set_connectable(bool connectable)

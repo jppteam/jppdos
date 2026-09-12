@@ -422,7 +422,9 @@ static void render_dim_clock(jpp_rtc_state_t *rtc_state)
 
 #define JPP_NVS_TIME_NS   "jpp_time"
 #define JPP_NVS_POWER_NS  "jpp_power"
-#define JPP_NVS_WEBDAV_NS "jpp_webdav"
+/* The File Server namespace keeps its pre-rename name: it is persisted on
+   every fielded device and mirrored under "nvs_webdav" in settings backups. */
+#define JPP_NVS_FILESERVER_NS "jpp_webdav"
 #define JPP_NVS_SOUND_NS  "jpp_sound"
 #define JPP_NVS_USER_NS   "jpp_user"
 #define JPP_NVS_DUMMY_NS  "jpp_dummy"
@@ -664,14 +666,19 @@ static void settings_do_backup(jpp_settings_state_t *state)
         cJSON_AddNumberToObject(nvs_power, "poweroff_s", (double)poweroff_s);
     }
 
+    /* File Server settings — the JSON key keeps the namespace's historical
+       name so older backups restore unchanged. */
     cJSON *nvs_webdav = cJSON_CreateObject();
-    if (nvs_open(JPP_NVS_WEBDAV_NS, NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(JPP_NVS_FILESERVER_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t protocol    = 0u;
         uint8_t pass_static = 0u;
+        nvs_get_u8(h, "protocol", &protocol);
         nvs_get_u8(h, "pass_static", &pass_static);
-        char static_pass[JPP_UI_WEBDAV_PASS_MAX + 1u] = "";
+        char static_pass[JPP_UI_FILESERVER_PASS_MAX + 1u] = "";
         size_t plen = sizeof(static_pass);
         nvs_get_str(h, "static_pass", static_pass, &plen);
         nvs_close(h);
+        cJSON_AddNumberToObject(nvs_webdav, "protocol", (double)protocol);
         cJSON_AddNumberToObject(nvs_webdav, "pass_static", (double)pass_static);
         cJSON_AddStringToObject(nvs_webdav, "static_pass", static_pass);
     }
@@ -837,8 +844,8 @@ static void settings_do_lrv_verify(jpp_settings_state_t *state)
     } else {
         state->lrv_server_running = false;
         state->lrv_server_addr[0] = '\0';
-        if (srv_rc == JPP_LRV_SERVER_ERR_WEBDAV_RUNNING) {
-            strncpy(state->lrv_verify_error, "Stop WebDAV server first.",
+        if (srv_rc == JPP_LRV_SERVER_ERR_FILESERVER_RUNNING) {
+            strncpy(state->lrv_verify_error, "Stop File Server first.",
                     sizeof(state->lrv_verify_error) - 1u);
         } else if (srv_rc == JPP_LRV_SERVER_ERR_NO_WIFI) {
             /* No error: we still logged the cert. Server just not available. */
@@ -975,34 +982,46 @@ static void settings_do_wifi_scan(jpp_settings_state_t *state)
     }
 }
 
-/* ---- WebDAV password config persistence --------------------------------- */
+/* ---- File Server config persistence (protocol + password mode) ---------- */
 
-static void load_webdav_settings(jpp_ui_shell_t *shell)
+static void load_fileserver_settings(jpp_ui_shell_t *shell)
 {
-    shell->webdav_pass_is_static =
-        (bool)jpp_nvs_get_u8(JPP_NVS_WEBDAV_NS, "pass_static",
-                             (uint8_t)shell->webdav_pass_is_static);
-    if (shell->webdav_pass_is_static) {
-        jpp_nvs_get_str(JPP_NVS_WEBDAV_NS, "static_pass",
-                        shell->webdav_static_pass,
-                        sizeof(shell->webdav_static_pass));
+    uint8_t proto = jpp_nvs_get_u8(JPP_NVS_FILESERVER_NS, "protocol",
+                                   (uint8_t)JPP_FILESERVER_PROTO_WEBDAV);
+    if (proto >= (uint8_t)JPP_FILESERVER_PROTO_COUNT) {
+        proto = (uint8_t)JPP_FILESERVER_PROTO_WEBDAV;
     }
-    ESP_LOGI(TAG, "WEBDAV: loaded pass_mode=%s",
-             shell->webdav_pass_is_static ? "static" : "random");
+    shell->fileserver_protocol = (jpp_fileserver_protocol_t)proto;
+    jpp_fileserver_set_protocol(shell->fileserver_protocol);
+
+    shell->fileserver_pass_is_static =
+        (bool)jpp_nvs_get_u8(JPP_NVS_FILESERVER_NS, "pass_static",
+                             (uint8_t)shell->fileserver_pass_is_static);
+    if (shell->fileserver_pass_is_static) {
+        jpp_nvs_get_str(JPP_NVS_FILESERVER_NS, "static_pass",
+                        shell->fileserver_static_pass,
+                        sizeof(shell->fileserver_static_pass));
+    }
+    ESP_LOGI(TAG, "FILESERVER: loaded protocol=%s pass_mode=%s",
+             jpp_fileserver_protocol_name(shell->fileserver_protocol),
+             shell->fileserver_pass_is_static ? "static" : "random");
 }
 
-static void save_webdav_settings(const jpp_ui_shell_t *shell)
+static void save_fileserver_settings(const jpp_ui_shell_t *shell)
 {
-    jpp_nvs_set_u8(JPP_NVS_WEBDAV_NS, "pass_static",
-                   (uint8_t)shell->webdav_pass_is_static);
-    if (shell->webdav_pass_is_static) {
-        jpp_nvs_set_str(JPP_NVS_WEBDAV_NS, "static_pass",
-                        shell->webdav_static_pass);
+    jpp_nvs_set_u8(JPP_NVS_FILESERVER_NS, "protocol",
+                   (uint8_t)shell->fileserver_protocol);
+    jpp_nvs_set_u8(JPP_NVS_FILESERVER_NS, "pass_static",
+                   (uint8_t)shell->fileserver_pass_is_static);
+    if (shell->fileserver_pass_is_static) {
+        jpp_nvs_set_str(JPP_NVS_FILESERVER_NS, "static_pass",
+                        shell->fileserver_static_pass);
     } else {
-        jpp_nvs_erase_key(JPP_NVS_WEBDAV_NS, "static_pass");
+        jpp_nvs_erase_key(JPP_NVS_FILESERVER_NS, "static_pass");
     }
-    ESP_LOGI(TAG, "WEBDAV: saved pass_mode=%s",
-             shell->webdav_pass_is_static ? "static" : "random");
+    ESP_LOGI(TAG, "FILESERVER: saved protocol=%s pass_mode=%s",
+             jpp_fileserver_protocol_name(shell->fileserver_protocol),
+             shell->fileserver_pass_is_static ? "static" : "random");
 }
 
 /* Load screen standby/sleep times from NVS into the shell state. */
@@ -1379,7 +1398,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
     /* Load persisted screen timings. */
     load_screen_settings(shell);
-    load_webdav_settings(shell);
+    load_fileserver_settings(shell);
 
     /* Populate Sound section staging from values already loaded at boot. */
     settings_state.sound_volume_pct = s_buzzer_volume_pct;
@@ -1411,12 +1430,13 @@ static void run_main_loop(jpp_ui_shell_t *shell,
        same tick — to reliably detect DIM→ACTIVE wake-up transitions. */
     jpp_ui_power_state_t power_state_last_tick = JPP_UI_POWER_ACTIVE;
 
-    /* Track whether any HTTP server (WebDAV or LRV) is running across ticks so we
-       suspend the BLE controller (freeing its heap for WiFi) while one is up, and
-       resume it once all are stopped.  Both servers and SD apps are mutually
-       exclusive, so no app is using BLE while a server runs.  WebDAV and the LRV
-       server are themselves mutually exclusive, so "any running" is the right
-       gate.  See jpp_ble_native_suspend(). */
+    /* Track whether any pool-backed server (File Server — WebDAV or FTP — or
+       LRV) is running across ticks so we suspend the BLE controller (freeing
+       its heap for WiFi) while one is up, and resume it once all are stopped.
+       Both servers and SD apps are mutually exclusive, so no app is using BLE
+       while a server runs.  The File Server and the LRV server are themselves
+       mutually exclusive, so "any running" is the right gate.  See
+       jpp_ble_native_suspend(). */
     bool server_running_last = false;
 
     while (true) {
@@ -1466,31 +1486,31 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             }
         }
 
-        /* WebDAV static password input: prompted when user selects "Static password" */
-        if (shell->webdav_needs_pass_input) {
-            shell->webdav_needs_pass_input = false;
-            char new_pass[JPP_UI_WEBDAV_PASS_MAX + 1u] = {0};
+        /* File Server static password input: prompted when user selects "Static password" */
+        if (shell->fileserver_needs_pass_input) {
+            shell->fileserver_needs_pass_input = false;
+            char new_pass[JPP_UI_FILESERVER_PASS_MAX + 1u] = {0};
             bool got = jpp_keyboard_input("Static password",
-                                          shell->webdav_static_pass,
+                                          shell->fileserver_static_pass,
                                           JPP_KBD_TYPE_TEXT,
                                           shell, new_pass, sizeof(new_pass));
             if (got && new_pass[0] != '\0') {
-                jpp_str_copy(shell->webdav_static_pass,
-                             sizeof(shell->webdav_static_pass), new_pass);
-                shell->webdav_pass_is_static      = true;
-                shell->webdav_pass_config_changed = true;
+                jpp_str_copy(shell->fileserver_static_pass,
+                             sizeof(shell->fileserver_static_pass), new_pass);
+                shell->fileserver_pass_is_static      = true;
+                shell->fileserver_config_changed = true;
                 if (shell->fileserver_running) {
                     jpp_fileserver_stop();
-                    jpp_fileserver_start_with_password(shell->webdav_static_pass);
+                    jpp_fileserver_start_with_password(shell->fileserver_static_pass);
                 }
             }
             shell->display.has_last_frame = false;
         }
 
-        /* Persist WebDAV password config to NVS when it changes */
-        if (shell->webdav_pass_config_changed) {
-            shell->webdav_pass_config_changed = false;
-            save_webdav_settings(shell);
+        /* Persist File Server config (protocol, password mode) to NVS when it changes */
+        if (shell->fileserver_config_changed) {
+            shell->fileserver_config_changed = false;
+            save_fileserver_settings(shell);
         }
 
         /* Battery read every 5 seconds */
@@ -1525,7 +1545,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             );
             shell->status_wifi_connected = wifi_is_connected();
 
-            /* When any HTTP server (WebDAV or LRV) starts, free the BLE
+            /* When any server (File Server or LRV) starts, free the BLE
                controller's heap so the WiFi driver can allocate management/data
                frames while serving; restore it once all servers stop.  No app
                runs while a server is up, so suspending BLE here is safe. */
@@ -1595,7 +1615,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                     last_drawn_wifi = false;
                     ESP_LOGI(TAG, "SCREEN_WAKE");
                 } else if (now == JPP_UI_POWER_OFF) {
-                    /* Either HTTP server is a foreground activity holding the
+                    /* Either server is a foreground activity holding the
                        app pool — it only runs while its own screen is up, so
                        running is on its own enough to hold off deep sleep. */
                     bool wakelock = shell->fileserver_running ||
@@ -1843,8 +1863,8 @@ static void run_main_loop(jpp_ui_shell_t *shell,
             continue;
         }
 
-        /* Dim state: show big clock on launcher (suppressed while an HTTP
-           server is up — its screen shows the address the user is typing in) */
+        /* Dim state: show big clock on launcher (suppressed while a server
+           is up — its screen shows the address the user is typing in) */
         if (shell->power_state == JPP_UI_POWER_DIM && !sd_app_open &&
             !shell->fileserver_running && !jpp_lrv_server_is_running()) {
             render_dim_clock(rtc_state);
@@ -1868,7 +1888,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                                         active_ctx->frame_lines[row], false);
                 }
                 /* Signature line under the title — matches the launcher/settings/
-                   WebDAV header style (title on row 0, 1-px rule on page 1). */
+                   File Server header style (title on row 0, 1-px rule on page 1). */
                 if (active_ctx->frame_title_rule) {
                     jpp_draw_rule(1u);
                 }
@@ -1895,10 +1915,10 @@ static void run_main_loop(jpp_ui_shell_t *shell,
 
             bool on_launcher = (top_screen != NULL &&
                                 strcmp(top_screen, "launcher") == 0);
-            bool on_webdav = (top_screen != NULL &&
-                              strcmp(top_screen, "webdav") == 0);
-            bool on_webdav_passconfig = (top_screen != NULL &&
-                                         strcmp(top_screen, "webdav_passconfig") == 0);
+            bool on_fileserver = (top_screen != NULL &&
+                              strcmp(top_screen, "fileserver") == 0);
+            bool on_fileserver_passconfig = (top_screen != NULL &&
+                                         strcmp(top_screen, "fileserver_passconfig") == 0);
             int  cur_bat_pct  = bat_state.valid ? bat_state.percent : -1;
             bool bat_changed  = on_launcher && (cur_bat_pct != last_drawn_bat_pct);
             /* Wi-Fi icon: solid when connected, blinks at 5 Hz when connecting. */
@@ -1920,7 +1940,7 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                         ssd1306_draw_string((uint8_t)row, 0,
                                             frame.lines[row], false);
                     }
-                    if (on_launcher || on_webdav) {
+                    if (on_launcher || on_fileserver) {
                         jpp_draw_rule(1u);
                     }
                     /* Divider between the system apps and the SD apps. The
@@ -1932,14 +1952,14 @@ static void run_main_loop(jpp_ui_shell_t *shell,
                         }
                     }
                     /* Checkmark on the active password mode line in passconfig. */
-                    if (on_webdav_passconfig) {
-                        uint8_t chk_page = shell->webdav_pass_is_static ? 3u : 2u;
+                    if (on_fileserver_passconfig) {
+                        uint8_t chk_page = shell->fileserver_pass_is_static ? 3u : 2u;
                         jpp_icon_draw(chk_page, 120u, JPP_ICON_CHECKMARK);
                     }
                 }
 
                 /* Status bar icons: only drawn on the launcher (where the status
-                   bar lives). Keeps them off WebDAV, dialog, crash screens. */
+                   bar lives). Keeps them off File Server, dialog, crash screens. */
                 if (on_launcher) {
                     /* Battery icon: 12×8 at cols 110-121. */
                     jpp_icon_battery_draw(0u, 110u,

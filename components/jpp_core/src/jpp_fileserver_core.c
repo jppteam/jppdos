@@ -15,25 +15,30 @@
 
 #include "jpp_heap_monitor.h"
 #include "../include/jpp_http_server_core.h"
+#include "../include/jpp_ftp_server_core.h"
 
 static const char *TAG = "fileserver";
 
 #define FULL_PATH_MAX    300u
 
 /* The server task stack and the (much larger) file I/O buffer are carved out of
-   the shared app pool by jpp_http_server_core — this module keeps no bulk
-   buffers of its own.  8 KB matches what the old httpd task was given; the
-   recursive delete is the deepest thing that runs on it. */
+   the shared app pool by jpp_http_server_core / jpp_ftp_server_core — this
+   module keeps no bulk buffers of its own.  8 KB matches what the old httpd
+   task was given; the recursive delete is the deepest thing that runs on it. */
 #define WEBDAV_STACK_BYTES 8192u
+#define FTP_STACK_BYTES    8192u
 
 /* ---- Internal state ------------------------------------------------------- */
 
 static struct {
-    bool                    initialized;
-    jpp_fileserver_state_t  state;
-    char                    sd_root[64];
-    uint16_t                port;
-    char                    password[JPP_FILESERVER_PASS_MAX + 1u];
+    bool                      initialized;
+    jpp_fileserver_state_t    state;
+    char                      sd_root[64];
+    uint16_t                  port;        /* WebDAV */
+    uint16_t                  ftp_port;
+    jpp_fileserver_protocol_t protocol;    /* selected for the next start   */
+    jpp_fileserver_protocol_t active;      /* what the running server speaks */
+    char                      password[JPP_FILESERVER_PASS_MAX + 1u];
 } s_fs = {0};
 
 /* ---- Password generation -------------------------------------------------- */
@@ -89,10 +94,11 @@ static bool check_auth(jpp_http_conn_t *conn)
     const char *hdr = jpp_http_header(conn, "Authorization");
     if (hdr == NULL) { return false; }
     if (strncmp(hdr, "Basic ", 6) != 0) { return false; }
-    char creds[32];
+    char creds[JPP_FILESERVER_PASS_MAX + sizeof(JPP_FILESERVER_USER) + 24u];
     if (b64_decode(hdr + 6, creds, sizeof(creds)) < 0) { return false; }
-    if (strncmp(creds, "jppd:", 5) != 0) { return false; }
-    return strcmp(creds + 5, s_fs.password) == 0;
+    const size_t user_len = sizeof(JPP_FILESERVER_USER) - 1u;
+    if (strncmp(creds, JPP_FILESERVER_USER ":", user_len + 1u) != 0) { return false; }
+    return strcmp(creds + user_len + 1u, s_fs.password) == 0;
 }
 
 static void deny_auth(jpp_http_conn_t *conn)
@@ -573,8 +579,40 @@ static void webdav_dispatch(jpp_http_conn_t *conn, void *user_ctx)
 void jpp_fileserver_config_defaults(jpp_fileserver_config_t *config)
 {
     if (config == NULL) { return; }
-    config->port    = JPP_FILESERVER_DEFAULT_PORT;
-    config->sd_root = JPP_FILESERVER_DEFAULT_ROOT;
+    config->port     = JPP_FILESERVER_DEFAULT_PORT;
+    config->ftp_port = JPP_FILESERVER_DEFAULT_FTP_PORT;
+    config->sd_root  = JPP_FILESERVER_DEFAULT_ROOT;
+}
+
+jpp_fileserver_result_t jpp_fileserver_set_protocol(jpp_fileserver_protocol_t protocol)
+{
+    if (protocol >= JPP_FILESERVER_PROTO_COUNT) {
+        return JPP_FILESERVER_RESULT_INVALID_ARGUMENT;
+    }
+    if (s_fs.state == JPP_FILESERVER_STATE_RUNNING) {
+        return JPP_FILESERVER_RESULT_RUNNING;
+    }
+    s_fs.protocol = protocol;
+    return JPP_FILESERVER_RESULT_OK;
+}
+
+jpp_fileserver_protocol_t jpp_fileserver_get_protocol(void)
+{
+    return s_fs.protocol;
+}
+
+const char *jpp_fileserver_protocol_name(jpp_fileserver_protocol_t protocol)
+{
+    switch (protocol) {
+    case JPP_FILESERVER_PROTO_WEBDAV: return "WebDAV";
+    case JPP_FILESERVER_PROTO_FTP:    return "FTP";
+    default:                          return "?";
+    }
+}
+
+static uint16_t port_for(jpp_fileserver_protocol_t protocol)
+{
+    return (protocol == JPP_FILESERVER_PROTO_FTP) ? s_fs.ftp_port : s_fs.port;
 }
 
 jpp_fileserver_result_t jpp_fileserver_init(const jpp_fileserver_config_t *config)
@@ -589,22 +627,21 @@ jpp_fileserver_result_t jpp_fileserver_init(const jpp_fileserver_config_t *confi
     src = (config != NULL) ? config : &defaults;
 
     memset(&s_fs, 0, sizeof(s_fs));
-    s_fs.port  = src->port;
-    s_fs.state = JPP_FILESERVER_STATE_STOPPED;
+    s_fs.port     = (src->port != 0u) ? src->port : JPP_FILESERVER_DEFAULT_PORT;
+    s_fs.ftp_port = (src->ftp_port != 0u) ? src->ftp_port : JPP_FILESERVER_DEFAULT_FTP_PORT;
+    s_fs.state    = JPP_FILESERVER_STATE_STOPPED;
+    s_fs.protocol = JPP_FILESERVER_PROTO_WEBDAV;
     strncpy(s_fs.sd_root,
             (src->sd_root != NULL) ? src->sd_root : JPP_FILESERVER_DEFAULT_ROOT,
             sizeof(s_fs.sd_root) - 1u);
     s_fs.initialized = true;
-    ESP_LOGI(TAG, "Initialized: root=%s port=%u", s_fs.sd_root, s_fs.port);
+    ESP_LOGI(TAG, "Initialized: root=%s webdav_port=%u ftp_port=%u",
+             s_fs.sd_root, s_fs.port, s_fs.ftp_port);
     return JPP_FILESERVER_RESULT_OK;
 }
 
-static jpp_fileserver_result_t start_server_impl(void)
+static bool start_webdav(void)
 {
-    /* Event marker: heap right as the server starts.  Sustained low-heap and
-       actual alloc failures are tracked globally by jpp_heap_monitor. */
-    jpp_heap_monitor_log("webdav-start");
-
     jpp_http_server_config_t cfg = {
         .owner          = "webdav",
         .port           = s_fs.port,
@@ -614,17 +651,53 @@ static jpp_fileserver_result_t start_server_impl(void)
         .handler        = webdav_dispatch,
         .user_ctx       = NULL,
     };
-
     jpp_http_result_t rc = jpp_http_server_start(&cfg);
     if (rc != JPP_HTTP_OK) {
-        ESP_LOGE(TAG, "start failed: %s", jpp_http_result_name(rc));
+        ESP_LOGE(TAG, "WebDAV start failed: %s", jpp_http_result_name(rc));
+        return false;
+    }
+    return true;
+}
+
+static bool start_ftp(void)
+{
+    jpp_ftp_server_config_t cfg = {
+        .owner          = "ftp",
+        .port           = s_fs.ftp_port,
+        .stack_bytes    = FTP_STACK_BYTES,
+        .root           = s_fs.sd_root,
+        .user           = JPP_FILESERVER_USER,
+        .password       = s_fs.password,
+        .idle_timeout_s = 0u,   /* defaults */
+        .xfer_timeout_s = 0u,
+    };
+    jpp_ftp_result_t rc = jpp_ftp_server_start(&cfg);
+    if (rc != JPP_FTP_OK) {
+        ESP_LOGE(TAG, "FTP start failed: %s", jpp_ftp_result_name(rc));
+        return false;
+    }
+    return true;
+}
+
+static jpp_fileserver_result_t start_server_impl(void)
+{
+    bool is_ftp = (s_fs.protocol == JPP_FILESERVER_PROTO_FTP);
+
+    /* Event marker: heap right as the server starts.  Sustained low-heap and
+       actual alloc failures are tracked globally by jpp_heap_monitor. */
+    jpp_heap_monitor_log(is_ftp ? "ftp-start" : "webdav-start");
+
+    if (!(is_ftp ? start_ftp() : start_webdav())) {
         s_fs.state       = JPP_FILESERVER_STATE_ERROR;
         s_fs.password[0] = '\0';
         return JPP_FILESERVER_RESULT_START_FAILED;
     }
 
-    s_fs.state = JPP_FILESERVER_STATE_RUNNING;
-    ESP_LOGI(TAG, "Started on port %u, serving %s", s_fs.port, s_fs.sd_root);
+    s_fs.active = s_fs.protocol;
+    s_fs.state  = JPP_FILESERVER_STATE_RUNNING;
+    ESP_LOGI(TAG, "Started %s on port %u, serving %s",
+             jpp_fileserver_protocol_name(s_fs.active), port_for(s_fs.active),
+             s_fs.sd_root);
     return JPP_FILESERVER_RESULT_OK;
 }
 
@@ -657,23 +730,34 @@ jpp_fileserver_result_t jpp_fileserver_stop(void)
     if (s_fs.state != JPP_FILESERVER_STATE_RUNNING) {
         return JPP_FILESERVER_RESULT_OK;
     }
-    jpp_http_result_t rc = jpp_http_server_stop();
-    if (rc != JPP_HTTP_OK) {
-        ESP_LOGE(TAG, "stop failed: %s", jpp_http_result_name(rc));
-        return JPP_FILESERVER_RESULT_STOP_FAILED;
+    bool is_ftp = (s_fs.active == JPP_FILESERVER_PROTO_FTP);
+    if (is_ftp) {
+        jpp_ftp_result_t rc = jpp_ftp_server_stop();
+        if (rc != JPP_FTP_OK) {
+            ESP_LOGE(TAG, "FTP stop failed: %s", jpp_ftp_result_name(rc));
+            return JPP_FILESERVER_RESULT_STOP_FAILED;
+        }
+    } else {
+        jpp_http_result_t rc = jpp_http_server_stop();
+        if (rc != JPP_HTTP_OK) {
+            ESP_LOGE(TAG, "WebDAV stop failed: %s", jpp_http_result_name(rc));
+            return JPP_FILESERVER_RESULT_STOP_FAILED;
+        }
     }
     s_fs.state       = JPP_FILESERVER_STATE_STOPPED;
     s_fs.password[0] = '\0';
     ESP_LOGI(TAG, "Stopped");
-    jpp_heap_monitor_log("webdav-stop");
+    jpp_heap_monitor_log(is_ftp ? "ftp-stop" : "webdav-stop");
     return JPP_FILESERVER_RESULT_OK;
 }
 
 void jpp_fileserver_get_status(jpp_fileserver_status_t *status)
 {
     if (status == NULL) { return; }
-    status->state = s_fs.state;
-    status->port  = s_fs.port;
+    status->state    = s_fs.state;
+    status->protocol = (s_fs.state == JPP_FILESERVER_STATE_RUNNING) ? s_fs.active
+                                                                    : s_fs.protocol;
+    status->port     = port_for(status->protocol);
     strncpy(status->password, s_fs.password, JPP_FILESERVER_PASS_MAX);
     status->password[JPP_FILESERVER_PASS_MAX] = '\0';
 
@@ -707,6 +791,8 @@ const char *jpp_fileserver_result_name(jpp_fileserver_result_t result)
     case JPP_FILESERVER_RESULT_NOT_INITIALIZED:     return "NOT_INITIALIZED";
     case JPP_FILESERVER_RESULT_START_FAILED:        return "START_FAILED";
     case JPP_FILESERVER_RESULT_STOP_FAILED:         return "STOP_FAILED";
+    case JPP_FILESERVER_RESULT_INVALID_ARGUMENT:    return "INVALID_ARGUMENT";
+    case JPP_FILESERVER_RESULT_RUNNING:             return "RUNNING";
     default:                                        return "UNKNOWN";
     }
 }

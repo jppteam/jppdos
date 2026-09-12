@@ -397,7 +397,7 @@ jppsdk.ble_host_clear() -> None
 !!! warning "Capability: `esp_now`."
     **Tier 1** — prompted once, then persisted.
 
-Connectionless peer-to-peer messaging over WiFi. Shares the STA-mode WiFi radio with `http.request`, WebDAV, and the LRV server.
+Connectionless peer-to-peer messaging over WiFi. Shares the STA-mode WiFi radio with `http.request`, the File Server (WebDAV/FTP), and the LRV server.
 
 ### `espnow_send`
 

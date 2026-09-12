@@ -20,7 +20,7 @@ This document defines the native/app boundary for JPPDOS. The native ESP-IDF cor
 Persistent state is split between one JSON file and NVS namespaces:
 
 - `/data/settings.json` (schema v2, with `/data/settings.json.tmp` as the staging/recovery file) holds exactly: `schema_version`, `policy.wifi.preferred_ssid`, `policy.wifi.password`, and `policy.recovery.force_recovery`.
-- Everything else lives in NVS and NVS is authoritative for it: `jpp_time` (NTP enable/host/timezone), `jpp_power` (dim/poweroff seconds), `jpp_webdav` (password mode + static password), `jpp_sound` (buzzer volume, startup jingle), `jpp_user` (username). Limited Run Verification data is the exception: it lives on the external AT24C32 EEPROM, not in NVS or settings.json, so it survives factory reset and reflash.
+- Everything else lives in NVS and NVS is authoritative for it: `jpp_time` (NTP enable/host/timezone), `jpp_power` (dim/poweroff seconds), `jpp_webdav` (File Server: protocol WebDAV/FTP, password mode + static password — namespace kept under its pre-rename name), `jpp_sound` (buzzer volume, startup jingle), `jpp_user` (username). Limited Run Verification data is the exception: it lives on the external AT24C32 EEPROM, not in NVS or settings.json, so it survives factory reset and reflash.
 
 Rules:
 
@@ -86,7 +86,7 @@ Named broker locks: `storage`, `device`, `vm_queue`, `ble_radio`, `ble_client`, 
 
 ## SSD1306 text UI
 
-- The launcher is a text-first SSD1306 shell with a root screen, built-in Settings and WebDAV entries, line-based rendering, and crash recovery back to the launcher.
+- The launcher is a text-first SSD1306 shell with a root screen, built-in Settings and File Server (WebDAV or FTP) entries, line-based rendering, and crash recovery back to the launcher.
 - Rendering is line-based and satisfies an eight-line frame contract.
 - Settings is a built-in system UI entry available in both normal and recovery mode.
 - App failures (MicroPython runner errors, native load failures) emit `APP_CRASH`, append a line to `/data/ui_crash.log`, and surface a crash dialog after teardown; the shell keeps running.
@@ -131,7 +131,7 @@ App packages are discovered from `/sd/apps/<dir>/manifest.json`. Each package mu
 | Field | Type | Rule |
 | --- | --- | --- |
 | `schema_version` | int | Must be `2`. |
-| `app_id` | string | Stable unique app identifier; reserved ids (`launcher`, `settings`, `webdav`, `webdav_passconfig`, `shell`, `dialog`, `app_crash`, `sd_ejected`) are rejected. |
+| `app_id` | string | Stable unique app identifier; reserved ids (`launcher`, `settings`, `fileserver`, `fileserver_passconfig`, `webdav`, `webdav_passconfig`, `shell`, `dialog`, `app_crash`, `sd_ejected`) are rejected. |
 | `name` | string | Launcher label. |
 | `version` | string | App package version string. |
 | `sdk_min` | int | Minimum SDK API level the app requires (≥ `1`). The loader rejects an app whose `sdk_min` exceeds the firmware's `JPP_SDK_VERSION` (`SDK_TOO_OLD`). |
@@ -173,7 +173,7 @@ App packages are discovered from `/sd/apps/<dir>/manifest.json`. Each package mu
 ## Background scheduler
 
 - Schedules are declarative: the manifest's `background.tasks` is the only schedule source. `jpp_sdk_background_register()` / `jppsdk.background_register()` triggers the `background.register` consent prompt (Tier 1); while that grant is persisted, the firmware syncs the app's tasks into `/data/bg_schedule.json` at every app exit and removes them when the grant or manifest entry disappears.
-- Due tasks run only while the device is idle on the launcher — no foreground app, no WebDAV or LRV server, no serial session. A user launch preempts a running task (`BG_TASK_PREEMPTED`).
+- Due tasks run only while the device is idle on the launcher — no foreground app, no File Server (WebDAV/FTP) or LRV server, no serial session. A user launch preempts a running task (`BG_TASK_PREEMPTED`).
 - Headless runs reuse the normal app session machinery without UI: MicroPython runs the module-level `on_task(name)`; native apps run the optional `jpp_app_task_entry(ctx, name)` export (a missing export logs `NO_TASK_ENTRY`). Consent prompts are denied during headless runs (`CONSENT_HEADLESS_DENY`), so only launch-time persisted Tier-1 grants are usable.
 - Interval tasks fire when `now >= last_run + interval_s`; cron tasks fire once within the matching minute. `last_run` is recorded **before** the run starts, so a crashing task cannot re-fire in a loop. The scheduler reads the DS1307 RTC and only ticks while the device is awake; deep sleep pauses it and missed cron minutes are not replayed.
 - A run that exceeds `JPP_RESOURCE_BG_TASK_RUN_QUOTA_MS` (`30000` ms) is terminated by a device restart (`BG_TASK_KILLED`) — a mid-run task kill could leak broker locks or the app pool, so the firmware restarts instead of deleting the task.

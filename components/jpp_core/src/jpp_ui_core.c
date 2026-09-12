@@ -11,8 +11,8 @@ static const char *JPP_UI_SCREEN_LAUNCHER         = "launcher";
 static const char *JPP_UI_SCREEN_SETTINGS         = "settings";
 static const char *JPP_UI_SCREEN_DIALOG           = "dialog";
 static const char *JPP_UI_SCREEN_CRASH            = "app_crash";
-static const char *JPP_UI_SCREEN_WEBDAV           = "webdav";
-static const char *JPP_UI_SCREEN_WEBDAV_PASSCONFIG = "webdav_passconfig";
+static const char *JPP_UI_SCREEN_FILESERVER       = "fileserver";
+static const char *JPP_UI_SCREEN_FILESERVER_PASSCONFIG = "fileserver_passconfig";
 static const char *JPP_UI_SCREEN_SD_EJECTED       = "sd_ejected";
 
 /* ---- Helpers ------------------------------------------------------------ */
@@ -495,52 +495,77 @@ static void jpp_ui_shell_launcher_lines(
     }
 }
 
-static void jpp_ui_shell_webdav_lines(
+/* Right-align `value` after `label` on the 21-column grid, the way the
+   Settings > Personalisation rows show a LEFT/RIGHT-changed value. */
+static void jpp_ui_format_select_row(char *out, size_t out_size, bool selected,
+                                     const char *label, const char *value)
+{
+    int pad = (int)JPP_UI_FRAME_CHARS - 1 - (int)strlen(label) - (int)strlen(value);
+    if (pad < 1) { pad = 1; }
+    (void)snprintf(out, out_size, "%c%s%*s%s",
+                   selected ? '>' : ' ', label, pad, "", value);
+}
+
+static void jpp_ui_shell_fileserver_lines(
     const jpp_ui_shell_t *shell,
     char lines[JPP_UI_FRAME_LINES][JPP_UI_FRAME_CHARS + 1u])
 {
     char buf[JPP_UI_FRAME_CHARS + 1u];
 
     if (shell->fileserver_ip[0] == '\0') {
-        jpp_ui_set_line(lines, 0u, "WebDAV server");
+        jpp_ui_set_line(lines, 0u, "File Server");
         jpp_ui_set_line(lines, 4u, "This app needs Wi-Fi");
         jpp_ui_set_line(lines, 5u, "connection.");
     } else if (!shell->fileserver_running) {
-        jpp_ui_set_line(lines, 0u, "WebDAV server STOPPED");
-        jpp_ui_set_line(lines, 3u, "Use this app to mana-");
-        jpp_ui_set_line(lines, 4u, "ge files on SD card");
-        jpp_ui_set_line(lines, 5u, "via the Wi-Fi network");
-        jpp_ui_set_line(lines, 7u, "Press OK to start");
+        /* Explanation on rows 2–4, a blank row, then the two action rows: the
+           Protocol select (LEFT/RIGHT/OK cycles it) and Start server. */
+        jpp_ui_set_line(lines, 0u, "File Server   STOPPED");
+        jpp_ui_set_line(lines, 2u, "Use this app to mana-");
+        jpp_ui_set_line(lines, 3u, "ge files on SD card");
+        jpp_ui_set_line(lines, 4u, "via the Wi-Fi network");
+        jpp_ui_format_select_row(buf, sizeof(buf), shell->fileserver_idle_sel == 0u,
+                                 "Protocol:",
+                                 jpp_fileserver_protocol_name(shell->fileserver_protocol));
+        jpp_ui_set_line(lines, 6u, buf);
+        jpp_ui_set_line(lines, 7u,
+            shell->fileserver_idle_sel == 1u ? ">Start server"
+                                             : " Start server");
     } else {
-        jpp_ui_set_line(lines, 0u, "WebDAV server  ACTIVE");
+        jpp_ui_set_line(lines, 0u, "File Server    ACTIVE");
         snprintf(buf, sizeof(buf), "IP:   %s", shell->fileserver_ip);
         jpp_ui_set_line(lines, 2u, buf);
-        jpp_ui_set_line(lines, 3u, "User: jppd");
+        jpp_ui_set_line(lines, 3u, "User: " JPP_FILESERVER_USER);
         snprintf(buf, sizeof(buf), "Pass: %.15s", shell->fileserver_password);
         jpp_ui_set_line(lines, 4u, buf);
+        /* Which protocol is up and where: "Type: WebDAV, port 80" is exactly
+           21 columns, so the value stays on the character grid. */
+        snprintf(buf, sizeof(buf), "Type: %s, port %u",
+                 jpp_fileserver_protocol_name(shell->fileserver_protocol),
+                 (unsigned)shell->fileserver_port);
+        jpp_ui_set_line(lines, 5u, buf);
         jpp_ui_set_line(lines, 6u,
-            shell->webdav_menu_sel == 0u ? ">Password settings"
-                                         : " Password settings");
+            shell->fileserver_menu_sel == 0u ? ">Password settings"
+                                             : " Password settings");
         jpp_ui_set_line(lines, 7u,
-            shell->webdav_menu_sel == 1u ? ">Stop server"
-                                         : " Stop server");
+            shell->fileserver_menu_sel == 1u ? ">Stop server"
+                                             : " Stop server");
     }
 }
 
-static void jpp_ui_shell_webdav_passconfig_lines(
+static void jpp_ui_shell_fileserver_passconfig_lines(
     const jpp_ui_shell_t *shell,
     char lines[JPP_UI_FRAME_LINES][JPP_UI_FRAME_CHARS + 1u])
 {
     jpp_ui_set_line(lines, 0u, "Password settings");
     jpp_ui_set_line(lines, 2u,
-        shell->webdav_passconfig_sel == 0u ? ">Random password"
-                                           : " Random password");
+        shell->fileserver_passconfig_sel == 0u ? ">Random password"
+                                               : " Random password");
     jpp_ui_set_line(lines, 3u,
-        shell->webdav_passconfig_sel == 1u ? ">Static password"
-                                           : " Static password");
+        shell->fileserver_passconfig_sel == 1u ? ">Static password"
+                                               : " Static password");
     jpp_ui_set_line(lines, 4u,
-        shell->webdav_passconfig_sel == 2u ? ">Back"
-                                           : " Back");
+        shell->fileserver_passconfig_sel == 2u ? ">Back"
+                                               : " Back");
 }
 
 static void jpp_ui_shell_dialog_lines(
@@ -597,10 +622,10 @@ jpp_ui_status_t jpp_ui_shell_render(jpp_ui_shell_t *shell,
         jpp_ui_shell_sd_ejected_lines(lines);
     } else if (jpp_str_eq(screen, JPP_UI_SCREEN_SETTINGS)) {
         /* Rendered by jpp_settings_screen — blank frame here, handled externally */
-    } else if (jpp_str_eq(screen, JPP_UI_SCREEN_WEBDAV)) {
-        jpp_ui_shell_webdav_lines(shell, lines);
-    } else if (jpp_str_eq(screen, JPP_UI_SCREEN_WEBDAV_PASSCONFIG)) {
-        jpp_ui_shell_webdav_passconfig_lines(shell, lines);
+    } else if (jpp_str_eq(screen, JPP_UI_SCREEN_FILESERVER)) {
+        jpp_ui_shell_fileserver_lines(shell, lines);
+    } else if (jpp_str_eq(screen, JPP_UI_SCREEN_FILESERVER_PASSCONFIG)) {
+        jpp_ui_shell_fileserver_passconfig_lines(shell, lines);
     } else if (jpp_str_eq(screen, JPP_UI_SCREEN_DIALOG) ||
                jpp_str_eq(screen, JPP_UI_SCREEN_CRASH)) {
         jpp_ui_shell_dialog_lines(&shell->dialog, lines);
@@ -655,8 +680,8 @@ static jpp_ui_status_t jpp_ui_shell_open_selected(jpp_ui_shell_t *shell)
     if (jpp_str_eq(entry->app_id, "settings")) {
         return jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_SETTINGS);
     }
-    if (jpp_str_eq(entry->app_id, "webdav")) {
-        return jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_WEBDAV);
+    if (jpp_str_eq(entry->app_id, "fileserver")) {
+        return jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_FILESERVER);
     }
     if (entry->source == JPP_UI_APP_SOURCE_SD) {
         return jpp_ui_stack_push(&shell->stack, entry->app_id);
@@ -691,7 +716,7 @@ jpp_ui_status_t jpp_ui_shell_handle_action(jpp_ui_shell_t *shell, jpp_ui_action_
         return JPP_UI_STATUS_OK;
     }
 
-    if (jpp_str_eq(screen, JPP_UI_SCREEN_WEBDAV)) {
+    if (jpp_str_eq(screen, JPP_UI_SCREEN_FILESERVER)) {
         if (action == JPP_UI_ACTION_BACK) {
             /* The server is a foreground activity: it runs out of the shared
                app pool, so leaving the screen has to hand that memory back
@@ -707,44 +732,64 @@ jpp_ui_status_t jpp_ui_shell_handle_action(jpp_ui_shell_t *shell, jpp_ui_action_
             (void)jpp_ui_stack_pop(&shell->stack);
         } else if (shell->fileserver_running) {
             if (action == JPP_UI_ACTION_UP) {
-                jpp_ui_menu_move(&shell->webdav_menu_sel, 2u, -1);
+                jpp_ui_menu_move(&shell->fileserver_menu_sel, 2u, -1);
             } else if (action == JPP_UI_ACTION_DOWN) {
-                jpp_ui_menu_move(&shell->webdav_menu_sel, 2u, 1);
+                jpp_ui_menu_move(&shell->fileserver_menu_sel, 2u, 1);
             } else if (action == JPP_UI_ACTION_OK) {
-                if (shell->webdav_menu_sel == 0u) {
-                    (void)jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_WEBDAV_PASSCONFIG);
+                if (shell->fileserver_menu_sel == 0u) {
+                    (void)jpp_ui_stack_push(&shell->stack, JPP_UI_SCREEN_FILESERVER_PASSCONFIG);
                 } else {
                     jpp_fileserver_stop();
                 }
             }
-        } else if (action == JPP_UI_ACTION_OK && shell->fileserver_ip[0] != '\0') {
-            if (shell->webdav_pass_is_static && shell->webdav_static_pass[0] != '\0') {
-                jpp_fileserver_start_with_password(shell->webdav_static_pass);
-            } else {
-                jpp_fileserver_start();
+        } else if (shell->fileserver_ip[0] != '\0') {
+            if (action == JPP_UI_ACTION_UP) {
+                jpp_ui_menu_move(&shell->fileserver_idle_sel, 2u, -1);
+            } else if (action == JPP_UI_ACTION_DOWN) {
+                jpp_ui_menu_move(&shell->fileserver_idle_sel, 2u, 1);
+            } else if (shell->fileserver_idle_sel == 0u &&
+                       (action == JPP_UI_ACTION_LEFT || action == JPP_UI_ACTION_RIGHT ||
+                        action == JPP_UI_ACTION_OK)) {
+                /* Protocol select: two values, so any of the three keys just
+                   flips it.  Applied to the backend at once (it only matters
+                   at the next start) and persisted by the main loop. */
+                shell->fileserver_protocol =
+                    (shell->fileserver_protocol == JPP_FILESERVER_PROTO_FTP)
+                        ? JPP_FILESERVER_PROTO_WEBDAV : JPP_FILESERVER_PROTO_FTP;
+                (void)jpp_fileserver_set_protocol(shell->fileserver_protocol);
+                shell->fileserver_config_changed = true;
+            } else if (action == JPP_UI_ACTION_OK && shell->fileserver_idle_sel == 1u) {
+                /* The running view's cursor starts on Password settings, so a
+                   second OK can never be a Stop. */
+                shell->fileserver_menu_sel = 0u;
+                if (shell->fileserver_pass_is_static && shell->fileserver_static_pass[0] != '\0') {
+                    jpp_fileserver_start_with_password(shell->fileserver_static_pass);
+                } else {
+                    jpp_fileserver_start();
+                }
             }
         }
         return JPP_UI_STATUS_OK;
     }
 
-    if (jpp_str_eq(screen, JPP_UI_SCREEN_WEBDAV_PASSCONFIG)) {
+    if (jpp_str_eq(screen, JPP_UI_SCREEN_FILESERVER_PASSCONFIG)) {
         if (action == JPP_UI_ACTION_BACK) {
             (void)jpp_ui_stack_pop(&shell->stack);
         } else if (action == JPP_UI_ACTION_UP) {
-            jpp_ui_menu_move(&shell->webdav_passconfig_sel, 3u, -1);
+            jpp_ui_menu_move(&shell->fileserver_passconfig_sel, 3u, -1);
         } else if (action == JPP_UI_ACTION_DOWN) {
-            jpp_ui_menu_move(&shell->webdav_passconfig_sel, 3u, 1);
+            jpp_ui_menu_move(&shell->fileserver_passconfig_sel, 3u, 1);
         } else if (action == JPP_UI_ACTION_OK) {
-            if (shell->webdav_passconfig_sel == 0u) {
-                shell->webdav_pass_is_static    = false;
-                shell->webdav_static_pass[0]    = '\0';
-                shell->webdav_pass_config_changed = true;
+            if (shell->fileserver_passconfig_sel == 0u) {
+                shell->fileserver_pass_is_static  = false;
+                shell->fileserver_static_pass[0]  = '\0';
+                shell->fileserver_config_changed  = true;
                 if (shell->fileserver_running) {
                     jpp_fileserver_stop();
                     jpp_fileserver_start();
                 }
-            } else if (shell->webdav_passconfig_sel == 1u) {
-                shell->webdav_needs_pass_input = true;
+            } else if (shell->fileserver_passconfig_sel == 1u) {
+                shell->fileserver_needs_pass_input = true;
             }
             /* sel==2 (Back) and BACK both just pop */
             (void)jpp_ui_stack_pop(&shell->stack);

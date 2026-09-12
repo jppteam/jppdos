@@ -43,6 +43,8 @@ RESERVED_APP_IDS = frozenset(
     (
         "launcher",
         "settings",
+        "fileserver",
+        "fileserver_passconfig",
         "webdav",
         "webdav_passconfig",
         "shell",

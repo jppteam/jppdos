@@ -45,7 +45,7 @@ typedef enum {
 typedef enum {
     JPP_LRV_SS_MAIN = 0,       /* unit #, pubkey, "OK to verify validity"         */
     JPP_LRV_SS_VERIFY_RESULT,  /* "Printed certificate to serial." screen         */
-    JPP_LRV_SS_VERIFY_ERROR,   /* error screen (e.g. WebDAV running)              */
+    JPP_LRV_SS_VERIFY_ERROR,   /* error screen (e.g. File Server running)         */
 } jpp_lrv_subscreen_t;
 
 typedef enum {

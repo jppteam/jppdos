@@ -2934,7 +2934,7 @@ jpp_sdk_status_t jpp_sdk_dialog(
 
     if (has_title) {
         /* Title on row 0; row 1 stays blank so the renderer can draw the
-           signature line there, matching the launcher/settings/WebDAV header. */
+           signature line there, matching the launcher/settings/File Server header. */
         jpp_sdk_copy_text(body[0], JPP_SDK_FRAME_TEXT_MAX, title);
         body[1][0] = '\0';
         n = 2u;

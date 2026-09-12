@@ -2,8 +2,8 @@
 
 Four transports, each behind its own capability: cleartext HTTP, TLS-verified
 HTTPS, an inbound TCP listener, and an outbound TCP client. All of them need
-Wi-Fi to be connected, and the socket calls additionally fail while the WebDAV
-or LRV HTTP server is running.
+Wi-Fi to be connected, and the socket calls additionally fail while the built-in
+File Server (WebDAV or FTP) or the LRV verification server is running.
 
 ## HTTP
 
@@ -122,7 +122,7 @@ Origins are normalised before comparison: the host is lowercased and an explicit
     **Tier 2** — the user is prompted on first use of *every* launch and the
     answer is never persisted.
 
-One listener socket, up to 2 accepted connections. Binding fails while the WebDAV or LRV server is running. All sockets close automatically when the app exits.
+One listener socket, up to 2 accepted connections. Binding fails while the File Server (WebDAV or FTP) or LRV server is running. All sockets close automatically when the app exits.
 
 ### `net_bind`
 
@@ -300,7 +300,7 @@ jppsdk.net_connect(host: str, port: int, timeout_ms: int) -> int
 
 **Returns:** `JPP_SDK_OK` with `*out_sock ≥ 0` on success. `result->code` is
 `CONNECT_FAILED` (DNS/connect error or timeout), `SOCKET_LIMIT` (connection
-table full), or `SERVER_ACTIVE` (the WebDAV or LRV HTTP server is running).
+table full), or `SERVER_ACTIVE` (the File Server or the LRV server is running).
 
 **Notes:** Wi-Fi must be connected. Binary-safe in both directions (unlike
 `http_request`, which is HTTP-only and NUL-terminates the body). Close the

@@ -38,7 +38,7 @@ Every app package contains a `manifest.json` that tells the firmware who the app
 **Required.** A stable, unique identifier for the app. Rules:
 - Dot-separated identifier segments (`my_app`, `com.example.clock`)
 - All lowercase; only letters, digits, underscores, and dots
-- Cannot be a reserved built-in name: `launcher`, `settings`, `webdav`, `dialogs`, `files`, `about`
+- Cannot be a reserved built-in name: `launcher`, `settings`, `fileserver`, `fileserver_passconfig`, `webdav`, `webdav_passconfig`, `shell`, `dialog`, `app_crash`, `sd_ejected`
 - The `app_id` determines the app's storage paths (`/sd/apps/<app_id>/`, `/sd/shared/<app_id>/`) — changing it in a new version loses all stored data
 
 ### `name`

@@ -34,9 +34,9 @@ void jpp_ble_native_init(void);
 /*
  * Suspend the NimBLE stack: stop the host task and de-init the controller,
  * releasing its heap so WiFi has the headroom it needs during heavy networking
- * (e.g. a WebDAV transfer — see jpp_fileserver_core).  No-op (returns false) if
+ * (e.g. a File Server transfer — see jpp_fileserver_core).  No-op (returns false) if
  * BLE is disabled at build time or already suspended.  Must NOT be called while
- * an app is actively using BLE; WebDAV and SD apps are mutually exclusive, so
+ * an app is actively using BLE; the File Server and SD apps are mutually exclusive, so
  * the firmware only suspends BLE while no app is running.
  *
  * Returns true if the stack was running and is now suspended.

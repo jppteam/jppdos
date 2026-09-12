@@ -25,11 +25,11 @@ extern "C" {
  * minimal, which on this single-SRAM part matters: every reserved KB comes out
  * of the same heap WiFi/lwIP draw frame buffers from.
  *
- * The WebDAV and LRV verification servers are the third class of holder (see
+ * The File Server (WebDAV or FTP) and LRV verification servers are the third class of holder (see
  * jpp_http_server_core).  They are foreground activities, mutually exclusive
  * with apps for exactly the same reason, and they take their task stack and
  * their I/O buffers from here rather than from the heap — which is what keeps
- * a WebDAV transfer from starving the WiFi driver of frame buffers.  Unlike an
+ * a file transfer from starving the WiFi driver of frame buffers.  Unlike an
  * app image, a server wants several separate allocations, so it carves them
  * with jpp_app_pool_alloc() instead of taking the base pointer.
  *
@@ -52,7 +52,7 @@ extern "C" {
 
 /*
  * Acquire the shared pool for an owner (a short label such as "app" or
- * "webdav", used in logs and reported by jpp_app_pool_owner() — the pointer is
+ * "webdav" or "ftp", used in logs and reported by jpp_app_pool_owner() — the pointer is
  * stored, not copied, so pass a string literal or other static).  Returns the
  * pool base pointer and (if out_size is non-NULL) its capacity, marking it
  * in-use.  Returns NULL if the pool is already held or if need_bytes exceeds

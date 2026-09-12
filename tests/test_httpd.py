@@ -1,11 +1,14 @@
-"""The in-house HTTP server and the WebDAV surface on top of it, on the host.
+"""The in-house HTTP and FTP servers and the File Server on top of them, on
+the host.
 
-jpp_http_server_core.c is plain C over BSD sockets — its only ESP-IDF
-dependencies are FreeRTOS task/mutex creation and ESP_LOG — so the real
-firmware source compiles natively against a small pthread shim and can be
-driven over loopback with real HTTP bytes. That covers the parts a device
-build cannot check cheaply: request framing, keep-alive, chunked bodies,
-Expect: 100-continue, and the WebDAV verbs a client actually sends.
+jpp_http_server_core.c and jpp_ftp_server_core.c are plain C over BSD sockets
+— their only ESP-IDF dependencies are FreeRTOS task/mutex creation and
+ESP_LOG — so the real firmware sources compile natively against a small
+pthread shim and can be driven over loopback with real protocol bytes. That
+covers the parts a device build cannot check cheaply: request framing,
+keep-alive, chunked bodies, Expect: 100-continue, the WebDAV verbs a client
+actually sends, and on the FTP side login, PASV/EPSV/PORT data connections,
+the listing formats, REST resume and the file-management verbs.
 
 The same pattern as tests/keypad_harness.py: compile the firmware source, not
 a copy of it, so a regression fails here instead of on hardware.
@@ -30,14 +33,20 @@ POOL_SRC = REPO_ROOT / "components" / "jpp_app_pool" / "src"
 HARNESSES = {
     "http_server": ["http_server_harness.c"],
     "webdav": ["webdav_harness.c"],
+    "ftp": ["ftp_harness.c"],
 }
+
+# jpp_fileserver_core.c links both backends whichever protocol is selected.
+FILESERVER_SRCS = [CORE_SRC / "jpp_http_server_core.c",
+                   CORE_SRC / "jpp_ftp_server_core.c",
+                   CORE_SRC / "jpp_fileserver_core.c",
+                   POOL_SRC / "jpp_app_pool.c"]
 
 FIRMWARE_SRCS = {
     "http_server": [CORE_SRC / "jpp_http_server_core.c",
                     POOL_SRC / "jpp_app_pool.c"],
-    "webdav": [CORE_SRC / "jpp_http_server_core.c",
-               CORE_SRC / "jpp_fileserver_core.c",
-               POOL_SRC / "jpp_app_pool.c"],
+    "webdav": FILESERVER_SRCS,
+    "ftp": FILESERVER_SRCS,
 }
 
 
@@ -110,3 +119,26 @@ def test_webdav_surface(tmp_path):
     # traversal check is the one security-relevant behaviour in build_path().
     assert "GET 100 KB: bytes match what was PUT" in out
     assert "traversal (..) -> 400" in out
+
+
+def test_ftp_surface(tmp_path):
+    """The FTP conversation a real client (FileZilla, curl, Finder) has with
+    the File Server in FTP mode."""
+    root = Path("/tmp") / f"jppd_ftp_{os.getpid()}"
+    try:
+        out = _run(_build("ftp", tmp_path), str(_free_port()), str(root))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    assert "PASSED" in out
+    # The two things that must never regress: a byte-exact round trip through
+    # the pool transfer buffer, and path arguments staying inside the root.
+    assert "RETR 100 KB: bytes match what was STORed" in out
+    assert "...but lands inside the root, never outside it" in out
+    # Active mode only ever connects back to the control peer (no FTP bounce).
+    assert "PORT to a foreign address -> 500" in out
+    # A second client must be answered, not left hanging in the backlog.
+    assert "second client gets 421 immediately" in out
+    # Selecting the protocol is what the File Server screen persists; it must
+    # hold across a stop and be refused while a server is up.
+    assert "protocol cannot change while running" in out
+    assert "protocol selection survives a stop" in out

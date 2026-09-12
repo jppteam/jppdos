@@ -54,7 +54,7 @@ bool jpp_heap_monitor_init(void);
 
 /*
  * Emit one heap line immediately: "heap @<label>: free=.. min=.. largest=..".
- * Safe to call from any task.  `label` is a short context string (e.g. "webdav
+ * Safe to call from any task.  `label` is a short context string (e.g. "ftp
  * start", "app launch").
  */
 void jpp_heap_monitor_log(const char *label);
