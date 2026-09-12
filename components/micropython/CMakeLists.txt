@@ -365,10 +365,17 @@ add_custom_command(
 )
 
 # -- Step 4: Preprocess the combined qstr definitions (sed | cpp | sed pipeline) --
+# The `tr -d '\r'` is load-bearing: qstrdefsport.h is the one input here that
+# git checks out, so on a Windows clone with core.autocrlf=true it arrives with
+# CRLF endings. The first sed then wraps the line as "Q(name)\r", cpp treats the
+# stray CR as a line break and splits the closing quote onto its own line, the
+# second sed never unwraps it, and makeqstrdata.py silently drops every port
+# qstr — the firmware then fails with MP_QSTR_jppsdk (etc.) undeclared.
 add_custom_command(
     OUTPUT "${MP_QSTRDEFS_PREPROCESSED}"
     COMMAND /bin/sh -c
         "cat '${MP_DIR}/py/qstrdefs.h' '${MP_QSTRDEFS_PORT}' '${MP_QSTR_COLLECTED}' \
+         | tr -d '\\r' \
          | sed 's/^Q(.*/\"&\"/' \
          | ${CMAKE_C_COMPILER} -E -DMICROPY_PORT_CONFIG_FILE='mpconfigport.h' \
              -I '${CMAKE_CURRENT_LIST_DIR}' -I '${MP_DIR}' - \
