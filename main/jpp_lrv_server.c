@@ -216,13 +216,13 @@ jpp_lrv_server_result_t jpp_lrv_server_start(jpp_rtc_state_t *rtc)
         return JPP_LRV_SERVER_ERR_NO_WIFI;
     }
 
-    /* Check WebDAV isn't running.  Both servers run out of the shared app
+    /* Check the File Server isn't running.  Both run out of the shared app
        pool, so this is also enforced there — but the dedicated error tells the
        user what to switch off, rather than "pool busy". */
     jpp_fileserver_status_t fs_status;
     jpp_fileserver_get_status(&fs_status);
     if (fs_status.state == JPP_FILESERVER_STATE_RUNNING) {
-        return JPP_LRV_SERVER_ERR_WEBDAV_RUNNING;
+        return JPP_LRV_SERVER_ERR_FILESERVER_RUNNING;
     }
 
     if (s_running) {

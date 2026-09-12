@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "jpp_keypad_core.h"
+#include "jpp_fileserver_core.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,7 +19,7 @@ extern "C" {
 #define JPP_UI_DIALOG_BODY_LINES 4u
 #define JPP_UI_CRASH_LOG_CHARS 256u
 #define JPP_UI_STATUS_TIME_LEN 6u    /* "HH:MM\0" */
-#define JPP_UI_WEBDAV_PASS_MAX 24u   /* max WebDAV password length */
+#define JPP_UI_FILESERVER_PASS_MAX 24u   /* max File Server password length */
 
 typedef enum {
     JPP_UI_STATUS_OK = 0,
@@ -97,18 +98,22 @@ typedef struct {
     char status_time[JPP_UI_STATUS_TIME_LEN];   /* "HH:MM" or "" */
     int  status_battery_pct;                     /* 0–100, -1 = unknown */
     bool status_wifi_connected;                  /* true when Wi-Fi has an IP */
-    /* File server state */
+    /* File Server state (mirrored from jpp_fileserver_get_status by the main
+       loop's 2 s poll) */
     bool     fileserver_running;
     char     fileserver_ip[16];
     uint16_t fileserver_port;
-    char     fileserver_password[JPP_UI_WEBDAV_PASS_MAX + 1u];
-    /* WebDAV screen navigation and password config */
-    size_t webdav_menu_sel;                           /* 0=Password settings, 1=Stop server */
-    size_t webdav_passconfig_sel;                     /* 0=Random password, 1=Static password */
-    bool   webdav_pass_is_static;                     /* true = use static pass on next start */
-    char   webdav_static_pass[JPP_UI_WEBDAV_PASS_MAX + 1u];
-    bool   webdav_needs_pass_input;                   /* signal to main loop: invoke keyboard */
-    bool   webdav_pass_config_changed;                /* signal to main loop: save config to NVS */
+    char     fileserver_password[JPP_UI_FILESERVER_PASS_MAX + 1u];
+    /* File Server screen navigation and persisted config */
+    jpp_fileserver_protocol_t fileserver_protocol;    /* WebDAV / FTP; the Protocol row */
+    size_t fileserver_idle_sel;                       /* stopped: 0=Protocol, 1=Start server */
+    size_t fileserver_menu_sel;                       /* running: 0=Password settings, 1=Stop server */
+    size_t fileserver_passconfig_sel;                 /* 0=Random password, 1=Static password */
+    bool   fileserver_pass_is_static;                 /* true = use static pass on next start */
+    char   fileserver_static_pass[JPP_UI_FILESERVER_PASS_MAX + 1u];
+    bool   fileserver_needs_pass_input;               /* signal to main loop: invoke keyboard */
+    bool   fileserver_config_changed;                 /* signal to main loop: save protocol +
+                                                         password config to NVS */
     /* SD ejection fatal flag */
     bool sd_ejected;
     /* Power management */

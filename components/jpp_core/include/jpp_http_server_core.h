@@ -10,8 +10,9 @@ extern "C" {
 #endif
 
 /*
- * jpp_http_server_core — the minimal HTTP/1.1 server the WebDAV and LRV
- * verification screens run on.
+ * jpp_http_server_core — the minimal HTTP/1.1 server the File Server (in
+ * WebDAV mode; FTP mode runs on jpp_ftp_server_core instead) and the LRV
+ * verification screen run on.
  *
  * It exists instead of ESP-IDF's `esp_http_server` for one reason: every byte
  * it needs at runtime is carved out of the shared `jpp_app_pool` (80 KB static
@@ -25,8 +26,9 @@ extern "C" {
  *
  * Consequences of that choice, all deliberate:
  *   - A server is a *foreground* activity.  Starting one acquires the app pool,
- *     so it is mutually exclusive with a running SD app (and with the other
- *     server) by construction, and stopping it returns the whole 80 KB.
+ *     so it is mutually exclusive with a running SD app (and with every other
+ *     pool-backed server, FTP included) by construction, and stopping it
+ *     returns the whole 80 KB.
  *   - Only one server instance exists at a time (single static control block).
  *   - One connection is served at a time — the same limit `max_open_sockets=1`
  *     imposed before — because the handler I/O buffer is shared.

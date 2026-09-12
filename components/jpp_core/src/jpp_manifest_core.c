@@ -15,8 +15,11 @@ int jpp_manifest_v2_is_reserved_app_id(const char *app_id)
 {
     /* Must match every screen name the launcher/main loop routes by id. */
     static const char *const reserved[] = {
-        "launcher", "settings", "webdav", "webdav_passconfig",
+        "launcher", "settings", "fileserver", "fileserver_passconfig",
         "shell", "dialog", "app_crash", "sd_ejected",
+        /* The File Server's pre-rename screen names stay reserved: an app
+           that took one would have been rejected on every earlier firmware. */
+        "webdav", "webdav_passconfig",
     };
     for (size_t i = 0u; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
         if (jpp_str_eq(app_id, reserved[i])) {

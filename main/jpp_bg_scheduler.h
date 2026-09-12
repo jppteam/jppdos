@@ -17,7 +17,7 @@
  * grant is persisted, removed when it is not.
  *
  * The main loop polls jpp_bg_scheduler_due() while the device is idle on the
- * launcher (no foreground app, no WebDAV/LRV server, no serial session) and
+ * launcher (no foreground app, no File Server/LRV server, no serial session) and
  * headless-launches the app to run the due task: MicroPython apps get
  * module-level on_task(name), native apps jpp_app_task_entry(ctx, name).
  * A run is killed after JPP_RESOURCE_BG_TASK_RUN_QUOTA_MS of wall-clock time.

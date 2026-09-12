@@ -139,7 +139,7 @@ bool wifi_ensure_started(void)
 
     /* Disable modem power-save.  The default WIFI_PS_MIN_MODEM makes the radio
        doze between AP beacons and send "null data frames" to the AP on every
-       sleep/wake transition.  Under a busy TCP server (WebDAV) the driver fails
+       sleep/wake transition.  Under a busy TCP server (File Server) the driver fails
        to allocate those null frames during a burst — logged as "wifi:m f null" —
        which stalls the link, resets sockets (recv errno 104), and eventually
        wedges Wi-Fi entirely.  WIFI_PS_NONE keeps the radio always-on: no null

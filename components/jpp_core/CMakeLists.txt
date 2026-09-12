@@ -17,6 +17,7 @@ idf_component_register(
         "src/jpp_battery_core.c"
         "src/jpp_http_server_core.c"
         "src/jpp_fileserver_core.c"
+        "src/jpp_ftp_server_core.c"
         "src/jpp_ble_native.c"
         "src/jpp_espnow_native.c"
         "src/jpp_mp_sdk_module.c"

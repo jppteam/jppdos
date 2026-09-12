@@ -1,6 +1,7 @@
 #include "jpp_backup_restore.h"
 #include "jpp_settings_load.h"
 #include "jpp_buzzer_core.h"
+#include "jpp_fileserver_core.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -70,11 +71,17 @@ bool jpp_backup_apply_json(const char *json_buf, char *msg, size_t msg_len)
         nvs_commit(h); nvs_close(h);
     }
 
-    /* jpp_webdav */
+    /* jpp_webdav — the File Server namespace (WebDAV + FTP), under its
+       historical name so older backups keep restoring */
     cJSON *nvs_webdav = cJSON_GetObjectItem(root, "nvs_webdav");
     if (cJSON_IsObject(nvs_webdav) &&
         nvs_open(NS_WEBDAV, NVS_READWRITE, &h) == ESP_OK) {
         cJSON *v;
+        v = cJSON_GetObjectItem(nvs_webdav, "protocol");
+        if (cJSON_IsNumber(v) && (int)v->valuedouble >= 0 &&
+            (int)v->valuedouble < (int)JPP_FILESERVER_PROTO_COUNT) {
+            nvs_set_u8(h, "protocol", (uint8_t)(int)v->valuedouble);
+        }
         v = cJSON_GetObjectItem(nvs_webdav, "pass_static");
         if (cJSON_IsNumber(v)) { nvs_set_u8(h, "pass_static", (uint8_t)(int)v->valuedouble); }
         v = cJSON_GetObjectItem(nvs_webdav, "static_pass");

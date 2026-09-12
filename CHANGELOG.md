@@ -8,8 +8,25 @@ each build, not an API diff.
 
 ### Device UI
 
+- **The WebDAV server app is now "File Server", and it speaks FTP too.** The
+  app's main screen is a short list instead of a "Press OK to start" prompt:
+  a **Protocol** row (WebDAV or FTP — LEFT, RIGHT or OK flips it, and the
+  choice is remembered) and **Start server**. FTP is the option for tools that
+  never learnt WebDAV — FileZilla, WinSCP, `curl`, the `ftp` in your terminal
+  — and it uses the same `jppd` user and the same random or static password
+  as WebDAV, on the standard port 21 (WebDAV stays on 80). While the server
+  is up, the screen adds a line saying which protocol is running and on what
+  port, so the address to type in is never in doubt. The FTP server serves one
+  client at a time and politely turns a second one away (`421`) rather than
+  leaving it hanging — so set FileZilla to a single connection per site.
+  Transfers, resume (`REST`), rename, delete and folder creation all work;
+  there is no FTPS (the hardware has no TLS), and clients that probe for it
+  fall back to plain FTP on their own. Settings backups made before this
+  change still restore. The launcher entry is renamed too, so the system-apps
+  group now reads "Settings" and "File Server".
+
 - **The launcher separates the system apps from your own.** A thin rule now
-  sits between the system apps (Settings and WebDAV server) and the apps on
+  sits between the system apps (Settings and File Server) and the apps on
   your SD card, so the built-in entries read as their own group instead of
   blending into the list. The rule gets a line of its own with clear space
   above and below, so the list shows five apps at a time rather than six while
@@ -21,7 +38,7 @@ each build, not an API diff.
   behaves for *you*: **Back action** (moved out of the old "Controls" section
   and renamed — "Hold OK" or "2x Tap OK"), **User's name** (moved out of its
   own top-level section; OK opens the keyboard), and a new **System apps**
-  setting that moves Settings and WebDAV server — and the divider with them —
+  setting that moves Settings and File Server — and the divider with them —
   to the **top** or the **bottom** of the launcher list, plus a **Divider**
   switch that shows or hides the launcher divider entirely. They all save the
   moment you change them, and the launcher updates immediately, keeping the

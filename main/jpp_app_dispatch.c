@@ -153,7 +153,7 @@ void discover_apps(bool normal_mode,
     summary->builtin_count = 2u;
     jpp_ui_shell_add_app(shell, "settings", "Settings",
                          JPP_UI_APP_SOURCE_BUILTIN);
-    jpp_ui_shell_add_app(shell, "webdav", "WebDAV server",
+    jpp_ui_shell_add_app(shell, "fileserver", "File Server",
                          JPP_UI_APP_SOURCE_BUILTIN);
 
 #ifdef JPP_WOKWI_EMBED_APP

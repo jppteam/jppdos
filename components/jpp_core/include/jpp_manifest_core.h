@@ -104,7 +104,7 @@ int jpp_manifest_v2_is_valid_entry_path(const char *path);
 
 /*
  * True for app ids that collide with built-in screen names (launcher,
- * settings, webdav, dialogs, ...).  The launcher routes screens by name, so an
+ * settings, fileserver, dialogs, ...).  The launcher routes screens by name, so an
  * SD app with one of these ids could never be opened; manifests using them are
  * rejected and discovery skips matching directories.
  */
